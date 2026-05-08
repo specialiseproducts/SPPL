@@ -1,36 +1,35 @@
 import { TrendingUp, DollarSign, Users as UsersIcon, ShoppingCart, UserCog, FileText, ChevronLeft, ChevronRight, LayoutGrid } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from './ui/button';
-import type { UserRole } from '../App';
 
 export type ModuleName = 'Sales Forecasting' | 'Expenses' | 'Payroll' | 'Purchases' | 'CRM' | 'User Management';
 
 interface SidebarProps {
   activeModule: ModuleName;
   onModuleChange: (module: ModuleName) => void;
-  userRole: UserRole;
+  moduleAccess: Record<string, boolean>;
   onBackToDashboard?: () => void;
 }
 
 interface Module {
   name: ModuleName;
   icon: React.ReactNode;
-  roles: UserRole[];
+  accessKey: string;
 }
 
 const modules: Module[] = [
-  { name: 'Sales Forecasting', icon: <TrendingUp className="w-5 h-5" />, roles: ['Admin', 'User'] },
-  { name: 'Expenses', icon: <DollarSign className="w-5 h-5" />, roles: ['Admin', 'User', 'Accountant'] },
-  { name: 'Payroll', icon: <FileText className="w-5 h-5" />, roles: ['Admin', 'Accountant'] },
-  { name: 'Purchases', icon: <ShoppingCart className="w-5 h-5" />, roles: ['Admin', 'Accountant'] },
-  { name: 'CRM', icon: <UsersIcon className="w-5 h-5" />, roles: ['Admin'] },
-  { name: 'User Management', icon: <UserCog className="w-5 h-5" />, roles: ['Admin'] },
+  { name: 'Sales Forecasting', icon: <TrendingUp className="w-5 h-5" />, accessKey: 'salesForecasting' },
+  { name: 'Expenses', icon: <DollarSign className="w-5 h-5" />, accessKey: 'expenses' },
+  { name: 'Payroll', icon: <FileText className="w-5 h-5" />, accessKey: 'payroll' },
+  { name: 'Purchases', icon: <ShoppingCart className="w-5 h-5" />, accessKey: 'purchases' },
+  { name: 'CRM', icon: <UsersIcon className="w-5 h-5" />, accessKey: 'crm' },
+  { name: 'User Management', icon: <UserCog className="w-5 h-5" />, accessKey: 'userManagement' },
 ];
 
-export default function Sidebar({ activeModule, onModuleChange, userRole, onBackToDashboard }: SidebarProps) {
+export default function Sidebar({ activeModule, onModuleChange, moduleAccess, onBackToDashboard }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
-  const accessibleModules = modules.filter(module => module.roles.includes(userRole));
+  const accessibleModules = modules.filter(module => Boolean(moduleAccess[module.accessKey]));
 
   return (
     <aside

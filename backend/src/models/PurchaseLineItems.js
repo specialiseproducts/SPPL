@@ -15,7 +15,12 @@ const TABLE_NAME = TABLES.PURCHASE_LINE_ITEMS;
  * @returns {Promise<Object>} Line item record
  */
 export const getLineItemById = async (lineItemId) => {
-  // TODO: Implement DynamoDB getItem operation
+  const result = await dynamoDB.get({
+    TableName: TABLE_NAME,
+    Key: { purchaseLineItemId: lineItemId },
+  }).promise();
+
+  return result.Item || null;
 };
 
 /**
@@ -24,8 +29,18 @@ export const getLineItemById = async (lineItemId) => {
  * @returns {Promise<Array>} Array of line items
  */
 export const getLineItemsByPurchaseHeaderId = async (purchaseHeaderId) => {
-  // TODO: Implement DynamoDB query operation
-  // Query by purchaseHeaderId (GSI if needed)
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+    FilterExpression: '#purchaseHeaderId = :purchaseHeaderId',
+    ExpressionAttributeNames: {
+      '#purchaseHeaderId': 'purchaseHeaderId',
+    },
+    ExpressionAttributeValues: {
+      ':purchaseHeaderId': purchaseHeaderId,
+    },
+  }).promise();
+
+  return result.Items || [];
 };
 
 /**
@@ -34,9 +49,45 @@ export const getLineItemsByPurchaseHeaderId = async (purchaseHeaderId) => {
  * @returns {Promise<Object>} Created line item record
  */
 export const createLineItem = async (lineItemData) => {
-  // TODO: Implement DynamoDB putItem operation
-  // Generate lineItemId
-  // Link to purchaseHeaderId
+  const timestamp = new Date().toISOString();
+  const resolvedLineItemId = lineItemData.id || lineItemData.purchaseLineItemId || lineItemData.lineItemId;
+  if (!resolvedLineItemId) {
+    throw new Error('Missing item id');
+  }
+  const item = {
+    ...lineItemData,
+    id: lineItemData.id || resolvedLineItemId,
+    lineItemId: lineItemData.lineItemId || resolvedLineItemId,
+    purchaseLineItemId: resolvedLineItemId,
+    purchaseHeaderId: lineItemData.purchaseHeaderId || lineItemData.po_number || resolvedLineItemId,
+    itemDetails: lineItemData.itemDetails || '',
+    partNumber: lineItemData.partNumber || '',
+    unitPrice: Number(lineItemData.unitPrice || 0),
+    quantity: Number(lineItemData.quantity || 0),
+    freightCharges: Number(lineItemData.freightCharges || 0),
+    gst: Number(lineItemData.gst || 0),
+    totalLandedPrice: Number(lineItemData.totalLandedPrice || 0),
+    priceToSPPL: Number(lineItemData.priceToSPPL || 0),
+    gmPercentage: Number(lineItemData.gmPercentage || 0),
+    margin: Number(lineItemData.margin || 0),
+    createdAt: lineItemData.createdAt || timestamp,
+    updatedAt: timestamp,
+  };
+
+  const params = {
+    TableName: TABLES.PURCHASE_LINE_ITEMS,
+    Item: {
+      purchaseLineItemId: String(item.id),
+      purchaseHeaderId: String(item.purchaseHeaderId || item.po_number || item.id),
+      ...item,
+    },
+  };
+
+  console.log('Saving to DynamoDB:', params);
+
+  await dynamoDB.put(params).promise();
+
+  return params.Item;
 };
 
 /**
@@ -64,8 +115,53 @@ export const deleteLineItem = async (lineItemId) => {
  * @returns {Promise<Object>} Batch write result
  */
 export const batchCreateLineItems = async (lineItems) => {
-  // TODO: Implement DynamoDB batchWriteItem operation
-  // Useful for creating multiple line items at once
+  if (!Array.isArray(lineItems) || lineItems.length === 0) {
+    return [];
+  }
+
+  const createdItems = [];
+  for (const lineItem of lineItems) {
+    const timestamp = new Date().toISOString();
+    const resolvedLineItemId = lineItem.id || lineItem.purchaseLineItemId || lineItem.lineItemId;
+    if (!resolvedLineItemId) {
+      throw new Error('Missing item id');
+    }
+    const normalized = {
+      ...lineItem,
+      id: lineItem.id || resolvedLineItemId,
+      lineItemId: lineItem.lineItemId || resolvedLineItemId,
+      purchaseLineItemId: resolvedLineItemId,
+      purchaseHeaderId: lineItem.purchaseHeaderId || lineItem.po_number || resolvedLineItemId,
+      itemDetails: lineItem.itemDetails || '',
+      partNumber: lineItem.partNumber || '',
+      unitPrice: Number(lineItem.unitPrice || 0),
+      quantity: Number(lineItem.quantity || 0),
+      freightCharges: Number(lineItem.freightCharges || 0),
+      gst: Number(lineItem.gst || 0),
+      totalLandedPrice: Number(lineItem.totalLandedPrice || 0),
+      priceToSPPL: Number(lineItem.priceToSPPL || 0),
+      gmPercentage: Number(lineItem.gmPercentage || 0),
+      margin: Number(lineItem.margin || 0),
+      createdAt: lineItem.createdAt || timestamp,
+      updatedAt: timestamp,
+    };
+    const params = {
+      TableName: TABLES.PURCHASE_LINE_ITEMS,
+      Item: {
+        purchaseLineItemId: String(normalized.id),
+        purchaseHeaderId: String(normalized.purchaseHeaderId || normalized.po_number || normalized.id),
+        ...normalized,
+      },
+    };
+
+    console.log('Saving to DynamoDB:', params);
+    await dynamoDB.put(params).promise();
+    createdItems.push(params.Item);
+  }
+
+  return createdItems;
 };
+
+export const createLineItems = batchCreateLineItems;
 
 

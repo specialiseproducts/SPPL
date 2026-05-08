@@ -6,9 +6,10 @@ import type { UserMaster } from './UserCreationTab';
 
 interface UserManagementProps {
   onUsersChange: (users: UserMaster[]) => void;
+  onEmployeeCodeClick?: (employee: UserMaster) => void;
 }
 
-export default function UserManagement({ onUsersChange }: UserManagementProps) {
+export default function UserManagement({ onUsersChange, onEmployeeCodeClick }: UserManagementProps) {
   const [users, setUsers] = useState<UserMaster[]>([]);
 
   const handleUsersChange = (updatedUsers: UserMaster[]) => {
@@ -29,7 +30,7 @@ export default function UserManagement({ onUsersChange }: UserManagementProps) {
           <TabsTrigger value="access">Access Management</TabsTrigger>
         </TabsList>
         <TabsContent value="creation" className="mt-6">
-          <UserCreationTab onUsersChange={handleUsersChange} />
+          <UserCreationTab onUsersChange={handleUsersChange} onEmployeeCodeClick={onEmployeeCodeClick} />
         </TabsContent>
         <TabsContent value="access" className="mt-6">
           <AccessManagementTab availableUsers={users} />

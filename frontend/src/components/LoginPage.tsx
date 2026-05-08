@@ -4,33 +4,28 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { toast } from 'sonner';
-import { ImageWithFallback } from './figma/ImageWithFallback';
-import type { User, UserRole } from '../App';
 
 interface LoginPageProps {
-  onLogin: (user: User) => void;
+  onLogin: (employeeCode: string, password: string) => Promise<void>;
+  loading?: boolean;
 }
 
-// Mock users for demo
-const mockUsers: Record<string, { password: string; name: string; role: UserRole }> = {
-  'admin': { password: '123', name: 'Admin User', role: 'Admin' },
-  'user1': { password: '123', name: 'John Doe', role: 'User' },
-  'accountant1': { password: '123', name: 'Jane Smith', role: 'Accountant' },
-};
-
-export default function LoginPage({ onLogin }: LoginPageProps) {
+export default function LoginPage({ onLogin, loading = false }: LoginPageProps) {
   const [userId, setUserId] = useState('');
   const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    const user = mockUsers[userId];
-    if (user && user.password === password) {
+
+    try {
+      setSubmitting(true);
+      await onLogin(userId.trim(), password);
       toast.success('Login successful!');
-      onLogin({ id: userId, name: user.name, role: user.role });
-    } else {
-      toast.error('Invalid credentials. Try: admin/123');
+    } catch (error: any) {
+      toast.error(error?.message || 'Invalid employee ID or password');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -40,10 +35,10 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         <CardHeader className="text-center space-y-4 pb-6">
           <div className="flex justify-center">
             <div className="w-16 h-16 rounded-full flex items-center justify-center overflow-hidden">
-              <ImageWithFallback 
-                src="/logo.png" 
-                alt="Spécialisé Products Logo" 
-                className="w-full h-full object-contain"
+              <img
+                src="/logo.png"
+                alt="Company Logo"
+                className="w-16 h-16 object-contain mb-2"
               />
             </div>
           </div>
@@ -73,13 +68,10 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 required
               />
             </div>
-            <Button type="submit" className="w-full bg-[#007BFF] hover:bg-[#0056b3]">
-              Login
+            <Button type="submit" disabled={submitting || loading} className="w-full bg-[#007BFF] hover:bg-[#0056b3]">
+              {submitting || loading ? 'Please wait...' : 'Login'}
             </Button>
           </form>
-          <div className="mt-4 text-center text-sm text-gray-500">
-            Demo: admin/123, user1/123, accountant1/123
-          </div>
         </CardContent>
         <CardFooter className="justify-center pb-6">
           <p className="text-sm text-gray-500">© 2025 Spécialisé Products Private Limited</p>

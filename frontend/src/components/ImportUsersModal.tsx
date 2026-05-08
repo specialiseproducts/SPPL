@@ -14,7 +14,7 @@ import type { UserMaster } from './UserCreationTab';
 interface ImportUsersModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImport: (users: UserMaster[]) => void;
+  onImport: (users: UserMaster[]) => void | Promise<void>;
   existingEmployeeCodes: string[];
 }
 
@@ -38,7 +38,6 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
   const [file, setFile] = useState<File | null>(null);
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [skipInvalidRows, setSkipInvalidRows] = useState(false);
-  const [autoGeneratePasswords, setAutoGeneratePasswords] = useState(true);
   const [overwriteExisting, setOverwriteExisting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [importResult, setImportResult] = useState<{
@@ -68,20 +67,7 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
     return /^\d{9,18}$/.test(accountNo);
   };
 
-  const generatePassword = (): string => {
-    const length = 12;
-    const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-    let password = '';
-    password += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)];
-    password += 'abcdefghijklmnopqrstuvwxyz'[Math.floor(Math.random() * 26)];
-    password += '0123456789'[Math.floor(Math.random() * 10)];
-    for (let i = 3; i < length; i++) {
-      password += charset[Math.floor(Math.random() * charset.length)];
-    }
-    return password.split('').sort(() => Math.random() - 0.5).join('');
-  };
-
-  const validateRow = (data: Partial<UserMaster>, rowNumber: number): { errors: ValidationError[]; warnings: ValidationError[] } => {
+  const validateRow = (data: Partial<UserMaster>, _rowNumber: number): { errors: ValidationError[]; warnings: ValidationError[] } => {
     const errors: ValidationError[] = [];
     const warnings: ValidationError[] = [];
 
@@ -92,8 +78,12 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
       errors.push({ field: 'employee_code', message: `Employee Code ${data.employee_code} already exists` });
     }
 
-    if (!data.name?.trim()) {
-      errors.push({ field: 'name', message: 'Name is required' });
+    if (!data.first_name?.trim()) {
+      errors.push({ field: 'first_name', message: 'First Name is required' });
+    }
+
+    if (!data.last_name?.trim()) {
+      errors.push({ field: 'last_name', message: 'Last Name is required' });
     }
 
     if (!data.date_of_joining) {
@@ -131,12 +121,31 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
       errors.push({ field: 'account_no', message: 'Account number must be 9-18 digits' });
     }
 
+    if (data.location && data.location !== 'Office' && data.location !== 'Factory') {
+      errors.push({ field: 'location', message: 'Location must be Office, Factory, or empty' });
+    }
+
+    if (data.gender && data.gender !== 'Male' && data.gender !== 'Female') {
+      errors.push({ field: 'gender', message: 'Gender must be Male or Female' });
+    }
+
     // Date validations
     if (data.date_of_exit && data.date_of_joining) {
       const joining = new Date(data.date_of_joining);
       const exit = new Date(data.date_of_exit);
       if (exit < joining) {
         errors.push({ field: 'date_of_exit', message: 'Date of Exit cannot be earlier than Date of Joining' });
+      }
+    }
+
+    if (data.date_of_birth) {
+      const dob = new Date(data.date_of_birth);
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      if (Number.isNaN(dob.getTime())) {
+        errors.push({ field: 'date_of_birth', message: 'Date of Birth must be a valid date' });
+      } else if (dob > now) {
+        errors.push({ field: 'date_of_birth', message: 'Date of Birth cannot be in the future' });
       }
     }
 
@@ -174,12 +183,29 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
         }
 
         const parsed: ParsedRow[] = jsonData.map((row: any, index) => {
+          const locRaw = row.location !== undefined && row.location !== null ? String(row.location).trim() : '';
+          const genderRaw = row.gender ?? row.Gender ?? '';
+          const normalizedGenderRaw = String(genderRaw || '').trim();
+          const genderNormalized =
+            normalizedGenderRaw.toLowerCase() === 'male'
+              ? 'Male'
+              : normalizedGenderRaw.toLowerCase() === 'female'
+                ? 'Female'
+                : normalizedGenderRaw;
           const userData: Partial<UserMaster> = {
             employee_code: row.employee_code?.toString().trim() || '',
-            name: row.name?.toString().trim() || '',
+            corporateId: row.corporate_id?.toString().trim() || '',
+            first_name: row.first_name?.toString().trim() || '',
+            last_name: row.last_name?.toString().trim() || '',
+            name:
+              `${row.first_name?.toString().trim() || ''} ${row.last_name?.toString().trim() || ''}`.trim() ||
+              row.name?.toString().trim() ||
+              '',
             designation: row.designation?.toString().trim() || '',
             date_of_joining: row.date_of_joining ? formatDate(row.date_of_joining) : '',
             date_of_exit: row.date_of_exit ? formatDate(row.date_of_exit) : '',
+            date_of_birth: row.date_of_birth ? formatDate(row.date_of_birth) : row['Date of Birth'] ? formatDate(row['Date of Birth']) : '',
+            gender: genderNormalized || '',
             phone: row.phone?.toString().trim() || '',
             official_email: row.official_email?.toString().trim() || '',
             personal_email: row.personal_email?.toString().trim() || '',
@@ -190,8 +216,16 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
             ifsc: row.ifsc?.toString().toUpperCase().trim() || '',
             uan_no: row.uan_no?.toString().trim() || '',
             emergency_contact: row.emergency_contact?.toString().trim() || '',
-            address: row.address?.toString().trim() || '',
-            password: row.password?.toString() || (autoGeneratePasswords ? generatePassword() : ''),
+            address: row.current_address?.toString().trim() || row.address?.toString().trim() || '',
+            permanent_address: row.permanent_address?.toString().trim() || '',
+            biometric_code: row.biometric_code?.toString().trim() || '',
+            biometric_password: row.biometric_password?.toString().trim() || '',
+            passport_no: row.passport_no?.toString().trim() || '',
+            medi_claim_no: row.medi_claim_no?.toString().trim() || '',
+            location: locRaw === '' ? '' : locRaw,
+            documentsUrl: row.documents_url?.toString().trim() || '',
+            pastExperienceUrl: row.past_experience_url?.toString().trim() || '',
+            profilePhotoUrl: row.profile_photo_url?.toString().trim() || '',
           };
 
           const { errors, warnings } = validateRow(userData, index + 2);
@@ -223,7 +257,7 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
     };
 
     reader.readAsArrayBuffer(file);
-  }, [existingEmployeeCodes, overwriteExisting, autoGeneratePasswords]);
+  }, [existingEmployeeCodes, overwriteExisting]);
 
   const formatDate = (dateValue: any): string => {
     if (!dateValue) return '';
@@ -318,39 +352,32 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
     setStep('progress');
     setImportProgress(0);
 
-    const validRows = parsedRows.filter(row => 
+    const validRows = parsedRows.filter(row =>
       skipInvalidRows ? row.status !== 'error' : row.status === 'valid' || row.status === 'warning'
     );
 
-    let imported = 0;
-    let skipped = 0;
-    let failed = 0;
-    const details: string[] = [];
+    const usersToImport = validRows.filter(row => row.status !== 'error').map(row => row.data as UserMaster);
 
-    // Simulate import with progress
-    for (let i = 0; i < validRows.length; i++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const row = validRows[i];
-      if (row.status === 'error') {
-        skipped++;
-        details.push(`Row ${row.rowNumber}: Skipped due to errors`);
-      } else {
-        imported++;
-        details.push(`Row ${row.rowNumber}: Imported successfully`);
+    try {
+      if (usersToImport.length > 0) {
+        await Promise.resolve(onImport(usersToImport));
       }
-
-      setImportProgress(((i + 1) / validRows.length) * 100);
+      setImportProgress(100);
+      setImportResult({
+        imported: usersToImport.length,
+        skipped: parsedRows.length - usersToImport.length,
+        failed: 0,
+        details: usersToImport.map((_, idx) => `Batch row ${idx + 1}: submitted`),
+      });
+    } catch {
+      toast.error('Import failed');
+      setImportResult({
+        imported: 0,
+        skipped: 0,
+        failed: usersToImport.length,
+        details: [],
+      });
     }
-
-    setImportResult({ imported, skipped, failed, details });
-    
-    // Pass valid users to parent
-    const usersToImport = validRows
-      .filter(row => row.status !== 'error')
-      .map(row => row.data as UserMaster);
-    
-    onImport(usersToImport);
     setStep('complete');
   };
 
@@ -367,10 +394,14 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
     const template = [
       {
         employee_code: 'E1001',
-        name: 'Shreya Verma',
+        corporate_id: 'SpecialisePdt',
+        first_name: 'Shreya',
+        last_name: 'Verma',
         designation: 'Data Analyst',
         date_of_joining: '2024-07-01',
         date_of_exit: '',
+        date_of_birth: '1998-04-15',
+        gender: 'Male',
         phone: '+919876543210',
         official_email: 'shreya@company.com',
         personal_email: 'shreya.personal@gmail.com',
@@ -381,8 +412,16 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
         ifsc: 'SBIN0001234',
         uan_no: '100200300',
         emergency_contact: '+919123456789',
-        address: '123 Main Road',
-        password: 'Password@123',
+        current_address: '123 Main Road',
+        permanent_address: '',
+        biometric_code: '039',
+        biometric_password: '',
+        passport_no: '',
+        medi_claim_no: '',
+        location: 'Office',
+        documents_url: '',
+        past_experience_url: '',
+        profile_photo_url: '',
       },
     ];
 
@@ -462,16 +501,9 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
                 </Button>
 
                 <div className="space-y-3 pt-4">
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="auto-generate"
-                      checked={autoGeneratePasswords}
-                      onCheckedChange={(checked) => setAutoGeneratePasswords(checked as boolean)}
-                    />
-                    <Label htmlFor="auto-generate" className="text-sm">
-                      Auto-generate passwords for rows missing password
-                    </Label>
-                  </div>
+                  <p className="text-sm text-gray-600">
+                    Login passwords are generated on the server when each user is created (not from this file).
+                  </p>
 
                   <div className="flex items-center space-x-2">
                     <Checkbox
@@ -557,7 +589,8 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
                     <th className="p-2 text-left">Row</th>
                     <th className="p-2 text-left">Status</th>
                     <th className="p-2 text-left">Employee Code</th>
-                    <th className="p-2 text-left">Name</th>
+                    <th className="p-2 text-left">First Name</th>
+                    <th className="p-2 text-left">Last Name</th>
                     <th className="p-2 text-left">Email</th>
                     <th className="p-2 text-left">Issues</th>
                   </tr>
@@ -587,7 +620,8 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
                         )}
                       </td>
                       <td className="p-2">{row.data.employee_code}</td>
-                      <td className="p-2">{row.data.name}</td>
+                      <td className="p-2">{row.data.first_name}</td>
+                      <td className="p-2">{row.data.last_name}</td>
                       <td className="p-2">{row.data.official_email}</td>
                       <td className="p-2">
                         <div className="space-y-1">
@@ -671,7 +705,7 @@ export default function ImportUsersModal({ isOpen, onClose, onImport, existingEm
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
                 This will import {skipInvalidRows ? validCount + warningCount : parsedRows.filter(r => r.status !== 'error').length} user(s) into the system.
-                {autoGeneratePasswords && ' Passwords will be auto-generated for users without passwords.'}
+                Each user will be created via the API; login passwords are assigned automatically.
               </AlertDescription>
             </Alert>
 

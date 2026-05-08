@@ -7,7 +7,11 @@
 
 import * as ExpenseModel from '../models/Expenses.js';
 import * as ExpenseDocumentsModel from '../models/ExpenseDocuments.js';
-import * as AuditLogsModel from '../models/AuditLogs.js';
+import { buildAuditFields } from '../utils/audit.js';
+import { canAccessAllRecords, isOwnedByUser } from '../utils/accessControl.js';
+import { withApprovalDefaults } from '../utils/approval.js';
+import { buildSoftDeleteFields } from '../utils/softDelete.js';
+import { logActivity } from '../utils/activityLogger.js';
 import log from '../utils/logger.js';
 
 /**
@@ -15,15 +19,31 @@ import log from '../utils/logger.js';
  * @param {string} expenseId - Expense ID
  * @returns {Promise<Object>} Expense record with documents
  */
-export const getExpenseById = async (expenseId) => {
+export const getExpenseById = async (expenseId, authUser = null, effectiveRole = 'User') => {
   try {
-    // TODO: Add business logic
-    // 1. Get expense from ExpenseModel
-    // 2. Get associated documents from ExpenseDocumentsModel
-    // 3. Return combined data
-    
+    if (!expenseId) {
+      throw new Error('expenseId is required');
+    }
+
     log.info('Getting expense:', expenseId);
-    throw new Error('Not implemented yet');
+    const expense = await ExpenseModel.getExpenseById(expenseId);
+    if (!expense) {
+      throw new Error('Expense not found');
+    }
+
+    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
+      const err = new Error('Forbidden');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const documentsFromTable = await ExpenseDocumentsModel.getDocumentsByExpenseId(expenseId);
+    const inlineDocuments = Array.isArray(expense.documents) ? expense.documents : [];
+    const documents = inlineDocuments.length > 0 ? inlineDocuments : documentsFromTable;
+    return {
+      ...expense,
+      documents,
+    };
   } catch (error) {
     log.error('Error getting expense:', error);
     throw error;
@@ -36,15 +56,14 @@ export const getExpenseById = async (expenseId) => {
  * @param {Object} options - Pagination options
  * @returns {Promise<Object>} List of expenses
  */
-export const getExpenses = async (filters = {}, options = {}) => {
+export const getExpenses = async (filters = {}, options = {}, authUser = null, effectiveRole = 'User') => {
   try {
-    // TODO: Add business logic
-    // 1. Apply filters and pagination
-    // 2. Call ExpenseModel.getAllExpenses or getExpensesByEmployeeId
-    // 3. Return formatted response
-    
     log.info('Getting expenses with filters:', filters);
-    throw new Error('Not implemented yet');
+    const rows = await ExpenseModel.getAllExpenses(filters, options);
+    if (!authUser || canAccessAllRecords(effectiveRole)) {
+      return rows;
+    }
+    return rows.filter((row) => isOwnedByUser(row, authUser));
   } catch (error) {
     log.error('Error getting expenses:', error);
     throw error;
@@ -57,18 +76,86 @@ export const getExpenses = async (filters = {}, options = {}) => {
  * @param {string} userId - User ID creating the expense (for audit)
  * @returns {Promise<Object>} Created expense record
  */
-export const createExpense = async (expenseData, userId) => {
+export const createExpense = async (expenseData, documents = [], authUser = null) => {
   try {
-    // TODO: Add business logic
-    // 1. Validate expense data
-    // 2. Calculate totals if needed
-    // 3. Call ExpenseModel.createExpense
-    // 4. Handle document uploads if provided
-    // 5. Create audit log entry
-    // 6. Return created expense
-    
-    log.info('Creating expense:', expenseData);
-    throw new Error('Not implemented yet');
+    if (!expenseData?.expenseHead) {
+      throw new Error('expenseHead is required');
+    }
+    if (!expenseData?.locationPurpose) {
+      throw new Error('locationPurpose is required');
+    }
+    if (!expenseData?.serviceProvider) {
+      throw new Error('serviceProvider is required');
+    }
+    if (!expenseData?.billNumber) {
+      throw new Error('billNumber is required');
+    }
+    if (!expenseData?.date) {
+      throw new Error('date is required');
+    }
+    if (Number.isNaN(Number(expenseData?.amount))) {
+      throw new Error('amount must be a number');
+    }
+    if (!expenseData?.employeeName) {
+      throw new Error('employeeName is required');
+    }
+
+    const auditFields = authUser ? buildAuditFields(authUser) : {};
+    const payload = {
+      ...withApprovalDefaults(expenseData),
+      ...auditFields,
+      documents: Array.isArray(documents) ? documents : [],
+      // Keep existing camelCase timestamp conventions in current models
+      createdAt: expenseData.createdAt || auditFields.created_at || undefined,
+      updatedAt: auditFields.updated_at || undefined,
+    };
+
+    log.info('Creating expense:', payload);
+    const expense = await ExpenseModel.createExpense(payload);
+    await logActivity({
+      actorEmployeeCode: authUser?.employeeCode || '',
+      actorName: authUser?.fullName || '',
+      actorRole: authUser?.role || '',
+      module: 'expenses',
+      actionType: 'CREATE',
+      targetEntity: 'expense',
+      targetId: expense.expenseId,
+    });
+
+    const mergedDocuments = [];
+    if (Array.isArray(documents)) {
+      mergedDocuments.push(...documents);
+    }
+    if (Array.isArray(expenseData.documents)) {
+      mergedDocuments.push(...expenseData.documents);
+    }
+    const savedDocuments = [];
+
+    for (const document of mergedDocuments) {
+      if (!document?.fileName || !document?.fileUrl) {
+        continue;
+      }
+
+      const saved = await ExpenseDocumentsModel.createDocument({
+        expenseId: expense.expenseId,
+        fileName: document.fileName,
+        fileUrl: document.fileUrl,
+        created_by_employee_code: auditFields.created_by_employee_code || '',
+        created_by_name: auditFields.created_by_name || '',
+        created_by_role: auditFields.created_by_role || '',
+        created_by_user_id: auditFields.created_by_user_id || '',
+        created_by_first_name: auditFields.created_by_first_name || '',
+        created_by_last_name: auditFields.created_by_last_name || '',
+        created_by: auditFields.created_by || '',
+      });
+
+      savedDocuments.push(saved);
+    }
+
+    return {
+      ...expense,
+      documents: savedDocuments,
+    };
   } catch (error) {
     log.error('Error creating expense:', error);
     throw error;
@@ -79,20 +166,44 @@ export const createExpense = async (expenseData, userId) => {
  * Update expense
  * @param {string} expenseId - Expense ID
  * @param {Object} updateData - Fields to update
- * @param {string} userId - User ID making the update (for audit)
  * @returns {Promise<Object>} Updated expense record
  */
-export const updateExpense = async (expenseId, updateData, userId) => {
+export const updateExpense = async (expenseId, updateData, authUser = null, effectiveRole = 'User') => {
   try {
-    // TODO: Add business logic
-    // 1. Validate expenseId and updateData
-    // 2. Check if expense can be updated (status checks)
-    // 3. Call ExpenseModel.updateExpense
-    // 4. Create audit log entry
-    // 5. Return updated expense
-    
+    if (!expenseId) {
+      throw new Error('expenseId is required');
+    }
+
+    if (updateData?.amount !== undefined && Number.isNaN(Number(updateData.amount))) {
+      throw new Error('amount must be a number');
+    }
+
+    const existing = await ExpenseModel.getExpenseById(expenseId);
+    if (!existing) {
+      throw new Error('Expense not found');
+    }
+    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
+      const err = new Error('Forbidden');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const updatePayload = {
+      ...updateData,
+    };
+
     log.info('Updating expense:', expenseId);
-    throw new Error('Not implemented yet');
+    const updated = await ExpenseModel.updateExpense(expenseId, updatePayload);
+    await logActivity({
+      actorEmployeeCode: authUser?.employeeCode || '',
+      actorName: authUser?.fullName || '',
+      actorRole: authUser?.role || '',
+      module: 'expenses',
+      actionType: 'UPDATE',
+      targetEntity: 'expense',
+      targetId: expenseId,
+    });
+    return updated;
   } catch (error) {
     log.error('Error updating expense:', error);
     throw error;
@@ -105,20 +216,65 @@ export const updateExpense = async (expenseId, updateData, userId) => {
  * @param {string} userId - User ID making the deletion (for audit)
  * @returns {Promise<Object>} Deletion result
  */
-export const deleteExpense = async (expenseId, userId) => {
+export const deleteExpense = async (expenseId, userId, authUser = null, effectiveRole = 'User') => {
   try {
-    // TODO: Add business logic
-    // 1. Validate expenseId
-    // 2. Check if expense can be deleted (status checks)
-    // 3. Delete associated documents
-    // 4. Call ExpenseModel.deleteExpense
-    // 5. Create audit log entry
-    // 6. Return deletion result
-    
+    if (!expenseId) {
+      throw new Error('expenseId is required');
+    }
+
+    const existing = await ExpenseModel.getExpenseById(expenseId);
+    if (!existing) {
+      throw new Error('Expense not found');
+    }
+    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
+      const err = new Error('Forbidden');
+      err.statusCode = 403;
+      throw err;
+    }
+
     log.info('Deleting expense:', expenseId);
-    throw new Error('Not implemented yet');
+    const documents = await ExpenseDocumentsModel.getDocumentsByExpenseId(expenseId);
+    for (const document of documents) {
+      await ExpenseDocumentsModel.deleteDocument(document.documentId);
+    }
+
+    const deleted = await ExpenseModel.updateExpense(expenseId, buildSoftDeleteFields(authUser));
+    await logActivity({
+      actorEmployeeCode: authUser?.employeeCode || '',
+      actorName: authUser?.fullName || '',
+      actorRole: authUser?.role || '',
+      module: 'expenses',
+      actionType: 'DELETE',
+      targetEntity: 'expense',
+      targetId: expenseId,
+    });
+    return deleted;
   } catch (error) {
     log.error('Error deleting expense:', error);
+    throw error;
+  }
+};
+
+export const getExpenseDocuments = async (expenseId, authUser = null, effectiveRole = 'User') => {
+  try {
+    if (!expenseId) {
+      throw new Error('expenseId is required');
+    }
+
+    const expense = await ExpenseModel.getExpenseById(expenseId);
+    if (!expense) {
+      throw new Error('Expense not found');
+    }
+    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
+      const err = new Error('Forbidden');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    log.info('Getting expense documents:', expenseId);
+    return await ExpenseDocumentsModel.getDocumentsByExpenseId(expenseId);
+  } catch (error) {
+    log.error('Error getting expense documents:', error);
     throw error;
   }
 };

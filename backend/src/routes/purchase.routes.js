@@ -6,12 +6,12 @@
 
 import express from 'express';
 import * as PurchaseController from '../controllers/purchase.controller.js';
+import { authenticateToken, authorize } from '../middleware/auth.middleware.js';
 // import { authenticate, authorize } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
-// All purchase routes (uncomment authenticate when auth is implemented)
-// router.use(authenticate);
+router.use(authenticateToken, authorize('purchases'));
 
 // Purchase CRUD operations
 router.get('/', PurchaseController.getPurchases);

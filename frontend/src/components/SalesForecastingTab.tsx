@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, Download, Upload, Search, Edit, Trash2, Eye, Settings } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
@@ -12,9 +12,12 @@ import SalesForecastingImportModal from './SalesForecastingImportModal';
 import CurrencyRateSettingsModal from './CurrencyRateSettingsModal';
 import type { UserRole } from '../App';
 import type { UserMaster } from './UserCreationTab';
+import { apiFetch } from '../services/api';
+import { canCreate, canDelete, canEdit, canExport, isAdmin, isDeveloper } from '../utils/accessControl';
 
 export interface SalesForecastRecord {
   id: string;
+  forecastId?: string;
   quotation_ref: string;
   quotation_date: string;
   valid_till: string;
@@ -187,7 +190,7 @@ export default function SalesForecastingTab({
   currentEmployeeCode,
   availableUsers,
 }: SalesForecastingTabProps) {
-  const [forecasts, setForecasts] = useState<SalesForecastRecord[]>(initialForecasts);
+  const [forecasts, setForecasts] = useState<SalesForecastRecord[]>([]);
   const [currencyRates, setCurrencyRates] = useState<CurrencyRates>(DEFAULT_CURRENCY_RATES);
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -201,24 +204,132 @@ export default function SalesForecastingTab({
   const [sortColumn, setSortColumn] = useState<string>('');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
-  const isAdmin = userRole === 'Admin';
+  const privileged = isAdmin(userRole) || isDeveloper(userRole);
+  const canCreateRecords = canCreate(userRole);
+  const canEditRecords = canEdit(userRole);
+  const canDeleteRecords = canDelete(userRole);
+  const canExportRecords = canExport(userRole);
 
-  const handleCreateForecast = (forecast: SalesForecastRecord) => {
-    setForecasts([...forecasts, forecast]);
-    setIsFormModalOpen(false);
-    toast.success('✅ Sales Forecast Record Created Successfully');
+  const mapApiForecastToRecord = (item: any): SalesForecastRecord => ({
+    id: item.forecastId,
+    forecastId: item.forecastId,
+    quotation_ref: item.quotationRef || '',
+    quotation_date: item.quotationDate || '',
+    valid_till: '',
+    decision_by_date: '',
+    end_customer: item.endCustomer || '',
+    enquiry_details: '',
+    principal: item.principal || '',
+    quoted_item_model: item.quotedItemModel || '',
+    quoted_item_description: '',
+    currency: item.currency || 'INR',
+    unit_price: Number(item.unitPrice || 0),
+    quantity: Number(item.qty || 0),
+    total_price: Number(item.totalPrice || 0),
+    conversion_to_inr: Number(item.conversionToINR || 0),
+    delivery_days: 0,
+    warranty_days: 0,
+    probability_percent: Number(item.probability || 0),
+    supporting_docs: '',
+    employee_code: '',
+    employee_name: item.employeeName || '',
+    created_at: item.createdAt || '',
+    updated_at: item.updatedAt || '',
+  });
+
+  const fetchForecasts = async () => {
+    const data = await apiFetch('/api/sales-forecasts');
+    setForecasts((data.data || []).map((item: any) => mapApiForecastToRecord(item)));
   };
 
-  const handleEditForecast = (forecast: SalesForecastRecord) => {
-    setForecasts(forecasts.map((f) => (f.id === forecast.id ? forecast : f)));
-    setEditingForecast(null);
-    toast.success('✅ Sales Forecast Record Updated Successfully');
+  useEffect(() => {
+    fetchForecasts().catch((error) => {
+      console.error('Sales forecast fetch error:', error);
+      toast.error('Failed to load sales forecasts');
+    });
+  }, []);
+
+  const buildPayload = (forecast: SalesForecastRecord) => ({
+    quotationRef: forecast.quotation_ref,
+    quotationDate: forecast.quotation_date,
+    endCustomer: forecast.end_customer,
+    principal: forecast.principal,
+    quotedItemModel: forecast.quoted_item_model,
+    currency: forecast.currency,
+    unitPrice: forecast.unit_price,
+    qty: forecast.quantity,
+    probability: forecast.probability_percent,
+    employeeName: forecast.employee_name,
+  });
+
+  const handleCreateForecast = async (forecast: SalesForecastRecord) => {
+    try {
+      const data = await apiFetch('/api/sales-forecasts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildPayload(forecast)),
+      });
+
+      if (!data.success) {
+        throw new Error('Create failed');
+      }
+
+      await fetchForecasts();
+      setIsFormModalOpen(false);
+      toast.success('✅ Sales Forecast Record Created Successfully');
+    } catch (error) {
+      console.error('Create sales forecast error:', error);
+      toast.error('Failed to create sales forecast');
+    }
   };
 
-  const handleDeleteForecast = (id: string) => {
+  const handleEditForecast = async (forecast: SalesForecastRecord) => {
+    try {
+      const forecastId = editingForecast?.forecastId || editingForecast?.id;
+      if (!forecastId) {
+        throw new Error('Missing forecastId');
+      }
+
+      const data = await apiFetch(`/api/sales-forecasts/${encodeURIComponent(forecastId)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildPayload(forecast)),
+      });
+
+      if (!data.success) {
+        throw new Error('Update failed');
+      }
+
+      await fetchForecasts();
+      setEditingForecast(null);
+      toast.success('✅ Sales Forecast Record Updated Successfully');
+    } catch (error) {
+      console.error('Update sales forecast error:', error);
+      toast.error('Failed to update sales forecast');
+    }
+  };
+
+  const handleDeleteForecast = async (forecastId: string) => {
     if (window.confirm('Are you sure you want to delete this forecast record?')) {
-      setForecasts(forecasts.filter((f) => f.id !== id));
-      toast.success('✅ Sales Forecast Record Deleted Successfully');
+      try {
+        const data = await apiFetch(`/api/sales-forecasts/${encodeURIComponent(forecastId)}`, {
+          method: 'DELETE',
+        });
+
+        if (!data.success) {
+          throw new Error('Delete failed');
+        }
+
+        await fetchForecasts();
+        toast.success('✅ Sales Forecast Record Deleted Successfully');
+      } catch (error) {
+        console.error('Delete sales forecast error:', error);
+        toast.error('Failed to delete sales forecast');
+      }
     }
   };
 
@@ -328,7 +439,7 @@ export default function SalesForecastingTab({
   };
 
   // Filter logic
-  let filteredForecasts = isAdmin
+  let filteredForecasts = privileged
     ? forecasts
     : forecasts.filter((f) => f.employee_code === currentEmployeeCode);
 
@@ -398,29 +509,29 @@ export default function SalesForecastingTab({
         <Card className="p-6">
         <div className="flex justify-end mb-6">
           <div className="flex gap-2">
-            <span>
+            {canEditRecords && <span>
                   <Button onClick={() => setIsRateSettingsOpen(true)} variant="outline" size="icon">
                     <Settings className="w-4 h-4" />
                   </Button>
-                </span>
-            <Button onClick={() => setIsImportModalOpen(true)} variant="outline" className="gap-2">
+                </span>}
+            {canCreateRecords && <Button onClick={() => setIsImportModalOpen(true)} variant="outline" className="gap-2">
               <Upload className="w-4 h-4" />
               Import from Excel
-            </Button>
-            <Button onClick={handleExportData} variant="outline" className="gap-2">
+            </Button>}
+            {canExportRecords && <Button onClick={handleExportData} variant="outline" className="gap-2">
               <Download className="w-4 h-4" />
               Export Data
-            </Button>
-            <Button onClick={() => setIsFormModalOpen(true)} className="gap-2 bg-[#007BFF] hover:bg-[#0056b3]">
+            </Button>}
+            {canCreateRecords && <Button onClick={() => setIsFormModalOpen(true)} className="gap-2 bg-[#007BFF] hover:bg-[#0056b3]">
               <Plus className="w-4 h-4" />
               Create New Quotation
-            </Button>
+            </Button>}
           </div>
         </div>
 
         {/* Filters */}
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
-          {isAdmin && (
+          {privileged && (
             <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
               <SelectTrigger>
                 <SelectValue placeholder="All Employees" />
@@ -576,7 +687,7 @@ export default function SalesForecastingTab({
                     <TableCell>{forecast.employee_name}</TableCell>
                     <TableCell>
                       <div className="flex gap-2 justify-end">
-                        <Tooltip>
+                        {canEditRecords && <Tooltip>
                           <TooltipTrigger asChild>
                             <span>
                               <Button
@@ -591,18 +702,18 @@ export default function SalesForecastingTab({
                             </span>
                           </TooltipTrigger>
                           <TooltipContent>Edit</TooltipContent>
-                        </Tooltip>
+                        </Tooltip>}
 
-                        <Tooltip>
+                        {canDeleteRecords && <Tooltip>
                           <TooltipTrigger asChild>
                             <span>
-                              <Button variant="ghost" size="icon" onClick={() => handleDeleteForecast(forecast.id)}>
+                              <Button variant="ghost" size="icon" onClick={() => handleDeleteForecast(forecast.forecastId || forecast.id)}>
                                 <Trash2 className="w-4 h-4 text-red-600" />
                               </Button>
                             </span>
                           </TooltipTrigger>
                           <TooltipContent>Delete</TooltipContent>
-                        </Tooltip>
+                        </Tooltip>}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -617,7 +728,7 @@ export default function SalesForecastingTab({
         </div>
       </Card>
 
-      <SalesForecastingFormModal
+      {canCreateRecords && <SalesForecastingFormModal
         isOpen={isFormModalOpen || editingForecast !== null}
         onClose={() => {
           setIsFormModalOpen(false);
@@ -628,24 +739,24 @@ export default function SalesForecastingTab({
         currentEmployeeCode={currentEmployeeCode}
         currentEmployeeName={currentUserName}
         availableUsers={availableUsers}
-        isAdmin={isAdmin}
+        isAdmin={privileged}
         currencyRates={currencyRates}
-      />
+      />}
 
-      <SalesForecastingImportModal
+      {canCreateRecords && <SalesForecastingImportModal
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onImport={handleImportForecasts}
         availableUsers={availableUsers}
         currencyRates={currencyRates}
-      />
+      />}
 
-      <CurrencyRateSettingsModal
+      {canEditRecords && <CurrencyRateSettingsModal
         isOpen={isRateSettingsOpen}
         onClose={() => setIsRateSettingsOpen(false)}
         currentRates={currencyRates}
         onSave={handleUpdateRates}
-      />
+      />}
       </div>
     </TooltipProvider>
   );

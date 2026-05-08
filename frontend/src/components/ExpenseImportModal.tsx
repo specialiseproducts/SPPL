@@ -149,21 +149,19 @@ export default function ExpenseImportModal({
       return;
     }
 
-    const expenses: ExpenseRecord[] = validRows.map((row, index) => ({
-      expense_id: (Date.now() + index).toString(),
-      employee_code: row.employee_code || currentEmployeeCode,
-      employee_name: row.employee_name || currentUserName,
-      expense_head: row.expense_head,
-      location_purpose: row.location_purpose,
-      service_provider: row.service_provider,
-      bill_number: row.bill_number,
+    const expenses: ExpenseRecord[] = validRows.map((row) => ({
+      expenseId: '',
+      expenseHead: row.expense_head,
+      locationPurpose: row.location_purpose,
+      serviceProvider: row.service_provider,
+      billNumber: row.bill_number,
       date: row.date,
       amount: parseFloat(row.amount),
-      supporting_file_url: '',
-      month: row.month,
-      year: row.year,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      employeeName: row.employee_name || currentUserName,
+      monthYear: `${months.indexOf(row.month) + 1}`.padStart(2, '0') + `-${row.year}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      documents: [],
     }));
 
     onImportSuccess(expenses);

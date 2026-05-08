@@ -14,9 +14,13 @@ interface DashboardProps {
   onLogout: () => void;
   initialModule?: string;
   onBackToDashboard?: () => void;
+  moduleAccess: Record<string, boolean>;
+  moduleRoles: Record<string, string>;
+  onProfile?: () => void;
+  onEmployeeCodeClick?: (employee: UserMaster) => void;
 }
 
-export default function Dashboard({ user, onLogout, initialModule, onBackToDashboard }: DashboardProps) {
+export default function Dashboard({ user, onLogout, initialModule, onBackToDashboard, moduleAccess, moduleRoles, onProfile, onEmployeeCodeClick }: DashboardProps) {
   // Map module IDs to ModuleName
   const getModuleName = (moduleId?: string): ModuleName => {
     const moduleMap: Record<string, ModuleName> = {
@@ -35,19 +39,37 @@ export default function Dashboard({ user, onLogout, initialModule, onBackToDashb
 
   const renderModuleContent = () => {
     if (activeModule === 'User Management') {
-      return <UserManagement onUsersChange={setAvailableUsers} />;
+      return <UserManagement onUsersChange={setAvailableUsers} onEmployeeCodeClick={onEmployeeCodeClick} />;
     }
 
     if (activeModule === 'Expenses') {
-      return <Expenses user={user} availableUsers={availableUsers} />;
+      return (
+        <Expenses
+          user={user}
+          availableUsers={availableUsers}
+          moduleRole={moduleRoles.expenses || user.role}
+        />
+      );
     }
 
     if (activeModule === 'Sales Forecasting') {
-      return <SalesForecasting user={user} availableUsers={availableUsers} />;
+      return (
+        <SalesForecasting
+          user={user}
+          availableUsers={availableUsers}
+          moduleRole={moduleRoles.salesForecasting || user.role}
+        />
+      );
     }
 
     if (activeModule === 'Purchases') {
-      return <Purchases user={user} availableUsers={availableUsers} />;
+      return (
+        <Purchases
+          user={user}
+          availableUsers={availableUsers}
+          moduleRole={moduleRoles.purchases || user.role}
+        />
+      );
     }
 
     return (
@@ -65,12 +87,12 @@ export default function Dashboard({ user, onLogout, initialModule, onBackToDashb
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <Navbar user={user} onLogout={onLogout} />
+      <Navbar user={user} onLogout={onLogout} onProfile={onProfile} />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
           activeModule={activeModule}
           onModuleChange={setActiveModule}
-          userRole={user.role}
+          moduleAccess={moduleAccess}
           onBackToDashboard={onBackToDashboard}
         />
         <main className="flex-1 overflow-y-auto p-6 bg-[#F8F9FA]">

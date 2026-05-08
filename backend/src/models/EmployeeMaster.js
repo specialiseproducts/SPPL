@@ -6,6 +6,7 @@
  */
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const TABLE_NAME = TABLES.EMPLOYEE_MASTER;
 
@@ -15,8 +16,34 @@ const TABLE_NAME = TABLES.EMPLOYEE_MASTER;
  * @returns {Promise<Object>} Employee record
  */
 export const getEmployeeById = async (employeeId) => {
-  // TODO: Implement DynamoDB getItem operation
-  // Use employeeId as the key
+  const result = await dynamoDB.get({
+    TableName: TABLE_NAME,
+    Key: { employeeId },
+  }).promise();
+
+  if (result.Item?.is_deleted) return null;
+  return result.Item || null;
+};
+
+/**
+ * Get employee by employeeCode
+ * @param {string} employeeCode
+ * @returns {Promise<Object|null>}
+ */
+export const getEmployeeByCode = async (employeeCode) => {
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+    FilterExpression: '#employeeCode = :employeeCode',
+    ExpressionAttributeNames: {
+      '#employeeCode': 'employeeCode',
+    },
+    ExpressionAttributeValues: {
+      ':employeeCode': employeeCode,
+    },
+  }).promise();
+
+  const item = (result.Items || []).find((row) => !row?.is_deleted);
+  return item || null;
 };
 
 /**
@@ -25,8 +52,24 @@ export const getEmployeeById = async (employeeId) => {
  * @returns {Promise<Object>} List of employees
  */
 export const getAllEmployees = async (options = {}) => {
-  // TODO: Implement DynamoDB scan or query operation
-  // Add pagination support
+  const params = {
+    TableName: TABLE_NAME,
+  };
+
+  if (options?.limit) {
+    params.Limit = options.limit;
+  }
+
+  if (options?.lastKey) {
+    params.ExclusiveStartKey = { employeeId: options.lastKey };
+  }
+
+  const result = await dynamoDB.scan(params).promise();
+
+  return {
+    items: (result.Items || []).filter((row) => !row?.is_deleted),
+    lastKey: result.LastEvaluatedKey?.employeeId || null,
+  };
 };
 
 /**
@@ -35,8 +78,27 @@ export const getAllEmployees = async (options = {}) => {
  * @returns {Promise<Object>} Created employee record
  */
 export const createEmployee = async (employeeData) => {
-  // TODO: Implement DynamoDB putItem operation
-  // Add timestamp fields (createdAt, updatedAt)
+  const timestamp = new Date().toISOString();
+  const employee = {
+    employeeId: `EMP#${uuidv4()}`,
+    ...employeeData,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    is_deleted: false,
+    approval_status: employeeData.approval_status || 'Pending',
+    approved_by: employeeData.approved_by || '',
+    approved_at: employeeData.approved_at || '',
+    rejected_by: employeeData.rejected_by || '',
+    rejected_at: employeeData.rejected_at || '',
+    approval_comments: employeeData.approval_comments || '',
+  };
+
+  await dynamoDB.put({
+    TableName: TABLE_NAME,
+    Item: employee,
+  }).promise();
+
+  return employee;
 };
 
 /**
@@ -46,8 +108,39 @@ export const createEmployee = async (employeeData) => {
  * @returns {Promise<Object>} Updated employee record
  */
 export const updateEmployee = async (employeeId, updateData) => {
-  // TODO: Implement DynamoDB updateItem operation
-  // Update updatedAt timestamp
+  const timestamp = new Date().toISOString();
+  const payload = {
+    ...updateData,
+    updatedAt: timestamp,
+  };
+
+  const entries = Object.entries(payload).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) {
+    return await getEmployeeById(employeeId);
+  }
+
+  const expressionAttributeNames = {};
+  const expressionAttributeValues = {};
+  const setExpressions = [];
+
+  entries.forEach(([key, value], index) => {
+    const keyToken = `#k${index}`;
+    const valueToken = `:v${index}`;
+    expressionAttributeNames[keyToken] = key;
+    expressionAttributeValues[valueToken] = value;
+    setExpressions.push(`${keyToken} = ${valueToken}`);
+  });
+
+  const result = await dynamoDB.update({
+    TableName: TABLE_NAME,
+    Key: { employeeId },
+    UpdateExpression: `SET ${setExpressions.join(', ')}`,
+    ExpressionAttributeNames: expressionAttributeNames,
+    ExpressionAttributeValues: expressionAttributeValues,
+    ReturnValues: 'ALL_NEW',
+  }).promise();
+
+  return result.Attributes;
 };
 
 /**
@@ -56,7 +149,7 @@ export const updateEmployee = async (employeeId, updateData) => {
  * @returns {Promise<Object>} Deletion result
  */
 export const deleteEmployee = async (employeeId) => {
-  // TODO: Implement DynamoDB deleteItem operation
+  return updateEmployee(employeeId, { is_deleted: true, deleted_at: new Date().toISOString() });
 };
 
 

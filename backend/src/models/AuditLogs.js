@@ -1,13 +1,13 @@
 /**
- * AuditLogs Model
- * 
- * Data access layer for AuditLogs DynamoDB table.
- * Handles audit trail and logging operations.
+ * ActivityLogs Model
+ *
+ * Data access layer for ActivityLogs DynamoDB table.
  */
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
+import { v4 as uuidv4 } from 'uuid';
 
-const TABLE_NAME = TABLES.AUDIT_LOGS;
+const TABLE_NAME = TABLES.ACTIVITY_LOGS;
 
 /**
  * Create audit log entry
@@ -15,10 +15,27 @@ const TABLE_NAME = TABLES.AUDIT_LOGS;
  * @returns {Promise<Object>} Created audit log record
  */
 export const createAuditLog = async (logData) => {
-  // TODO: Implement DynamoDB putItem operation
-  // Generate logId
-  // Add timestamp
-  // Store user action, resource affected, IP address, etc.
+  const item = {
+    activityLogId: `ACT#${uuidv4()}`,
+    actorEmployeeCode: logData.actorEmployeeCode || '',
+    actorName: logData.actorName || '',
+    actorRole: logData.actorRole || '',
+    module: logData.module || '',
+    actionType: logData.actionType || '',
+    targetEntity: logData.targetEntity || '',
+    targetId: logData.targetId || '',
+    oldValue: logData.oldValue || null,
+    newValue: logData.newValue || null,
+    metadata: logData.metadata || {},
+    createdAt: new Date().toISOString(),
+  };
+
+  await dynamoDB.put({
+    TableName: TABLE_NAME,
+    Item: item,
+  }).promise();
+
+  return item;
 };
 
 /**
@@ -28,8 +45,17 @@ export const createAuditLog = async (logData) => {
  * @returns {Promise<Array>} Array of audit log records
  */
 export const getAuditLogsByUserId = async (userId, options = {}) => {
-  // TODO: Implement DynamoDB query operation
-  // Query by userId with date range filtering
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+    FilterExpression: '#actorEmployeeCode = :userId',
+    ExpressionAttributeNames: {
+      '#actorEmployeeCode': 'actorEmployeeCode',
+    },
+    ExpressionAttributeValues: {
+      ':userId': userId,
+    },
+  }).promise();
+  return result.Items || [];
 };
 
 /**
@@ -40,8 +66,19 @@ export const getAuditLogsByUserId = async (userId, options = {}) => {
  * @returns {Promise<Array>} Array of audit log records
  */
 export const getAuditLogsByResource = async (resourceType, resourceId, options = {}) => {
-  // TODO: Implement DynamoDB query operation
-  // Query by resourceType and resourceId (GSI if needed)
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+    FilterExpression: '#targetEntity = :resourceType AND #targetId = :resourceId',
+    ExpressionAttributeNames: {
+      '#targetEntity': 'targetEntity',
+      '#targetId': 'targetId',
+    },
+    ExpressionAttributeValues: {
+      ':resourceType': resourceType,
+      ':resourceId': resourceId,
+    },
+  }).promise();
+  return result.Items || [];
 };
 
 /**
@@ -51,9 +88,14 @@ export const getAuditLogsByResource = async (resourceType, resourceId, options =
  * @returns {Promise<Object>} List of audit logs with pagination
  */
 export const getAuditLogs = async (filters = {}, options = {}) => {
-  // TODO: Implement DynamoDB scan/query with filters
-  // Support filtering by date range, action type, user, etc.
-  // Add pagination
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+    Limit: options?.limit || 200,
+  }).promise();
+  return {
+    items: result.Items || [],
+    lastKey: result.LastEvaluatedKey?.activityLogId || null,
+  };
 };
 
 

@@ -5,9 +5,10 @@ import type { UserMaster } from './UserCreationTab';
 interface SalesForecastingProps {
   user: User;
   availableUsers: UserMaster[];
+  moduleRole: User['role'];
 }
 
-export default function SalesForecasting({ user, availableUsers }: SalesForecastingProps) {
+export default function SalesForecasting({ user, availableUsers, moduleRole }: SalesForecastingProps) {
   return (
     <div className="space-y-6">
       <div>
@@ -18,9 +19,9 @@ export default function SalesForecasting({ user, availableUsers }: SalesForecast
       </div>
 
       <SalesForecastingTab
-        userRole={user.role}
+        userRole={moduleRole}
         currentUserName={user.name}
-        currentEmployeeCode={user.username}
+        currentEmployeeCode={user.employeeCode || user.id}
         availableUsers={availableUsers}
       />
     </div>

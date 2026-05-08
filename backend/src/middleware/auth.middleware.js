@@ -1,68 +1,141 @@
 /**
  * Authentication Middleware
- * 
- * Middleware for protecting routes that require authentication.
- * Currently a placeholder - implement JWT token verification here.
- * 
- * Usage:
- *   router.get('/protected-route', authenticate, controller.method);
  */
 
-/**
- * Authentication middleware
- * Validates JWT token from request headers
- * 
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next function
- */
-export const authenticate = async (req, res, next) => {
+import { verifyToken } from '../utils/jwt.js';
+import * as UserAccessControlModel from '../models/UserAccessControl.js';
+import * as EmployeeModel from '../models/EmployeeMaster.js';
+import { getEffectiveRole, hasModuleAccess } from '../utils/accessControl.js';
+import log from '../utils/logger.js';
+
+const DEFAULT_ACCESS_CONTROL = {
+  globalRole: 'User',
+  moduleOverrides: {},
+};
+
+export const authenticateToken = async (req, res, next) => {
   try {
-    // TODO: Implement JWT token verification
-    // 1. Extract token from Authorization header
-    // 2. Verify token using JWT_SECRET
-    // 3. Attach user info to req.user
-    // 4. Call next() if valid, or return 401 if invalid
-    
-    // Placeholder implementation
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    
-    if (!token) {
+    const authHeader = req.headers.authorization || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      log.warn('Missing token on protected route:', req.path);
       return res.status(401).json({
         success: false,
-        error: { message: 'Authentication token required' },
+        message: 'Unauthorized',
       });
     }
-    
-    // TODO: Verify token and set req.user
-    // For now, just pass through
+
+    const token = authHeader.replace('Bearer ', '').trim();
+    if (!token) {
+      log.warn('Empty bearer token on protected route:', req.path);
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized',
+      });
+    }
+
+    const decoded = verifyToken(token);
+    const employeeCode = decoded?.employeeCode;
+    const accessControl = employeeCode
+      ? await UserAccessControlModel.getByEmployeeCode(employeeCode)
+      : null;
+
+    const employee = employeeCode
+      ? await EmployeeModel.getEmployeeByCode(employeeCode)
+      : null;
+
+    req.user = {
+      ...decoded,
+      firstName: employee?.firstName || '',
+      lastName: employee?.lastName || '',
+      fullName:
+        `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() || '',
+      accessControl: accessControl || DEFAULT_ACCESS_CONTROL,
+      role: accessControl?.globalRole || 'User',
+    };
+    log.info('Token verified for employee:', employeeCode);
     next();
   } catch (error) {
-    next(error);
+    log.warn('Invalid token:', error?.message || error);
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized',
+    });
   }
 };
 
+// Backward-compatible alias used by existing comments/usages
+export const authenticate = authenticateToken;
+
 /**
- * Authorization middleware
- * Checks if user has required permissions
- * 
- * @param {Array} requiredPermissions - Array of permission strings required
+ * Attach req.user if bearer token exists, but never block the request.
+ * Useful for gradual auth rollout while preserving existing open routes.
  */
-export const authorize = (requiredPermissions = []) => {
+export const attachUserIfPresent = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      return next();
+    }
+
+    const token = authHeader.replace('Bearer ', '').trim();
+    if (!token) {
+      return next();
+    }
+
+    const decoded = verifyToken(token);
+    const employeeCode = decoded?.employeeCode;
+    const accessControl = employeeCode
+      ? await UserAccessControlModel.getByEmployeeCode(employeeCode)
+      : null;
+    const employee = employeeCode
+      ? await EmployeeModel.getEmployeeByCode(employeeCode)
+      : null;
+
+    req.user = {
+      ...decoded,
+      firstName: employee?.firstName || '',
+      lastName: employee?.lastName || '',
+      fullName:
+        `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() || '',
+      accessControl: accessControl || DEFAULT_ACCESS_CONTROL,
+      role: accessControl?.globalRole || 'User',
+    };
+    log.info('Optional token attached for employee:', employeeCode);
+  } catch (error) {
+    log.warn('Optional token parse failed:', error?.message || error);
+    // intentionally swallow to keep behavior backward-compatible
+  }
+
+  next();
+};
+
+export const authorize = (moduleName) => {
   return async (req, res, next) => {
     try {
-      // TODO: Implement permission checking
-      // 1. Get user from req.user (set by authenticate middleware)
-      // 2. Check user's permissions against requiredPermissions
-      // 3. Query AccessRules table if needed
-      // 4. Call next() if authorized, or return 403 if not
-      
-      // Placeholder implementation
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          message: 'Unauthorized',
+        });
+      }
+
+      if (!moduleName) {
+        return next();
+      }
+
+      const effectiveRole = getEffectiveRole(req.user.accessControl, moduleName);
+      req.effectiveRole = effectiveRole;
+
+      if (!hasModuleAccess(req.user.accessControl, moduleName)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Forbidden',
+        });
+      }
+
       next();
     } catch (error) {
       next(error);
     }
   };
 };
-
-

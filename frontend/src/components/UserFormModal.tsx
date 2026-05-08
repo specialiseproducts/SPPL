@@ -5,89 +5,117 @@ import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { toast } from 'sonner';
-import { Eye, EyeOff, RefreshCw } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from './ui/select';
 import type { UserMaster } from './UserCreationTab';
+
+export const CORPORATE_ID_VALUE = 'SpecialisePdt';
+
+export interface UserFormFiles {
+  documents?: File | null;
+  pastExperience?: File | null;
+  profilePhoto?: File | null;
+}
 
 interface UserFormModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (user: UserMaster) => void;
+  onSubmit: (user: UserMaster, files?: UserFormFiles) => Promise<void> | void;
   initialData?: UserMaster;
   isEdit?: boolean;
 }
 
-export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, isEdit }: UserFormModalProps) {
-  const [formData, setFormData] = useState<Partial<UserMaster>>({
-    employee_code: '',
-    name: '',
-    designation: '',
-    date_of_joining: '',
-    date_of_exit: '',
-    phone: '',
-    official_email: '',
-    personal_email: '',
-    aadhar_no: '',
-    pan_no: '',
-    account_no: '',
-    bank_name: '',
-    ifsc: '',
-    uan_no: '',
-    emergency_contact: '',
-    address: '',
-    password: '',
-  });
+const emptyForm: Partial<UserMaster> = {
+  employee_code: '',
+  name: '',
+  first_name: '',
+  last_name: '',
+  designation: '',
+  date_of_joining: '',
+  date_of_exit: '',
+  date_of_birth: '',
+  gender: '',
+  phone: '',
+  official_email: '',
+  personal_email: '',
+  aadhar_no: '',
+  pan_no: '',
+  account_no: '',
+  bank_name: '',
+  ifsc: '',
+  uan_no: '',
+  emergency_contact: '',
+  address: '',
+  permanent_address: '',
+  biometric_code: '',
+  biometric_password: '',
+  passport_no: '',
+  medi_claim_no: '',
+  location: '',
+};
 
-  const [showPassword, setShowPassword] = useState(false);
+export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, isEdit }: UserFormModalProps) {
+  const [formData, setFormData] = useState<Partial<UserMaster>>(emptyForm);
+  const [documentsFile, setDocumentsFile] = useState<File | null>(null);
+  const [pastExperienceFile, setPastExperienceFile] = useState<File | null>(null);
+  const [profilePhotoFile, setProfilePhotoFile] = useState<File | null>(null);
 
   useEffect(() => {
     if (initialData) {
-      setFormData(initialData);
-    } else {
+      const rawName = (initialData.name || '').trim();
+      const nameParts = rawName.split(/\s+/).filter(Boolean);
+      const derivedFirst = nameParts[0] || '';
+      const derivedLast = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
       setFormData({
-        employee_code: '',
-        name: '',
-        designation: '',
-        date_of_joining: '',
-        date_of_exit: '',
-        phone: '',
-        official_email: '',
-        personal_email: '',
-        aadhar_no: '',
-        pan_no: '',
-        account_no: '',
-        bank_name: '',
-        ifsc: '',
-        uan_no: '',
-        emergency_contact: '',
-        address: '',
-        password: '',
+        ...emptyForm,
+        ...initialData,
+        employee_code: initialData.employee_code || initialData.employeeCode || '',
+        first_name: initialData.first_name || initialData.firstName || derivedFirst,
+        last_name: initialData.last_name || initialData.lastName || derivedLast,
+        date_of_joining: initialData.date_of_joining || initialData.dateOfJoining || '',
+        date_of_exit: initialData.date_of_exit || initialData.dateOfExit || '',
+        date_of_birth: initialData.date_of_birth || initialData.dateOfBirth || '',
+        gender: initialData.gender || '',
+        phone: initialData.phone || initialData.phoneNumber || '',
+        official_email: initialData.official_email || initialData.officialEmail || '',
+        personal_email: initialData.personal_email || initialData.personalEmail || '',
+        aadhar_no: initialData.aadhar_no || initialData.aadharNo || '',
+        pan_no: initialData.pan_no || initialData.panNo || '',
+        account_no: initialData.account_no || initialData.accountNo || '',
+        bank_name: initialData.bank_name || initialData.bankName || '',
+        uan_no: initialData.uan_no || initialData.uanNumber || '',
+        emergency_contact: initialData.emergency_contact || initialData.emergencyContact || '',
+        permanent_address: initialData.permanent_address || initialData.permanentAddress || '',
+        biometric_code: initialData.biometric_code || initialData.biometricCode || '',
+        biometric_password: initialData.biometric_password || initialData.biometricPassword || '',
+        passport_no: initialData.passport_no || initialData.passportNo || '',
+        medi_claim_no: initialData.medi_claim_no || initialData.mediClaimNo || '',
+        location: initialData.location || '',
       });
+    } else {
+      setFormData({ ...emptyForm });
     }
+    setDocumentsFile(null);
+    setPastExperienceFile(null);
+    setProfilePhotoFile(null);
   }, [initialData, isOpen]);
 
-  const generatePassword = () => {
-    const length = 12;
-    const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-    let password = '';
-    password += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)];
-    password += 'abcdefghijklmnopqrstuvwxyz'[Math.floor(Math.random() * 26)];
-    password += '0123456789'[Math.floor(Math.random() * 10)];
-    for (let i = 3; i < length; i++) {
-      password += charset[Math.floor(Math.random() * charset.length)];
-    }
-    password = password.split('').sort(() => Math.random() - 0.5).join('');
-    setFormData(prev => ({ ...prev, password }));
-    toast.success('Password generated successfully');
-  };
-
   const validateForm = (): boolean => {
-    // Required fields
     if (!formData.employee_code?.trim()) {
       toast.error('Employee Code is required');
       return false;
     }
-    if (!formData.name?.trim()) {
-      toast.error('Name is required');
+    if (!formData.first_name?.trim()) {
+      toast.error('First Name is required');
+      return false;
+    }
+    if (!formData.last_name?.trim()) {
+      toast.error('Last Name is required');
       return false;
     }
     if (!formData.date_of_joining) {
@@ -102,12 +130,7 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
       toast.error('Official Email is required');
       return false;
     }
-    if (!isEdit && !formData.password?.trim()) {
-      toast.error('Password is required');
-      return false;
-    }
 
-    // Email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(formData.official_email)) {
       toast.error('Invalid official email format');
@@ -118,51 +141,26 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
       return false;
     }
 
-    // Aadhar validation (12 digits)
     if (formData.aadhar_no && !/^\d{12}$/.test(formData.aadhar_no)) {
       toast.error('Aadhar number must be exactly 12 digits');
       return false;
     }
 
-    // PAN validation
     if (formData.pan_no && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(formData.pan_no)) {
       toast.error('Invalid PAN format (e.g., ABCDE1234F)');
       return false;
     }
 
-    // IFSC validation
     if (formData.ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(formData.ifsc)) {
       toast.error('Invalid IFSC format (e.g., SBIN0001234)');
       return false;
     }
 
-    // Account number validation (9-18 digits)
     if (formData.account_no && !/^\d{9,18}$/.test(formData.account_no)) {
       toast.error('Account number must be 9-18 digits');
       return false;
     }
 
-    // Password validation (only for new users)
-    if (!isEdit && formData.password) {
-      if (formData.password.length < 8) {
-        toast.error('Password must be at least 8 characters');
-        return false;
-      }
-      if (!/[A-Z]/.test(formData.password)) {
-        toast.error('Password must contain at least one uppercase letter');
-        return false;
-      }
-      if (!/[a-z]/.test(formData.password)) {
-        toast.error('Password must contain at least one lowercase letter');
-        return false;
-      }
-      if (!/[0-9]/.test(formData.password)) {
-        toast.error('Password must contain at least one number');
-        return false;
-      }
-    }
-
-    // Date validation
     if (formData.date_of_exit && formData.date_of_joining) {
       const joining = new Date(formData.date_of_joining);
       const exit = new Date(formData.date_of_exit);
@@ -172,19 +170,55 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
       }
     }
 
+    if (formData.date_of_birth) {
+      const dob = new Date(formData.date_of_birth);
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      if (Number.isNaN(dob.getTime())) {
+        toast.error('Date of Birth must be a valid date');
+        return false;
+      }
+      if (dob > now) {
+        toast.error('Date of Birth cannot be in the future');
+        return false;
+      }
+    }
+
+    if (formData.gender && formData.gender !== 'Male' && formData.gender !== 'Female') {
+      toast.error('Gender must be Male or Female');
+      return false;
+    }
+
     return true;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!validateForm()) {
       return;
     }
 
-    onSubmit(formData as UserMaster);
-    toast.success(isEdit ? '✅ User Updated Successfully' : '✅ New User Created Successfully');
-    onClose();
+    try {
+      const payload: UserMaster = {
+        ...(formData as UserMaster),
+        name: `${formData.first_name || ''} ${formData.last_name || ''}`.trim(),
+        firstName: formData.first_name,
+        lastName: formData.last_name,
+        corporateId: CORPORATE_ID_VALUE,
+      };
+      await onSubmit(payload, {
+        documents: documentsFile,
+        pastExperience: pastExperienceFile,
+        profilePhoto: profilePhotoFile,
+      });
+      if (isEdit) {
+        toast.success('✅ User Updated Successfully');
+        onClose();
+      }
+    } catch (error) {
+      console.error('Submit Error:', error);
+    }
   };
 
   const updateField = (field: keyof UserMaster, value: string) => {
@@ -202,7 +236,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Employee Code */}
             <div className="space-y-2">
               <Label htmlFor="employee_code">Employee Code *</Label>
               <Input
@@ -216,20 +249,62 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* Name */}
             <div className="space-y-2">
-              <Label htmlFor="name">Name *</Label>
+              <Label htmlFor="corporate_id">Corporate ID</Label>
+              <Input id="corporate_id" value={CORPORATE_ID_VALUE} readOnly className="bg-muted" />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="first_name">First Name *</Label>
               <Input
-                id="name"
-                value={formData.name}
-                onChange={(e) => updateField('name', e.target.value)}
-                placeholder="Enter full name"
+                id="first_name"
+                value={formData.first_name}
+                onChange={(e) => updateField('first_name', e.target.value)}
+                placeholder="Enter first name"
                 required
-                maxLength={100}
+                maxLength={50}
               />
             </div>
 
-            {/* Designation */}
+            <div className="space-y-2">
+              <Label htmlFor="last_name">Last Name *</Label>
+              <Input
+                id="last_name"
+                value={formData.last_name}
+                onChange={(e) => updateField('last_name', e.target.value)}
+                placeholder="Enter last name"
+                required
+                maxLength={50}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="date_of_birth">Date of Birth</Label>
+              <Input
+                id="date_of_birth"
+                type="date"
+                value={formData.date_of_birth}
+                onChange={(e) => updateField('date_of_birth', e.target.value)}
+              />
+              <p className="text-xs text-gray-500">Format: DD-MM-YYYY</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Gender</Label>
+              <Select
+                value={formData.gender || undefined}
+                onValueChange={(v) => updateField('gender', v)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select gender" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Male">Male</SelectItem>
+                  <SelectItem value="Female">Female</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="designation">Designation</Label>
               <Input
@@ -241,7 +316,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* Date of Joining */}
             <div className="space-y-2">
               <Label htmlFor="date_of_joining">Date of Joining *</Label>
               <Input
@@ -254,7 +328,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               <p className="text-xs text-gray-500">Format: DD-MM-YYYY</p>
             </div>
 
-            {/* Date of Exit */}
             <div className="space-y-2">
               <Label htmlFor="date_of_exit">Date of Exit</Label>
               <Input
@@ -266,7 +339,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               <p className="text-xs text-gray-500">Optional - Format: DD-MM-YYYY</p>
             </div>
 
-            {/* Phone Number */}
             <div className="space-y-2">
               <Label htmlFor="phone">Phone Number *</Label>
               <Input
@@ -279,7 +351,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* Official Email */}
             <div className="space-y-2">
               <Label htmlFor="official_email">Official Email Address *</Label>
               <Input
@@ -292,7 +363,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* Personal Email */}
             <div className="space-y-2">
               <Label htmlFor="personal_email">Personal Email Address</Label>
               <Input
@@ -304,7 +374,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* Aadhar Card No */}
             <div className="space-y-2">
               <Label htmlFor="aadhar_no">Aadhar Card No.</Label>
               <Input
@@ -317,7 +386,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               <p className="text-xs text-gray-500">12 digits only</p>
             </div>
 
-            {/* PAN Card No */}
             <div className="space-y-2">
               <Label htmlFor="pan_no">PAN Card No.</Label>
               <Input
@@ -330,7 +398,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               <p className="text-xs text-gray-500">Format: ABCDE1234F</p>
             </div>
 
-            {/* Account No */}
             <div className="space-y-2">
               <Label htmlFor="account_no">Account No.</Label>
               <Input
@@ -342,7 +409,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* Bank Name */}
             <div className="space-y-2">
               <Label htmlFor="bank_name">Name of the Bank</Label>
               <Input
@@ -353,7 +419,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* IFSC Code */}
             <div className="space-y-2">
               <Label htmlFor="ifsc">IFSC Code</Label>
               <Input
@@ -366,7 +431,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               <p className="text-xs text-gray-500">Format: SBIN0001234</p>
             </div>
 
-            {/* UAN Number */}
             <div className="space-y-2">
               <Label htmlFor="uan_no">UAN Number</Label>
               <Input
@@ -377,7 +441,6 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
               />
             </div>
 
-            {/* Emergency Contact */}
             <div className="space-y-2">
               <Label htmlFor="emergency_contact">Emergency Contact Number</Label>
               <Input
@@ -388,11 +451,68 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
                 placeholder="+91-9123456789"
               />
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="biometric_code">Biometric Code</Label>
+              <Input
+                id="biometric_code"
+                value={formData.biometric_code}
+                onChange={(e) => updateField('biometric_code', e.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="biometric_password">Biometric Password</Label>
+              <Input
+                id="biometric_password"
+                type="text"
+                autoComplete="off"
+                value={formData.biometric_password}
+                onChange={(e) => updateField('biometric_password', e.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="passport_no">Passport No.</Label>
+              <Input
+                id="passport_no"
+                value={formData.passport_no}
+                onChange={(e) => updateField('passport_no', e.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="medi_claim_no">Medi Claim No.</Label>
+              <Input
+                id="medi_claim_no"
+                value={formData.medi_claim_no}
+                onChange={(e) => updateField('medi_claim_no', e.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Location</Label>
+              <Select
+                value={formData.location || undefined}
+                onValueChange={(v) => updateField('location', v)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Optional" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Office">Office</SelectItem>
+                  <SelectItem value="Factory">Factory</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
-          {/* Address - Full Width */}
           <div className="space-y-2">
-            <Label htmlFor="address">Address</Label>
+            <Label htmlFor="address">Current Address</Label>
             <Textarea
               id="address"
               value={formData.address}
@@ -402,43 +522,83 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
             />
           </div>
 
-          {/* Password */}
-          {!isEdit && (
+          <div className="space-y-2">
+            <Label htmlFor="permanent_address">Permanent Address</Label>
+            <Textarea
+              id="permanent_address"
+              value={formData.permanent_address}
+              onChange={(e) => updateField('permanent_address', e.target.value)}
+              placeholder="Enter permanent address"
+              rows={3}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="password">Password *</Label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Input
-                    id="password"
-                    type={showPassword ? 'text' : 'password'}
-                    value={formData.password}
-                    onChange={(e) => updateField('password', e.target.value)}
-                    placeholder="Enter password"
-                    required
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-0 top-0 h-full"
-                    onClick={() => setShowPassword(!showPassword)}
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={generatePassword}
-                  className="gap-2"
+              <Label htmlFor="documents">Documents (PDF, DOC, DOCX)</Label>
+              <Input
+                id="documents"
+                type="file"
+                accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                onChange={(e) => setDocumentsFile(e.target.files?.[0] || null)}
+              />
+              {isEdit && initialData?.documentsUrl && (
+                <a
+                  href={initialData.documentsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-[#007BFF] hover:underline"
                 >
-                  <RefreshCw className="h-4 w-4" />
-                  Generate
-                </Button>
-              </div>
-              <p className="text-xs text-gray-500">
-                Minimum 8 characters, at least one uppercase, one lowercase, one number.
-              </p>
+                  Current document
+                </a>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="past_experience">Past Experience (PDF, JPG, PNG, XLS, XLSX, DOC, DOCX)</Label>
+              <Input
+                id="past_experience"
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx,.doc,.docx"
+                onChange={(e) => setPastExperienceFile(e.target.files?.[0] || null)}
+              />
+              {isEdit && initialData?.pastExperienceUrl && (
+                <a
+                  href={initialData.pastExperienceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-[#007BFF] hover:underline"
+                >
+                  Current file
+                </a>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="profile_photo">Profile Photo (JPG, PNG)</Label>
+              <Input
+                id="profile_photo"
+                type="file"
+                accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                onChange={(e) => setProfilePhotoFile(e.target.files?.[0] || null)}
+              />
+              {isEdit && initialData?.profilePhotoUrl && (
+                <a
+                  href={initialData.profilePhotoUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-[#007BFF] hover:underline"
+                >
+                  Current photo
+                </a>
+              )}
+            </div>
+          </div>
+
+          {isEdit && formData.password && (
+            <div className="space-y-2">
+              <Label htmlFor="password_display">Login password (auto-generated)</Label>
+              <Input id="password_display" value={formData.password} readOnly className="bg-muted font-mono text-sm" />
             </div>
           )}
 

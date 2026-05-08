@@ -1,11 +1,32 @@
 /**
  * Employee Controller
- * 
+ *
  * Handles HTTP requests/responses for employee management endpoints.
  */
 
 import * as EmployeeService from '../services/employee.service.js';
 import log from '../utils/logger.js';
+
+function sanitizeEmployee(row) {
+  if (!row || typeof row !== 'object') return row;
+  const clone = { ...row };
+  delete clone.password;
+  delete clone.temporaryPassword;
+  return clone;
+}
+
+function mergeUploadedFileUrls(files, target) {
+  if (!files) return;
+  if (files.documents?.[0]?.location) {
+    target.documentsUrl = files.documents[0].location;
+  }
+  if (files.pastExperience?.[0]?.location) {
+    target.pastExperienceUrl = files.pastExperience[0].location;
+  }
+  if (files.profilePhoto?.[0]?.location) {
+    target.profilePhotoUrl = files.profilePhoto[0].location;
+  }
+}
 
 /**
  * Get employee by ID
@@ -14,11 +35,11 @@ import log from '../utils/logger.js';
 export const getEmployeeById = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const employee = await EmployeeService.getEmployeeById(id);
+    const employee = await EmployeeService.getEmployeeById(id, req.user, req.effectiveRole);
 
     res.status(200).json({
       success: true,
-      data: employee,
+      data: sanitizeEmployee(employee),
     });
   } catch (error) {
     log.error('Get employee controller error:', error);
@@ -32,17 +53,21 @@ export const getEmployeeById = async (req, res, next) => {
  */
 export const getAllEmployees = async (req, res, next) => {
   try {
-    const filters = req.query; // Extract filters from query params
+    const filters = req.query;
     const options = {
-      limit: parseInt(req.query.limit) || 50,
+      limit: parseInt(req.query.limit, 10) || 50,
       lastKey: req.query.lastKey,
     };
 
-    const result = await EmployeeService.getAllEmployees(filters, options);
+    const result = await EmployeeService.getAllEmployees(filters, options, req.user, req.effectiveRole);
+    const sanitizedItems = (result?.items || []).map(sanitizeEmployee);
 
     res.status(200).json({
       success: true,
-      data: result,
+      data: {
+        ...result,
+        items: sanitizedItems,
+      },
     });
   } catch (error) {
     log.error('Get all employees controller error:', error);
@@ -52,18 +77,19 @@ export const getAllEmployees = async (req, res, next) => {
 
 /**
  * Create new employee
- * POST /api/employees
+ * POST /api/employees (multipart or JSON)
  */
 export const createEmployee = async (req, res, next) => {
   try {
-    const employeeData = req.body;
-    const userId = req.user?.id; // From auth middleware
+    const employeeData = { ...req.body };
+    mergeUploadedFileUrls(req.files, employeeData);
 
-    const employee = await EmployeeService.createEmployee(employeeData, userId);
+    const authUser = req.user;
+    const employee = await EmployeeService.createEmployee(employeeData, authUser);
 
     res.status(201).json({
       success: true,
-      data: employee,
+      data: sanitizeEmployee(employee),
     });
   } catch (error) {
     log.error('Create employee controller error:', error);
@@ -78,14 +104,15 @@ export const createEmployee = async (req, res, next) => {
 export const updateEmployee = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
-    const userId = req.user?.id; // From auth middleware
+    const updateData = { ...req.body };
+    mergeUploadedFileUrls(req.files, updateData);
 
-    const employee = await EmployeeService.updateEmployee(id, updateData, userId);
+    const userId = req.user?.id;
+    const employee = await EmployeeService.updateEmployee(id, updateData, userId, req.user, req.effectiveRole);
 
     res.status(200).json({
       success: true,
-      data: employee,
+      data: sanitizeEmployee(employee),
     });
   } catch (error) {
     log.error('Update employee controller error:', error);
@@ -100,9 +127,9 @@ export const updateEmployee = async (req, res, next) => {
 export const deleteEmployee = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user?.id; // From auth middleware
+    const userId = req.user?.id;
 
-    await EmployeeService.deleteEmployee(id, userId);
+    await EmployeeService.deleteEmployee(id, userId, req.user, req.effectiveRole);
 
     res.status(200).json({
       success: true,
@@ -113,5 +140,3 @@ export const deleteEmployee = async (req, res, next) => {
     next(error);
   }
 };
-
-

@@ -15,7 +15,13 @@ const TABLE_NAME = TABLES.PURCHASE_HEADERS;
  * @returns {Promise<Object>} Purchase header record
  */
 export const getPurchaseHeaderById = async (purchaseHeaderId) => {
-  // TODO: Implement DynamoDB getItem operation
+  const result = await dynamoDB.get({
+    TableName: TABLE_NAME,
+    Key: { purchaseHeaderId },
+  }).promise();
+
+  if (result.Item?.is_deleted) return null;
+  return result.Item || null;
 };
 
 /**
@@ -25,9 +31,14 @@ export const getPurchaseHeaderById = async (purchaseHeaderId) => {
  * @returns {Promise<Object>} List of purchase headers
  */
 export const getPurchaseHeaders = async (filters = {}, options = {}) => {
-  // TODO: Implement DynamoDB query/scan with filters
-  // Support filtering by supplier, date range, status
-  // Add pagination
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+  }).promise();
+
+  return {
+    items: (result.Items || []).filter((row) => !row?.is_deleted),
+    lastKey: result.LastEvaluatedKey?.purchaseHeaderId || null,
+  };
 };
 
 /**
@@ -36,9 +47,48 @@ export const getPurchaseHeaders = async (filters = {}, options = {}) => {
  * @returns {Promise<Object>} Created purchase header record
  */
 export const createPurchaseHeader = async (purchaseData) => {
-  // TODO: Implement DynamoDB putItem operation
-  // Generate purchaseHeaderId
-  // Add timestamps
+  const timestamp = new Date().toISOString();
+  const resolvedHeaderId = purchaseData.id || purchaseData.purchaseHeaderId;
+  if (!resolvedHeaderId) {
+    throw new Error('Missing header id');
+  }
+
+  const header = {
+    ...purchaseData,
+    id: purchaseData.id || String(resolvedHeaderId),
+    purchaseHeaderId: String(resolvedHeaderId),
+    recordType: purchaseData.recordType || '',
+    poNumber: purchaseData.poNumber || '',
+    date: purchaseData.date || '',
+    principal: purchaseData.principal || '',
+    invoiceNumber: purchaseData.invoiceNumber || '',
+    invoiceDate: purchaseData.invoiceDate || '',
+    boeNumber: purchaseData.boeNumber || '',
+    boeDate: purchaseData.boeDate || '',
+    createdAt: purchaseData.createdAt || timestamp,
+    updatedAt: timestamp,
+    is_deleted: false,
+    approval_status: purchaseData.approval_status || 'Pending',
+    approved_by: purchaseData.approved_by || '',
+    approved_at: purchaseData.approved_at || '',
+    rejected_by: purchaseData.rejected_by || '',
+    rejected_at: purchaseData.rejected_at || '',
+    approval_comments: purchaseData.approval_comments || '',
+  };
+
+  const params = {
+    TableName: TABLES.PURCHASE_HEADERS,
+    Item: {
+      purchaseHeaderId: String(header.id),
+      ...header,
+    },
+  };
+
+  console.log('Saving to DynamoDB:', params);
+
+  await dynamoDB.put(params).promise();
+
+  return params.Item;
 };
 
 /**
@@ -60,5 +110,12 @@ export const deletePurchaseHeader = async (purchaseHeaderId) => {
   // TODO: Implement DynamoDB deleteItem operation
   // Consider cascade delete of line items
 };
+
+export const createHeader = createPurchaseHeader;
+export const getAllHeaders = async () => {
+  const result = await getPurchaseHeaders();
+  return result.items;
+};
+export const getHeaderById = getPurchaseHeaderById;
 
 

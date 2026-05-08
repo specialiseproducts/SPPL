@@ -6,6 +6,7 @@
  */
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const TABLE_NAME = TABLES.EXPENSE_DOCUMENTS;
 
@@ -15,7 +16,12 @@ const TABLE_NAME = TABLES.EXPENSE_DOCUMENTS;
  * @returns {Promise<Object>} Document record
  */
 export const getDocumentById = async (documentId) => {
-  // TODO: Implement DynamoDB getItem operation
+  const result = await dynamoDB.get({
+    TableName: TABLE_NAME,
+    Key: { documentId },
+  }).promise();
+
+  return result.Item || null;
 };
 
 /**
@@ -24,8 +30,18 @@ export const getDocumentById = async (documentId) => {
  * @returns {Promise<Array>} Array of document records
  */
 export const getDocumentsByExpenseId = async (expenseId) => {
-  // TODO: Implement DynamoDB query operation
-  // Query by expenseId (GSI if needed)
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+    FilterExpression: '#expenseId = :expenseId',
+    ExpressionAttributeNames: {
+      '#expenseId': 'expenseId',
+    },
+    ExpressionAttributeValues: {
+      ':expenseId': expenseId,
+    },
+  }).promise();
+
+  return result.Items || [];
 };
 
 /**
@@ -34,8 +50,27 @@ export const getDocumentsByExpenseId = async (expenseId) => {
  * @returns {Promise<Object>} Created document record
  */
 export const createDocument = async (documentData) => {
-  // TODO: Implement DynamoDB putItem operation
-  // Store S3 URL or file reference
+  const item = {
+    documentId: `DOC#${uuidv4()}`,
+    expenseId: documentData.expenseId,
+    fileName: documentData.fileName,
+    fileUrl: documentData.fileUrl,
+    created_by_employee_code: documentData.created_by_employee_code || '',
+    created_by_name: documentData.created_by_name || '',
+    created_by_role: documentData.created_by_role || '',
+    created_by_user_id: documentData.created_by_user_id || '',
+    created_by_first_name: documentData.created_by_first_name || '',
+    created_by_last_name: documentData.created_by_last_name || '',
+    created_by: documentData.created_by || '',
+    uploadedAt: new Date().toISOString(),
+  };
+
+  await dynamoDB.put({
+    TableName: TABLE_NAME,
+    Item: item,
+  }).promise();
+
+  return item;
 };
 
 /**
@@ -44,8 +79,15 @@ export const createDocument = async (documentData) => {
  * @returns {Promise<Object>} Deletion result
  */
 export const deleteDocument = async (documentId) => {
-  // TODO: Implement DynamoDB deleteItem operation
-  // Also delete from S3 if applicable
+  await dynamoDB.delete({
+    TableName: TABLE_NAME,
+    Key: { documentId },
+  }).promise();
+
+  return {
+    success: true,
+    message: 'Document deleted successfully',
+  };
 };
 
 

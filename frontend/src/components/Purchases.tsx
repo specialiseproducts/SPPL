@@ -5,9 +5,10 @@ import type { UserMaster } from './UserCreationTab';
 interface PurchasesProps {
   user: User;
   availableUsers: UserMaster[];
+  moduleRole: User['role'];
 }
 
-export default function Purchases({ user, availableUsers }: PurchasesProps) {
+export default function Purchases({ user, availableUsers, moduleRole }: PurchasesProps) {
   return (
     <div className="space-y-6">
       <div>
@@ -18,9 +19,9 @@ export default function Purchases({ user, availableUsers }: PurchasesProps) {
       </div>
 
       <PurchasesTab
-        userRole={user.role}
+        userRole={moduleRole}
         currentUserName={user.name}
-        currentEmployeeCode={user.id}
+        currentEmployeeCode={user.employeeCode || user.id}
         availableUsers={availableUsers}
       />
     </div>

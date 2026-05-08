@@ -8,6 +8,9 @@
 import * as PurchaseHeadersModel from '../models/PurchaseHeaders.js';
 import * as PurchaseLineItemsModel from '../models/PurchaseLineItems.js';
 import * as AuditLogsModel from '../models/AuditLogs.js';
+import { buildAuditFields } from '../utils/audit.js';
+import { canAccessAllRecords, isOwnedByUser } from '../utils/accessControl.js';
+import { v4 as uuidv4 } from 'uuid';
 import log from '../utils/logger.js';
 
 /**
@@ -15,16 +18,40 @@ import log from '../utils/logger.js';
  * @param {string} purchaseHeaderId - Purchase header ID
  * @returns {Promise<Object>} Purchase header with line items
  */
-export const getPurchaseById = async (purchaseHeaderId) => {
+export const getPurchaseById = async (purchaseHeaderId, authUser = null, effectiveRole = 'User') => {
   try {
-    // TODO: Add business logic
-    // 1. Get purchase header from PurchaseHeadersModel
-    // 2. Get line items from PurchaseLineItemsModel
-    // 3. Calculate totals
-    // 4. Return combined data
-    
+    if (!purchaseHeaderId) {
+      throw new Error('purchaseHeaderId is required');
+    }
+
     log.info('Getting purchase:', purchaseHeaderId);
-    throw new Error('Not implemented yet');
+    const header = await PurchaseHeadersModel.getHeaderById(purchaseHeaderId);
+    if (!header) {
+      throw new Error('Purchase not found');
+    }
+    const lineItems = await PurchaseLineItemsModel.getLineItemsByPurchaseHeaderId(purchaseHeaderId);
+
+    const result = {
+      header,
+      lineItems,
+    };
+
+    if (!authUser || canAccessAllRecords(effectiveRole)) {
+      return result;
+    }
+
+    const ownedLineItems = lineItems.filter((item) => isOwnedByUser(item, authUser));
+    const headerOwned = isOwnedByUser(header, authUser);
+    if (!headerOwned && ownedLineItems.length === 0) {
+      const err = new Error('Forbidden');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    return {
+      header,
+      lineItems: ownedLineItems,
+    };
   } catch (error) {
     log.error('Error getting purchase:', error);
     throw error;
@@ -37,15 +64,39 @@ export const getPurchaseById = async (purchaseHeaderId) => {
  * @param {Object} options - Pagination options
  * @returns {Promise<Object>} List of purchases
  */
-export const getPurchases = async (filters = {}, options = {}) => {
+export const getPurchases = async (filters = {}, options = {}, authUser = null, effectiveRole = 'User') => {
   try {
-    // TODO: Add business logic
-    // 1. Apply filters and pagination
-    // 2. Call PurchaseHeadersModel.getPurchaseHeaders
-    // 3. Return formatted response
-    
     log.info('Getting purchases with filters:', filters);
-    throw new Error('Not implemented yet');
+    const headers = await PurchaseHeadersModel.getAllHeaders();
+    const purchases = await Promise.all(
+      headers.map(async (header) => {
+        const lineItems = await PurchaseLineItemsModel.getLineItemsByPurchaseHeaderId(header.purchaseHeaderId);
+        return {
+          header,
+          lineItems,
+        };
+      })
+    );
+
+    if (!authUser || canAccessAllRecords(effectiveRole)) {
+      return purchases;
+    }
+
+    const filtered = purchases
+      .map((purchase) => {
+        const ownedHeader = isOwnedByUser(purchase.header, authUser);
+        const ownedLineItems = purchase.lineItems.filter((item) => isOwnedByUser(item, authUser));
+        if (!ownedHeader && ownedLineItems.length === 0) {
+          return null;
+        }
+        return {
+          ...purchase,
+          lineItems: ownedLineItems,
+        };
+      })
+      .filter(Boolean);
+
+    return filtered;
   } catch (error) {
     log.error('Error getting purchases:', error);
     throw error;
@@ -59,18 +110,58 @@ export const getPurchases = async (filters = {}, options = {}) => {
  * @param {string} userId - User ID creating the purchase (for audit)
  * @returns {Promise<Object>} Created purchase with line items
  */
-export const createPurchase = async (purchaseData, lineItems = [], userId) => {
+export const createPurchase = async (purchaseData, lineItems = [], authUser) => {
   try {
-    // TODO: Add business logic
-    // 1. Validate purchase data and line items
-    // 2. Calculate totals from line items
-    // 3. Create purchase header (PurchaseHeadersModel.createPurchaseHeader)
-    // 4. Batch create line items (PurchaseLineItemsModel.batchCreateLineItems)
-    // 5. Create audit log entry
-    // 6. Return created purchase with line items
-    
+    if (!purchaseData) {
+      throw new Error('purchaseData is required');
+    }
+    if (!Array.isArray(lineItems) || lineItems.length === 0) {
+      throw new Error('lineItems are required');
+    }
+
     log.info('Creating purchase:', purchaseData);
-    throw new Error('Not implemented yet');
+    const timestamp = new Date().toISOString();
+    const purchaseHeaderId = `PH#${uuidv4()}`;
+    const auditFields = authUser ? buildAuditFields(authUser) : {};
+
+    const header = await PurchaseHeadersModel.createHeader({
+      purchaseHeaderId,
+      recordType: purchaseData.record_type || purchaseData.recordType || '',
+      poNumber: purchaseData.po_number || purchaseData.poNumber || '',
+      date: purchaseData.date || '',
+      principal: purchaseData.principal || '',
+      invoiceNumber: purchaseData.invoice_number || purchaseData.invoiceNumber || '',
+      invoiceDate: purchaseData.invoice_date || purchaseData.invoiceDate || '',
+      boeNumber: purchaseData.boe_number || purchaseData.boeNumber || '',
+      boeDate: purchaseData.boe_date || purchaseData.boeDate || '',
+      ...auditFields,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    const normalizedLineItems = lineItems.map((item) => ({
+      purchaseHeaderId,
+      itemDetails: item.item_details || item.itemDetails || '',
+      partNumber: item.part_number || item.partNumber || '',
+      unitPrice: Number(item.unit_price ?? item.unitPrice ?? 0),
+      quantity: Number(item.qty ?? item.quantity ?? 0),
+      freightCharges: Number(item.freight_charges_international ?? item.freightCharges ?? 0),
+      gst: Number(item.gst_on_import_cgst_sgst_igst_local ?? item.gst ?? 0),
+      totalLandedPrice: Number(item.total_landed_price ?? item.totalLandedPrice ?? 0),
+      priceToSPPL: Number(item.price_to_sppl ?? item.priceToSPPL ?? 0),
+      gmPercentage: Number(item.gm_percentage ?? item.gmPercentage ?? 0),
+      margin: Number(item.margin ?? 0),
+      ...auditFields,
+      createdAt: item.created_at || timestamp,
+      updatedAt: timestamp,
+    }));
+
+    const createdLineItems = await PurchaseLineItemsModel.createLineItems(normalizedLineItems);
+
+    return {
+      header,
+      lineItems: createdLineItems,
+    };
   } catch (error) {
     log.error('Error creating purchase:', error);
     throw error;

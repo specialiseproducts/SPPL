@@ -6,6 +6,7 @@
  */
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const TABLE_NAME = TABLES.EXPENSES;
 
@@ -15,7 +16,13 @@ const TABLE_NAME = TABLES.EXPENSES;
  * @returns {Promise<Object>} Expense record
  */
 export const getExpenseById = async (expenseId) => {
-  // TODO: Implement DynamoDB getItem operation
+  const result = await dynamoDB.get({
+    TableName: TABLE_NAME,
+    Key: { expenseId },
+  }).promise();
+
+  if (result.Item?.is_deleted) return null;
+  return result.Item || null;
 };
 
 /**
@@ -25,8 +32,18 @@ export const getExpenseById = async (expenseId) => {
  * @returns {Promise<Array>} Array of expenses
  */
 export const getExpensesByEmployeeId = async (employeeId, options = {}) => {
-  // TODO: Implement DynamoDB query operation
-  // Support filtering by date range, status, etc.
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+    FilterExpression: '#employeeName = :employeeName',
+    ExpressionAttributeNames: {
+      '#employeeName': 'employeeName',
+    },
+    ExpressionAttributeValues: {
+      ':employeeName': employeeId,
+    },
+  }).promise();
+
+  return (result.Items || []).filter((row) => !row?.is_deleted);
 };
 
 /**
@@ -36,8 +53,11 @@ export const getExpensesByEmployeeId = async (employeeId, options = {}) => {
  * @returns {Promise<Object>} List of expenses with pagination info
  */
 export const getAllExpenses = async (filters = {}, options = {}) => {
-  // TODO: Implement DynamoDB scan/query with filters
-  // Add pagination support
+  const result = await dynamoDB.scan({
+    TableName: TABLE_NAME,
+  }).promise();
+
+  return (result.Items || []).filter((row) => !row?.is_deleted);
 };
 
 /**
@@ -46,8 +66,60 @@ export const getAllExpenses = async (filters = {}, options = {}) => {
  * @returns {Promise<Object>} Created expense record
  */
 export const createExpense = async (expenseData) => {
-  // TODO: Implement DynamoDB putItem operation
-  // Add timestamps and generate expenseId
+  const timestamp = new Date().toISOString();
+  const monthYear = expenseData.monthYear || (() => {
+    const dateObj = new Date(expenseData.date);
+    const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+    const year = String(dateObj.getUTCFullYear());
+    return `${month}-${year}`;
+  })();
+
+  const documents = Array.isArray(expenseData.documents)
+    ? expenseData.documents
+        .filter((document) => document?.fileName && document?.fileUrl)
+        .map((document) => ({
+          fileName: document.fileName,
+          fileUrl: document.fileUrl,
+        }))
+    : [];
+
+  const item = {
+    expenseId: `EXP#${uuidv4()}`,
+    expenseHead: expenseData.expenseHead,
+    locationPurpose: expenseData.locationPurpose,
+    serviceProvider: expenseData.serviceProvider,
+    billNumber: expenseData.billNumber,
+    date: expenseData.date,
+    amount: Number(expenseData.amount),
+    employeeName: expenseData.employeeName,
+    monthYear,
+    documents,
+    created_by_employee_code: expenseData.created_by_employee_code || '',
+    created_by_name: expenseData.created_by_name || '',
+    created_by_role: expenseData.created_by_role || '',
+    created_by_user_id: expenseData.created_by_user_id || '',
+    created_by_first_name: expenseData.created_by_first_name || '',
+    created_by_last_name: expenseData.created_by_last_name || '',
+    created_by: expenseData.created_by || '',
+    created_at: expenseData.created_at || timestamp,
+    updated_at: expenseData.updated_at || timestamp,
+    createdAt: expenseData.createdAt || timestamp,
+    updatedAt: expenseData.updatedAt || timestamp,
+    is_deleted: false,
+    approval_status: expenseData.approval_status || 'Pending',
+    approved_by: expenseData.approved_by || '',
+    approved_at: expenseData.approved_at || '',
+    rejected_by: expenseData.rejected_by || '',
+    rejected_at: expenseData.rejected_at || '',
+    approval_comments: expenseData.approval_comments || '',
+  };
+
+  await dynamoDB.put({
+    TableName: TABLE_NAME,
+    Item: item,
+  }).promise();
+
+  return item;
 };
 
 /**
@@ -57,7 +129,54 @@ export const createExpense = async (expenseData) => {
  * @returns {Promise<Object>} Updated expense record
  */
 export const updateExpense = async (expenseId, updateData) => {
-  // TODO: Implement DynamoDB updateItem operation
+  const payload = {
+    ...updateData,
+  };
+
+  if (payload.amount !== undefined) {
+    payload.amount = Number(payload.amount);
+  }
+
+  if (payload.date) {
+    const dateObj = new Date(payload.date);
+    const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+    const year = String(dateObj.getUTCFullYear());
+    payload.monthYear = `${month}-${year}`;
+  }
+
+  const cleanPayload = Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== undefined)
+  );
+
+  let updateExpression = 'set ';
+  const ExpressionAttributeNames = {};
+  const ExpressionAttributeValues = {};
+
+  const keys = Object.keys(cleanPayload);
+
+  keys.forEach((key, index) => {
+    updateExpression += `#${key} = :${key}`;
+    if (index < keys.length - 1) updateExpression += ', ';
+
+    ExpressionAttributeNames[`#${key}`] = key;
+    ExpressionAttributeValues[`:${key}`] = cleanPayload[key];
+  });
+
+  // always update timestamp
+  updateExpression += `${keys.length > 0 ? ', ' : ''}#updatedAt = :updatedAt`;
+  ExpressionAttributeNames['#updatedAt'] = 'updatedAt';
+  ExpressionAttributeValues[':updatedAt'] = new Date().toISOString();
+
+  const result = await dynamoDB.update({
+    TableName: TABLES.EXPENSES,
+    Key: { expenseId },
+    UpdateExpression: updateExpression,
+    ExpressionAttributeNames,
+    ExpressionAttributeValues,
+    ReturnValues: 'ALL_NEW',
+  }).promise();
+
+  return result.Attributes;
 };
 
 /**
@@ -66,7 +185,7 @@ export const updateExpense = async (expenseId, updateData) => {
  * @returns {Promise<Object>} Deletion result
  */
 export const deleteExpense = async (expenseId) => {
-  // TODO: Implement DynamoDB deleteItem operation
+  return updateExpense(expenseId, { is_deleted: true, deleted_at: new Date().toISOString() });
 };
 
 

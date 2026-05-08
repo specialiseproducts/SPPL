@@ -10,6 +10,7 @@ interface ModuleDashboardProps {
   onModuleSelect: (module: string) => void;
   moduleAccess: Record<string, boolean>;
   onLogout: () => void;
+  onProfile?: () => void;
 }
 
 interface ModuleCard {
@@ -72,7 +73,7 @@ const ALL_MODULES: ModuleCard[] = [
   },
 ];
 
-export default function ModuleDashboard({ userRole, currentUser, onModuleSelect, moduleAccess, onLogout }: ModuleDashboardProps) {
+export default function ModuleDashboard({ userRole, currentUser, onModuleSelect, moduleAccess, onLogout, onProfile }: ModuleDashboardProps) {
   // Filter modules based on user access
   const availableModules = ALL_MODULES.filter(module => moduleAccess[module.accessKey]);
 
@@ -81,19 +82,6 @@ export default function ModuleDashboard({ userRole, currentUser, onModuleSelect,
     if (hour < 12) return 'Good Morning';
     if (hour < 17) return 'Good Afternoon';
     return 'Good Evening';
-  };
-
-  const getRoleBadgeColor = () => {
-    switch (userRole) {
-      case 'Admin':
-        return 'bg-red-100 text-red-800 border-red-200';
-      case 'Accountant':
-        return 'bg-blue-100 text-blue-800 border-blue-200';
-      case 'User':
-        return 'bg-green-100 text-green-800 border-green-200';
-      default:
-        return 'bg-gray-100 text-gray-800 border-gray-200';
-    }
   };
 
   return (
@@ -118,9 +106,13 @@ export default function ModuleDashboard({ userRole, currentUser, onModuleSelect,
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <div className={`px-4 py-2 rounded-lg border ${getRoleBadgeColor()}`}>
-                <span className="text-sm font-medium">{userRole}</span>
-              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onProfile}
+              >
+                Profile
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"

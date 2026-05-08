@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, Download, Upload, Search, Edit, Trash2, ChevronDown, ChevronRight, List, FolderOpen, X, Eye } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
@@ -14,6 +14,8 @@ import PurchaseImportModal from './PurchaseImportModal';
 import { FlatView, GroupedView, CompactView, DetailsDrawer } from './PurchasesTablesViews';
 import EditLineItemModal from './EditLineItemModal';
 import type { UserRole } from '../App';
+import { apiFetch } from '../services/api';
+import { canCreate, canDelete, canEdit, canExport } from '../utils/accessControl';
 
 // EXACT 45 FIELDS IN EXCEL ORDER
 export interface PurchaseRecord {
@@ -359,6 +361,87 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
   // Edit line item state
   const [editingLineItem, setEditingLineItem] = useState<PurchaseRecord | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const canCreateRecords = canCreate(userRole);
+  const canEditRecords = canEdit(userRole);
+  const canDeleteRecords = canDelete(userRole);
+  const canExportRecords = canExport(userRole);
+
+  const mapBackendLineItemToRecord = (header: any, item: any): PurchaseRecord => ({
+    id: item.lineItemId,
+    record_type: header.recordType || '',
+    po_number: header.poNumber || '',
+    date: header.date || '',
+    principal: header.principal || '',
+    invoice_number: header.invoiceNumber || '',
+    invoice_date: header.invoiceDate || '',
+    boe_number: header.boeNumber || '',
+    boe_date: header.boeDate || '',
+    hs_code: '',
+    item_details: item.itemDetails || '',
+    part_number: item.partNumber || '',
+    unit_price: Number(item.unitPrice || 0),
+    qty: Number(item.quantity || 0),
+    freight_charges_international: Number(item.freightCharges || 0),
+    gst_on_freight_charges: 0,
+    total_price_in_fe_inr: 0,
+    exchange_rate_as_per_boe: 0,
+    equivalent_inr_as_per_boe: 0,
+    actual_bank_transfer_amount: 0,
+    bank_charges: 0,
+    gst_on_bank_charges: 0,
+    basic_custom_duty: 0,
+    surcharge: 0,
+    gst_on_import_cgst_sgst_igst_local: Number(item.gst || 0),
+    interest_or_fine_on_custom_duty: 0,
+    custom_clearance_charges: 0,
+    igst_gst_on_custom_clearance: 0,
+    total_custom_clearance_charges: 0,
+    total_landed_price: Number(item.totalLandedPrice || 0),
+    landed_unit_price: 0,
+    customer: '',
+    customer_po: '',
+    po_date: '',
+    po_price: 0,
+    quantity: Number(item.quantity || 0),
+    total_po_price: 0,
+    igst_gst_percentage: 0,
+    gst_igst_amount: 0,
+    price_to_customer: 0,
+    customer_invoice_number: '',
+    customer_invoice_date: '',
+    shipping_charges_to_customer: 0,
+    cgst_sgst: 0,
+    price_to_sppl: Number(item.priceToSPPL || 0),
+    gm_percentage: Number(item.gmPercentage || 0),
+    margin: Number(item.margin || 0),
+    created_by: '',
+    created_at: item.createdAt || '',
+    updated_at: item.updatedAt || '',
+  });
+
+  const fetchPurchases = async () => {
+    const payload = await apiFetch('/api/purchases');
+    if (!payload.success || !Array.isArray(payload.data)) {
+      throw new Error('Failed to fetch purchases');
+    }
+
+    const flattened = payload.data.flatMap((purchase: any) => {
+      const header = purchase.header || {};
+      const lineItems = Array.isArray(purchase.lineItems) ? purchase.lineItems : [];
+      return lineItems.map((item: any) => mapBackendLineItemToRecord(header, item));
+    });
+
+    if (flattened.length > 0) {
+      setPurchases(flattened);
+    }
+  };
+
+  useEffect(() => {
+    fetchPurchases().catch((error) => {
+      console.error('Purchases fetch error:', error);
+      toast.error('Failed to load purchases from backend. Using local data.');
+    });
+  }, []);
 
   // Step 1: Save PO Header and move to line items
   const handleSaveHeader = (header: PurchaseHeader) => {
@@ -368,11 +451,36 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
   };
 
   // Step 2: Finalize PO with all line items
-  const handleFinalizePO = (header: PurchaseHeader, lineItems: PurchaseRecord[]) => {
-    setPurchases([...purchases, ...lineItems]);
-    setShowLineItemsScreen(false);
-    setCurrentPOHeader(null);
-    toast.success(`✅ PO ${header.po_number} finalized with ${lineItems.length} line item(s)`);
+  const handleFinalizePO = async (header: PurchaseHeader, lineItems: PurchaseRecord[]) => {
+    if (!lineItems || lineItems.length === 0) {
+      toast.error('Please add at least one line item before finalizing');
+      return;
+    }
+
+    try {
+      const payload = await apiFetch('/api/purchases', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          header,
+          lineItems,
+        }),
+      });
+      if (!payload.success) {
+        throw new Error(payload.message || 'Failed to save purchase');
+      }
+
+      // Keep existing local-state behavior after successful API save
+      setPurchases([...purchases, ...lineItems]);
+      setShowLineItemsScreen(false);
+      setCurrentPOHeader(null);
+      toast.success(`✅ PO ${header.po_number} finalized with ${lineItems.length} line item(s)`);
+    } catch (error) {
+      console.error('Finalize purchase error:', error);
+      toast.error('Failed to finalize PO. Your current UI data is preserved.');
+    }
   };
 
   // Back to header from line items
@@ -613,18 +721,18 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
           {/* Button Bar - Matching Sales Forecasting */}
           <div className="flex justify-end mb-6">
             <div className="flex gap-2">
-              <Button onClick={() => setIsImportModalOpen(true)} variant="outline" className="gap-2">
+              {canCreateRecords && <Button onClick={() => setIsImportModalOpen(true)} variant="outline" className="gap-2">
                 <Upload className="w-4 h-4" />
                 Import from Excel
-              </Button>
-              <Button onClick={handleExportData} variant="outline" className="gap-2">
+              </Button>}
+              {canExportRecords && <Button onClick={handleExportData} variant="outline" className="gap-2">
                 <Download className="w-4 h-4" />
                 Export Data
-              </Button>
-              <Button onClick={() => setIsHeaderModalOpen(true)} className="gap-2 bg-[#007BFF] hover:bg-[#0056b3]">
+              </Button>}
+              {canCreateRecords && <Button onClick={() => setIsHeaderModalOpen(true)} className="gap-2 bg-[#007BFF] hover:bg-[#0056b3]">
                 <Plus className="w-4 h-4" />
                 Create New Purchase Record
-              </Button>
+              </Button>}
             </div>
           </div>
 
@@ -744,13 +852,20 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
               expandedPOs={expandedPOs}
               onToggleExpand={togglePOExpansion}
               onExportPO={handleExportPO}
-              onDeletePO={handleDeletePO}
+              onDeletePO={(poNumber, itemCount) => {
+                if (!canDeleteRecords) return;
+                handleDeletePO(poNumber, itemCount);
+              }}
               onViewDetails={(po) => setSelectedPOForDetails(po)}
               onEditLineItem={(item) => {
+                if (!canEditRecords) return;
                 setEditingLineItem(item);
                 setIsEditModalOpen(true);
               }}
-              onDeleteLineItem={handleDeleteLineItem}
+              onDeleteLineItem={(itemId) => {
+                if (!canDeleteRecords) return;
+                handleDeleteLineItem(itemId);
+              }}
               getMarginColor={getMarginColor}
               getGMPercentageColor={getGMPercentageColor}
             />
@@ -764,7 +879,10 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
               expandedPOs={expandedPOs}
               onToggleExpand={togglePOExpansion}
               onExportPO={handleExportPO}
-              onDeletePO={handleDeletePO}
+              onDeletePO={(poNumber, itemCount) => {
+                if (!canDeleteRecords) return;
+                handleDeletePO(poNumber, itemCount);
+              }}
               onViewDetails={(po) => setSelectedPOForDetails(po)}
               getMarginColor={getMarginColor}
               getGMPercentageColor={getGMPercentageColor}
@@ -779,15 +897,21 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
             poNumber={selectedPOForDetails}
             items={filteredPurchases.filter(p => p.po_number === selectedPOForDetails)}
             onClose={() => setSelectedPOForDetails(null)}
-            onUpdateLineItem={handleUpdateLineItem}
-            onDeleteLineItem={handleDeleteLineItem}
+            onUpdateLineItem={(item) => {
+              if (!canEditRecords) return;
+              handleUpdateLineItem(item);
+            }}
+            onDeleteLineItem={(itemId) => {
+              if (!canDeleteRecords) return;
+              handleDeleteLineItem(itemId);
+            }}
             getMarginColor={getMarginColor}
             getGMPercentageColor={getGMPercentageColor}
           />
         )}
 
         {/* Modals & Screens */}
-        {isHeaderModalOpen && (
+        {canCreateRecords && isHeaderModalOpen && (
           <PurchaseHeaderModal
             isOpen={isHeaderModalOpen}
             onClose={() => setIsHeaderModalOpen(false)}
@@ -805,7 +929,7 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
           />
         )}
 
-        {isImportModalOpen && (
+        {canCreateRecords && isImportModalOpen && (
           <PurchaseImportModal
             isOpen={isImportModalOpen}
             onClose={() => setIsImportModalOpen(false)}
@@ -814,7 +938,7 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
           />
         )}
         
-        {isEditModalOpen && editingLineItem && (
+        {canEditRecords && isEditModalOpen && editingLineItem && (
           <EditLineItemModal
             isOpen={isEditModalOpen}
             onClose={() => setIsEditModalOpen(false)}

@@ -22,7 +22,7 @@ interface AccessFormModalProps {
 
 interface Override {
   pageName: ModuleName;
-  subRole: UserRole;
+  subRole: UserRole | 'None';
 }
 
 const allPages: ModuleName[] = [
@@ -161,9 +161,9 @@ export default function AccessFormModal({ isOpen, onClose, onSubmit, availableUs
                 <SelectValue placeholder="Choose a role" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="Developer">Developer</SelectItem>
                 <SelectItem value="Admin">Admin</SelectItem>
                 <SelectItem value="User">User</SelectItem>
-                <SelectItem value="Accountant">Accountant</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -214,9 +214,10 @@ export default function AccessFormModal({ isOpen, onClose, onSubmit, availableUs
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="Developer">Developer</SelectItem>
                           <SelectItem value="Admin">Admin</SelectItem>
                           <SelectItem value="User">User</SelectItem>
-                          <SelectItem value="Accountant">Accountant</SelectItem>
+                          <SelectItem value="None">None</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

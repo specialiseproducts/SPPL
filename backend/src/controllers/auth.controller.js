@@ -1,8 +1,7 @@
 /**
  * Authentication Controller
- * 
+ *
  * Handles HTTP requests/responses for authentication endpoints.
- * Validates input, calls service layer, and returns formatted responses.
  */
 
 import * as AuthService from '../services/auth.service.js';
@@ -14,80 +13,77 @@ import log from '../utils/logger.js';
  */
 export const login = async (req, res, next) => {
   try {
-    const { username, password } = req.body;
+    const { employeeCode, password } = req.body;
 
-    // Validate input
-    if (!username || !password) {
+    if (!employeeCode || !password) {
       return res.status(400).json({
         success: false,
-        error: { message: 'Username and password are required' },
+        message: 'Employee ID and password are required',
       });
     }
 
-    // Call service layer
-    const result = await AuthService.login(username, password);
+    const result = await AuthService.login({ employeeCode, password });
 
-    // Return success response
     res.status(200).json({
       success: true,
       data: result,
     });
   } catch (error) {
+    if (error?.statusCode === 401) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid employee ID or password',
+      });
+    }
     log.error('Login controller error:', error);
     next(error);
   }
 };
 
 /**
- * Verify token endpoint handler
- * GET /api/auth/verify
+ * Current logged-in profile
+ * GET /api/auth/me
  */
-export const verifyToken = async (req, res, next) => {
+export const me = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        error: { message: 'Token required' },
-      });
-    }
-
-    const decoded = await AuthService.verifyToken(token);
-
-    res.status(200).json({
-      success: true,
-      data: decoded,
-    });
-  } catch (error) {
-    log.error('Token verification controller error:', error);
-    next(error);
-  }
-};
-
-/**
- * Refresh token endpoint handler
- * POST /api/auth/refresh
- */
-export const refreshToken = async (req, res, next) => {
-  try {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-      return res.status(400).json({
-        success: false,
-        error: { message: 'Refresh token is required' },
-      });
-    }
-
-    const result = await AuthService.refreshToken(refreshToken);
+    const result = await AuthService.getMe(req.user?.employeeCode);
 
     res.status(200).json({
       success: true,
       data: result,
     });
   } catch (error) {
-    log.error('Token refresh controller error:', error);
+    log.error('/me controller error:', error);
+    next(error);
+  }
+};
+
+export const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+    if (!newPassword || newPassword !== confirmPassword) {
+      return res.status(400).json({ success: false, message: 'Password confirmation mismatch' });
+    }
+    const result = await AuthService.changePassword({
+      employeeCode: req.user?.employeeCode,
+      currentPassword,
+      newPassword,
+    });
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resetPassword = async (req, res, next) => {
+  try {
+    const { employeeCode } = req.body || {};
+    const result = await AuthService.resetPasswordByPrivilegedUser({
+      actor: req.user,
+      targetEmployeeCode: employeeCode,
+    });
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
     next(error);
   }
 };

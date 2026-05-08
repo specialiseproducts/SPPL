@@ -15,24 +15,20 @@ import log from '../utils/logger.js';
  * @param {Function} next - Express next function
  */
 export const errorHandler = (err, req, res, next) => {
-  // Log the error
-  log.error('Error occurred:', {
-    message: err.message,
-    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
-    path: req.path,
-    method: req.method,
-  });
+  console.log('\n🔥🔥🔥 GLOBAL ERROR HANDLER 🔥🔥🔥');
 
-  // Determine status code
-  const statusCode = err.statusCode || err.status || 500;
+  console.error('👉 ERROR OBJECT:', err);
+  console.error('👉 ERROR MESSAGE:', err.message);
+  console.error('👉 ERROR STACK:', err.stack);
+  console.error('👉 REQUEST PATH:', req.path);
+  console.error('👉 METHOD:', req.method);
+  console.error('👉 BODY:', req.body);
 
-  // Return error response
-  res.status(statusCode).json({
+  const status = err.statusCode && Number.isInteger(err.statusCode) ? err.statusCode : 500;
+
+  res.status(status).json({
     success: false,
-    error: {
-      message: err.message || 'Internal Server Error',
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
-    },
+    message: err.message,
   });
 };
 

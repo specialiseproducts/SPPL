@@ -14,7 +14,7 @@ import log from '../utils/logger.js';
 export const getPurchaseById = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const purchase = await PurchaseService.getPurchaseById(id);
+    const purchase = await PurchaseService.getPurchaseById(id, req.user, req.effectiveRole);
 
     res.status(200).json({
       success: true,
@@ -38,7 +38,7 @@ export const getPurchases = async (req, res, next) => {
       lastKey: req.query.lastKey,
     };
 
-    const result = await PurchaseService.getPurchases(filters, options);
+    const result = await PurchaseService.getPurchases(filters, options, req.user, req.effectiveRole);
 
     res.status(200).json({
       success: true,
@@ -56,10 +56,10 @@ export const getPurchases = async (req, res, next) => {
  */
 export const createPurchase = async (req, res, next) => {
   try {
-    const { purchaseData, lineItems } = req.body;
-    const userId = req.user?.id; // From auth middleware
+    const { header, purchaseData, lineItems } = req.body;
+    const authUser = req.user;
 
-    const purchase = await PurchaseService.createPurchase(purchaseData, lineItems, userId);
+    const purchase = await PurchaseService.createPurchase(header || purchaseData, lineItems, authUser);
 
     res.status(201).json({
       success: true,

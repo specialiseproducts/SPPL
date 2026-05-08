@@ -17,6 +17,8 @@ import employeeRoutes from './src/routes/employee.routes.js';
 import expenseRoutes from './src/routes/expense.routes.js';
 import purchaseRoutes from './src/routes/purchase.routes.js';
 import salesForecastRoutes from './src/routes/salesForecast.routes.js';
+import userRoutes from './src/routes/user.routes.js';
+import accessControlRoutes from './src/routes/accessControl.routes.js';
 
 // Load environment variables
 dotenv.config();
@@ -48,9 +50,11 @@ app.get('/health', (req, res) => {
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/employees', employeeRoutes);
+app.use('/api/users', userRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/purchases', purchaseRoutes);
 app.use('/api/sales-forecasts', salesForecastRoutes);
+app.use('/api/access-control', accessControlRoutes);
 
 // 404 handler (must be after all routes)
 app.use(notFoundHandler);
