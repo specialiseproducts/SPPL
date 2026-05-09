@@ -1,5 +1,6 @@
+import { getApiBaseUrl } from '../config/apiBase';
+
 const TOKEN_KEY = 'sppl_auth_token';
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
 function readDataEnvelope(payload: any) {
   if (payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object') {
@@ -25,7 +26,7 @@ export function isAuthenticated() {
 }
 
 export async function login(employeeCode: string, password: string) {
-  const res = await fetch(`${API_BASE}/api/auth/login`, {
+  const res = await fetch(`${getApiBaseUrl()}/auth/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -53,7 +54,7 @@ export async function getCurrentUser() {
     throw new Error('Missing token');
   }
 
-  const res = await fetch(`${API_BASE}/api/auth/me`, {
+  const res = await fetch(`${getApiBaseUrl()}/auth/me`, {
     headers: {
       Authorization: `Bearer ${token}`,
     },

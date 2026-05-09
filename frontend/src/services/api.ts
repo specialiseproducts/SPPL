@@ -1,6 +1,20 @@
 import { getToken, removeToken } from './authService';
+import { getApiBaseUrl } from '../config/apiBase';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+/**
+ * Callers use paths like `/api/expenses`. Base URL already ends with `/api`,
+ * so the `/api` prefix is stripped to avoid `/api/api/...`.
+ */
+function resolveApiPath(path: string): string {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  if (normalized.startsWith('/api/')) {
+    return normalized.slice(4);
+  }
+  if (normalized === '/api') {
+    return '';
+  }
+  return normalized;
+}
 
 type ApiOptions = RequestInit & {
   skipAuth?: boolean;
@@ -15,7 +29,9 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
     finalHeaders.set('Authorization', `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const url = `${getApiBaseUrl()}${resolveApiPath(path)}`;
+
+  const response = await fetch(url, {
     ...rest,
     headers: finalHeaders,
   });
