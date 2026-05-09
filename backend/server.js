@@ -31,7 +31,8 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({
   origin: [
     "http://localhost:5173",
-    "https://design-company-management-hpmskaon5.vercel.app"
+    "https://design-company-management-erp.vercel.app",
+    "https://design-company-management-596vfvlx0.vercel.app"
   ],
   credentials: true
 }));
