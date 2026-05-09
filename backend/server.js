@@ -28,7 +28,13 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors()); // Enable CORS for frontend
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "https://design-company-management-hpmskaon5.vercel.app"
+  ],
+  credentials: true
+}));
 app.use(express.json()); // Parse JSON request bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
 
