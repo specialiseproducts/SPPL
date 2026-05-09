@@ -83,9 +83,15 @@ export const createExpense = async (expenseData) => {
         }))
     : [];
 
+  const subCategoryTrimmed =
+    expenseData.subCategory != null && String(expenseData.subCategory).trim() !== ''
+      ? String(expenseData.subCategory).trim()
+      : undefined;
+
   const item = {
     expenseId: `EXP#${uuidv4()}`,
     expenseHead: expenseData.expenseHead,
+    ...(subCategoryTrimmed ? { subCategory: subCategoryTrimmed } : {}),
     locationPurpose: expenseData.locationPurpose,
     serviceProvider: expenseData.serviceProvider,
     billNumber: expenseData.billNumber,

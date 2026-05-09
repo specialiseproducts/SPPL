@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Alert, AlertDescription } from './ui/alert';
 import type { ExpenseRecord } from './ExpensesTab';
+import { isCanonicalExpenseHead, getSubcategoriesForHead } from '../constants/expenseSubCategories';
 
 interface ExpenseImportModalProps {
   isOpen: boolean;
@@ -18,6 +19,7 @@ interface ExpenseImportModalProps {
 
 interface ImportPreviewRow {
   expense_head: string;
+  sub_category?: string;
   location_purpose: string;
   service_provider: string;
   bill_number: string;
@@ -32,6 +34,22 @@ interface ImportPreviewRow {
 }
 
 const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function subCategoryImportErrors(row: ImportPreviewRow): string[] {
+  const errs: string[] = [];
+  if (!isCanonicalExpenseHead(row.expense_head)) {
+    return errs;
+  }
+  const sub = (row.sub_category ?? '').trim();
+  if (!sub) {
+    errs.push('Sub category is required for this expense head');
+    return errs;
+  }
+  if (!getSubcategoriesForHead(row.expense_head).includes(sub)) {
+    errs.push('Sub category does not match expense head');
+  }
+  return errs;
+}
 
 export default function ExpenseImportModal({
   isOpen,
@@ -93,6 +111,7 @@ export default function ExpenseImportModal({
       const mockData: ImportPreviewRow[] = [
         {
           expense_head: 'Travel',
+          sub_category: 'Taxi',
           location_purpose: 'Delhi trip for client meeting',
           service_provider: 'Uber',
           bill_number: 'UBR789',
@@ -107,6 +126,7 @@ export default function ExpenseImportModal({
         },
         {
           expense_head: 'Food',
+          sub_category: 'Lunch',
           location_purpose: 'Team lunch',
           service_provider: 'Restaurant ABC',
           bill_number: 'ABC/2024/123',
@@ -121,6 +141,7 @@ export default function ExpenseImportModal({
         },
         {
           expense_head: 'Travel',
+          sub_category: '',
           location_purpose: '',
           service_provider: 'Ola',
           bill_number: 'OLA456',
@@ -135,7 +156,17 @@ export default function ExpenseImportModal({
         },
       ];
 
-      setPreviewData(mockData);
+      const validated = mockData.map((row) => {
+        const subErrs = subCategoryImportErrors(row);
+        const mergedErrors = [...row.errors, ...subErrs];
+        return {
+          ...row,
+          errors: mergedErrors,
+          status: mergedErrors.length > 0 ? ('error' as const) : ('valid' as const),
+        };
+      });
+
+      setPreviewData(validated);
       setStep('preview');
       toast.success('✅ File processed successfully');
     }, 1500);
@@ -152,6 +183,7 @@ export default function ExpenseImportModal({
     const expenses: ExpenseRecord[] = validRows.map((row) => ({
       expenseId: '',
       expenseHead: row.expense_head,
+      subCategory: row.sub_category?.trim() || undefined,
       locationPurpose: row.location_purpose,
       serviceProvider: row.service_provider,
       billNumber: row.bill_number,
@@ -229,7 +261,7 @@ export default function ExpenseImportModal({
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
-                <strong>Expected columns:</strong> Expense Head, Location & Purpose, Service Provider, 
+                <strong>Expected columns:</strong> Expense Head, Sub Category, Location & Purpose, Service Provider, 
                 Bill Number, Date, Amount{isAdmin ? ', Employee Name' : ''}
               </AlertDescription>
             </Alert>
@@ -265,6 +297,7 @@ export default function ExpenseImportModal({
                   <TableRow className="bg-gray-50">
                     <TableHead>Status</TableHead>
                     <TableHead>Expense Head</TableHead>
+                    <TableHead>Sub Category</TableHead>
                     <TableHead>Location</TableHead>
                     <TableHead>Provider</TableHead>
                     <TableHead>Bill No</TableHead>
@@ -285,6 +318,7 @@ export default function ExpenseImportModal({
                         )}
                       </TableCell>
                       <TableCell>{row.expense_head}</TableCell>
+                      <TableCell>{row.sub_category?.trim() ? row.sub_category : '—'}</TableCell>
                       <TableCell className="max-w-xs truncate">{row.location_purpose || '—'}</TableCell>
                       <TableCell>{row.service_provider}</TableCell>
                       <TableCell>{row.bill_number}</TableCell>

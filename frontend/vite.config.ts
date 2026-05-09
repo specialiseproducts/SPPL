@@ -4,7 +4,7 @@
   import path from 'path';
 
   export default defineConfig({
-    plugins: [react()],
+    
     resolve: {
       extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
       alias: {
@@ -16,6 +16,10 @@
       outDir: 'build',
     },
     server: {
+      host: '0.0.0.0',
+      allowedHosts: [
+        'finite-paced-identify.ngrok-free.dev',
+      ],
       port: 3000,
       open: true,
     },

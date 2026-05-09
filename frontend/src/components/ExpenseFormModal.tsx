@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
@@ -9,6 +9,11 @@ import { Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ExpenseRecord } from './ExpensesTab';
 import type { UserMaster } from './UserCreationTab';
+import {
+  EXPENSE_HEADS,
+  getSubcategoriesForHead,
+  isCanonicalExpenseHead,
+} from '../constants/expenseSubCategories';
 
 interface ExpenseFormModalProps {
   isOpen: boolean;
@@ -22,7 +27,6 @@ interface ExpenseFormModalProps {
   isEdit?: boolean;
 }
 
-const expenseHeads = ['Travel', 'Food', 'Hotel', 'Stationary', 'Fuel', 'Internet', 'Phone', 'Misc.'];
 export default function ExpenseFormModal({
   isOpen,
   onClose,
@@ -35,8 +39,18 @@ export default function ExpenseFormModal({
 }: ExpenseFormModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
+  const expenseHeadOptions = useMemo(() => {
+    const base: string[] = [...EXPENSE_HEADS];
+    const legacy = initialData?.expenseHead;
+    if (legacy && !base.includes(legacy)) {
+      base.push(legacy);
+    }
+    return base;
+  }, [initialData?.expenseHead]);
+
   const [formData, setFormData] = useState({
     expenseHead: initialData?.expenseHead || 'Travel',
+    subCategory: initialData?.subCategory?.trim() || '',
     locationPurpose: initialData?.locationPurpose || '',
     serviceProvider: initialData?.serviceProvider || '',
     billNumber: initialData?.billNumber || '',
@@ -49,8 +63,14 @@ export default function ExpenseFormModal({
   // Update form when initialData changes
   useEffect(() => {
     if (initialData) {
+      const head = initialData.expenseHead;
+      const savedSub = initialData.subCategory?.trim() || '';
+      const options = getSubcategoriesForHead(head);
+      const subCategory =
+        savedSub && options.includes(savedSub) ? savedSub : '';
       setFormData({
-        expenseHead: initialData.expenseHead,
+        expenseHead: head,
+        subCategory,
         locationPurpose: initialData.locationPurpose,
         serviceProvider: initialData.serviceProvider,
         billNumber: initialData.billNumber,
@@ -62,6 +82,7 @@ export default function ExpenseFormModal({
     } else {
       setFormData({
         expenseHead: 'Travel',
+        subCategory: '',
         locationPurpose: '',
         serviceProvider: '',
         billNumber: '',
@@ -113,9 +134,21 @@ export default function ExpenseFormModal({
       return;
     }
 
+    if (isCanonicalExpenseHead(formData.expenseHead)) {
+      if (!formData.subCategory.trim()) {
+        toast.error('Please select a sub category');
+        return;
+      }
+      if (!getSubcategoriesForHead(formData.expenseHead).includes(formData.subCategory)) {
+        toast.error('Sub category does not match expense head');
+        return;
+      }
+    }
+
     const expense: ExpenseRecord = {
       expenseId: isEdit && initialData ? initialData.expenseId : '',
       expenseHead: formData.expenseHead,
+      subCategory: formData.subCategory.trim() || undefined,
       locationPurpose: formData.locationPurpose,
       serviceProvider: formData.serviceProvider,
       billNumber: formData.billNumber,
@@ -142,6 +175,7 @@ export default function ExpenseFormModal({
     if (!isEdit) {
       setFormData({
         expenseHead: 'Travel',
+        subCategory: '',
         locationPurpose: '',
         serviceProvider: '',
         billNumber: '',
@@ -153,6 +187,10 @@ export default function ExpenseFormModal({
       setSelectedFile(null);
     }
   };
+
+  const subCategoryOptions = getSubcategoriesForHead(formData.expenseHead);
+  const subCategoryDisabled =
+    !formData.expenseHead || !isCanonicalExpenseHead(formData.expenseHead);
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -193,15 +231,45 @@ export default function ExpenseFormModal({
               <Label htmlFor="expense_head">Expense Head *</Label>
               <Select 
                 value={formData.expenseHead} 
-                onValueChange={(value) => setFormData({ ...formData, expenseHead: value })}
+                onValueChange={(value) =>
+                  setFormData({
+                    ...formData,
+                    expenseHead: value,
+                    subCategory: '',
+                  })
+                }
               >
                 <SelectTrigger id="expense_head">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {expenseHeads.map(head => (
+                  {expenseHeadOptions.map((head) => (
                     <SelectItem key={head} value={head}>
                       {head}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="sub_category">
+                Sub Category{!subCategoryDisabled ? ' *' : ''}
+              </Label>
+              <Select
+                value={formData.subCategory || undefined}
+                onValueChange={(value) =>
+                  setFormData({ ...formData, subCategory: value })
+                }
+                disabled={subCategoryDisabled}
+              >
+                <SelectTrigger id="sub_category" className={subCategoryDisabled ? 'opacity-70' : ''}>
+                  <SelectValue placeholder="Select Sub Category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {subCategoryOptions.map((opt) => (
+                    <SelectItem key={opt} value={opt}>
+                      {opt}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -24,6 +24,8 @@ interface ExpenseDocument {
 export interface ExpenseRecord {
   expenseId: string;
   expenseHead: string;
+  /** Present for new canonical heads; omitted on older DynamoDB items */
+  subCategory?: string;
   locationPurpose: string;
   serviceProvider: string;
   billNumber: string;
@@ -83,6 +85,9 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
     try {
       const formData = new FormData();
       formData.append('expenseHead', expense.expenseHead);
+      if (expense.subCategory) {
+        formData.append('subCategory', expense.subCategory);
+      }
       formData.append('locationPurpose', expense.locationPurpose);
       formData.append('serviceProvider', expense.serviceProvider);
       formData.append('billNumber', expense.billNumber);
@@ -119,14 +124,31 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
         throw new Error('Missing expenseId');
       }
 
-      const { locationPurpose, serviceProvider, billNumber, amount, date, selectedFile } = expense;
+      const {
+        expenseHead,
+        subCategory,
+        locationPurpose,
+        serviceProvider,
+        billNumber,
+        amount,
+        date,
+        monthYear,
+        employeeName,
+        selectedFile,
+      } = expense;
 
       const formData = new FormData();
+      formData.append('expenseHead', expenseHead);
+      if (subCategory) {
+        formData.append('subCategory', subCategory);
+      }
       formData.append('locationPurpose', locationPurpose);
       formData.append('serviceProvider', serviceProvider);
       formData.append('billNumber', billNumber);
       formData.append('amount', String(amount));
       formData.append('date', date);
+      formData.append('monthYear', monthYear);
+      formData.append('employeeName', employeeName);
 
       if (selectedFile) {
         formData.append('file', selectedFile);
@@ -215,7 +237,8 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
         expense.locationPurpose.toLowerCase().includes(search) ||
         expense.serviceProvider.toLowerCase().includes(search) ||
         expense.billNumber.toLowerCase().includes(search) ||
-        expense.expenseHead.toLowerCase().includes(search)
+        expense.expenseHead.toLowerCase().includes(search) ||
+        (expense.subCategory?.toLowerCase().includes(search) ?? false)
       );
     }
 
@@ -318,7 +341,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
-              placeholder="Location, provider, bill no..."
+              placeholder="Location, provider, bill no, sub category..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-9"
@@ -335,6 +358,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
               <TableRow className="bg-gray-50">
                 <TableHead>Sr. #</TableHead>
                 <TableHead>Expense Head</TableHead>
+                <TableHead>Sub Category</TableHead>
                 <TableHead>Location & Purpose</TableHead>
                 <TableHead>Service Provider</TableHead>
                 <TableHead>Bill Number</TableHead>
@@ -349,7 +373,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
             <TableBody>
               {filteredExpenses.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={privileged ? 11 : 10} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={privileged ? 12 : 11} className="text-center py-8 text-gray-500">
                     No expense records found
                   </TableCell>
                 </TableRow>
@@ -360,6 +384,11 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
                     <TableCell>
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs bg-blue-100 text-blue-800">
                         {expense.expenseHead}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm text-gray-800">
+                        {expense.subCategory?.trim() ? expense.subCategory : '—'}
                       </span>
                     </TableCell>
                     <TableCell className="max-w-xs">

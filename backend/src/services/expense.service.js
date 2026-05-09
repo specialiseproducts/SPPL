@@ -7,12 +7,52 @@
 
 import * as ExpenseModel from '../models/Expenses.js';
 import * as ExpenseDocumentsModel from '../models/ExpenseDocuments.js';
+import {
+  isCanonicalExpenseHead,
+  validateSubCategoryForHead,
+  EXPENSE_SUBCATEGORY_MAP,
+} from '../constants/expenseSubCategories.js';
 import { buildAuditFields } from '../utils/audit.js';
 import { canAccessAllRecords, isOwnedByUser } from '../utils/accessControl.js';
 import { withApprovalDefaults } from '../utils/approval.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
 import log from '../utils/logger.js';
+
+const SUB_OR_HEAD_KEYS = ['expenseHead', 'subCategory'];
+const OTHER_FORM_FIELDS = [
+  'locationPurpose',
+  'serviceProvider',
+  'billNumber',
+  'date',
+  'monthYear',
+  'employeeName',
+];
+
+function validateMergedSubCategoryOnUpdate(merged, updateData) {
+  if (!isCanonicalExpenseHead(merged.expenseHead)) {
+    return;
+  }
+  const sub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
+  if (sub) {
+    if (!EXPENSE_SUBCATEGORY_MAP[merged.expenseHead].includes(sub)) {
+      throw new Error('subCategory does not match expense head');
+    }
+    return;
+  }
+  const headOrSubTouched = SUB_OR_HEAD_KEYS.some((k) =>
+    Object.prototype.hasOwnProperty.call(updateData, k)
+  );
+  if (headOrSubTouched) {
+    throw new Error('subCategory is required');
+  }
+  const otherFormTouched = OTHER_FORM_FIELDS.some((k) =>
+    Object.prototype.hasOwnProperty.call(updateData, k)
+  );
+  if (otherFormTouched) {
+    throw new Error('subCategory is required');
+  }
+}
 
 /**
  * Get expense by ID
@@ -99,6 +139,8 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (!expenseData?.employeeName) {
       throw new Error('employeeName is required');
     }
+
+    validateSubCategoryForHead(expenseData.expenseHead, expenseData.subCategory);
 
     const auditFields = authUser ? buildAuditFields(authUser) : {};
     const payload = {
@@ -191,6 +233,12 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     const updatePayload = {
       ...updateData,
     };
+
+    const merged = {
+      ...existing,
+      ...updatePayload,
+    };
+    validateMergedSubCategoryOnUpdate(merged, updatePayload);
 
     log.info('Updating expense:', expenseId);
     const updated = await ExpenseModel.updateExpense(expenseId, updatePayload);
