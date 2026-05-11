@@ -12,6 +12,7 @@ import ExpenseImportModal from './ExpenseImportModal';
 import type { UserRole } from '../App';
 import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
+import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy';
 import { canCreate, canDelete, canEdit, canExport, isAdmin, isDeveloper } from '../utils/accessControl';
 
 interface ExpenseDocument {
@@ -26,17 +27,70 @@ export interface ExpenseRecord {
   expenseHead: string;
   /** Present for new canonical heads; omitted on older DynamoDB items */
   subCategory?: string;
-  locationPurpose: string;
+  location: string;
+  purpose: string;
   serviceProvider: string;
   billNumber: string;
   date: string;
   amount: number;
   employeeName: string;
+  employeeId?: string;
+  employeeEmail?: string;
   monthYear: string;
   createdAt: string;
   updatedAt: string;
+  fromLocation?: string;
+  toLocation?: string;
+  returnType?: string;
+  kilometers?: number;
+  stayDateFrom?: string;
+  stayDateTo?: string;
   documents?: ExpenseDocument[];
   selectedFile?: File;
+}
+
+function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord {
+  const legacyLp = String(raw[EXPENSE_LEGACY_COMBINED_LOCATION_ATTR] ?? '').trim();
+  let location = String(raw.location ?? '').trim();
+  let purpose = String(raw.purpose ?? '').trim();
+  if (!location && legacyLp) {
+    location = legacyLp;
+  }
+  if (!purpose && legacyLp) {
+    purpose = legacyLp;
+  }
+  const monthYear = String(raw.monthYear ?? '');
+  const kmRaw = raw.kilometers;
+  let kilometers: number | undefined;
+  if (kmRaw !== undefined && kmRaw !== null && String(kmRaw).trim() !== '') {
+    const n = Number(kmRaw);
+    kilometers = Number.isNaN(n) ? undefined : n;
+  }
+
+  return {
+    expenseId: String(raw.expenseId ?? raw.expense_id ?? raw.id ?? '').trim(),
+    expenseHead: String(raw.expenseHead ?? ''),
+    subCategory: raw.subCategory != null ? String(raw.subCategory).trim() : undefined,
+    location,
+    purpose,
+    serviceProvider: String(raw.serviceProvider ?? ''),
+    billNumber: String(raw.billNumber ?? ''),
+    date: String(raw.date ?? ''),
+    amount: Number(raw.amount ?? 0),
+    employeeName: String(raw.employeeName ?? ''),
+    employeeId: raw.employeeId != null ? String(raw.employeeId) : undefined,
+    employeeEmail: raw.employeeEmail != null ? String(raw.employeeEmail) : undefined,
+    monthYear,
+    createdAt: String(raw.createdAt ?? raw.created_at ?? ''),
+    updatedAt: String(raw.updatedAt ?? raw.updated_at ?? ''),
+    fromLocation: raw.fromLocation != null ? String(raw.fromLocation) : undefined,
+    toLocation: raw.toLocation != null ? String(raw.toLocation) : undefined,
+    returnType: raw.returnType != null ? String(raw.returnType) : undefined,
+    kilometers,
+    stayDateFrom: raw.stayDateFrom != null ? String(raw.stayDateFrom) : undefined,
+    stayDateTo: raw.stayDateTo != null ? String(raw.stayDateTo) : undefined,
+    documents: Array.isArray(raw.documents) ? (raw.documents as ExpenseDocument[]) : undefined,
+  };
 }
 
 interface ExpensesTabProps {
@@ -48,6 +102,40 @@ interface ExpensesTabProps {
 
 const months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
 const years = Array.from({ length: 11 }, (_, i) => (2020 + i).toString());
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error ?? 'Request failed');
+}
+
+/** Table / export: show em dash when value is missing or blank */
+function displayCell(value: string | number | undefined | null): string {
+  if (value === undefined || value === null) return '—';
+  const s = String(value).trim();
+  return s === '' ? '—' : s;
+}
+
+function formatKm(km: number | undefined): string {
+  if (km === undefined || km === null || Number.isNaN(Number(km))) return '—';
+  return String(km);
+}
+
+function formatDateCell(iso: string | undefined): string {
+  if (!iso || String(iso).trim() === '') return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-GB');
+}
+
+function escapeCsvCell(value: string): string {
+  const s = String(value ?? '');
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
 
 export default function ExpensesTab({ userRole, currentUserName, currentEmployeeCode, availableUsers }: ExpensesTabProps) {
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
@@ -71,7 +159,8 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       throw new Error('Failed to fetch expenses');
     }
 
-    setExpenses(payload.data || []);
+    const rows = Array.isArray(payload.data) ? payload.data : [];
+    setExpenses(rows.map((row: Record<string, unknown>) => normalizeExpenseRow(row)));
   };
 
   useEffect(() => {
@@ -88,13 +177,31 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       if (expense.subCategory) {
         formData.append('subCategory', expense.subCategory);
       }
-      formData.append('locationPurpose', expense.locationPurpose);
+      formData.append('location', expense.location);
+      formData.append('purpose', expense.purpose);
       formData.append('serviceProvider', expense.serviceProvider);
       formData.append('billNumber', expense.billNumber);
       formData.append('date', expense.date);
       formData.append('amount', String(expense.amount));
-      formData.append('employeeName', expense.employeeName);
       formData.append('monthYear', expense.monthYear);
+      if (expense.fromLocation) {
+        formData.append('fromLocation', expense.fromLocation);
+      }
+      if (expense.toLocation) {
+        formData.append('toLocation', expense.toLocation);
+      }
+      if (expense.returnType) {
+        formData.append('returnType', expense.returnType);
+      }
+      if (expense.kilometers !== undefined && expense.kilometers !== null) {
+        formData.append('kilometers', String(expense.kilometers));
+      }
+      if (expense.stayDateFrom) {
+        formData.append('stayDateFrom', expense.stayDateFrom);
+      }
+      if (expense.stayDateTo) {
+        formData.append('stayDateTo', expense.stayDateTo);
+      }
 
       if (expense.selectedFile) {
         formData.append('file', expense.selectedFile);
@@ -113,7 +220,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       toast.success('✅ Expense Record Created Successfully');
     } catch (error) {
       console.error('Create expense error:', error);
-      toast.error('Failed to create expense');
+      toast.error(getErrorMessage(error));
     }
   };
 
@@ -127,14 +234,20 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       const {
         expenseHead,
         subCategory,
-        locationPurpose,
+        location,
+        purpose,
         serviceProvider,
         billNumber,
         amount,
         date,
         monthYear,
-        employeeName,
         selectedFile,
+        fromLocation,
+        toLocation,
+        returnType,
+        kilometers,
+        stayDateFrom,
+        stayDateTo,
       } = expense;
 
       const formData = new FormData();
@@ -142,13 +255,31 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       if (subCategory) {
         formData.append('subCategory', subCategory);
       }
-      formData.append('locationPurpose', locationPurpose);
+      formData.append('location', location);
+      formData.append('purpose', purpose);
       formData.append('serviceProvider', serviceProvider);
       formData.append('billNumber', billNumber);
       formData.append('amount', String(amount));
       formData.append('date', date);
       formData.append('monthYear', monthYear);
-      formData.append('employeeName', employeeName);
+      if (fromLocation) {
+        formData.append('fromLocation', fromLocation);
+      }
+      if (toLocation) {
+        formData.append('toLocation', toLocation);
+      }
+      if (returnType) {
+        formData.append('returnType', returnType);
+      }
+      if (kilometers !== undefined && kilometers !== null) {
+        formData.append('kilometers', String(kilometers));
+      }
+      if (stayDateFrom) {
+        formData.append('stayDateFrom', stayDateFrom);
+      }
+      if (stayDateTo) {
+        formData.append('stayDateTo', stayDateTo);
+      }
 
       if (selectedFile) {
         formData.append('file', selectedFile);
@@ -167,7 +298,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       toast.success('✅ Expense Record Updated Successfully');
     } catch (error) {
       console.error('Update expense error:', error);
-      toast.error('Failed to update expense');
+      toast.error(getErrorMessage(error));
     }
   };
 
@@ -193,7 +324,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       toast.success('✅ Expense Record Deleted');
     } catch (error) {
       console.error('Delete expense error:', error);
-      toast.error('Failed to delete expense');
+      toast.error(getErrorMessage(error));
     }
   };
 
@@ -203,20 +334,87 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
     toast.success(`✅ Successfully imported ${importedExpenses.length} expense records`);
   };
 
-  const handleDownloadTemplate = () => {
-    toast.info('📥 Downloading expense template...');
-    // In a real app, this would download an Excel template
+  const handleExportData = () => {
+    const rows = filteredExpenses;
+    if (rows.length === 0) {
+      toast.info('No expense rows to export for the current filters.');
+      return;
+    }
+
+    const headers = [
+      'Sr. #',
+      'Expense Head',
+      'Sub Category',
+      'Location',
+      'Purpose',
+      'From',
+      'To',
+      'Return',
+      'Kilometers (km)',
+      'Stay date (from)',
+      'Stay date (to)',
+      'Service Provider',
+      'Bill Number',
+      'Date',
+      'Amount (Rs)',
+      'Document URL',
+      ...(privileged ? ['Employee Name'] : []),
+      'Month-Year',
+    ];
+
+    const lines: string[] = [headers.map(escapeCsvCell).join(',')];
+
+    rows.forEach((expense, index) => {
+      const docUrl =
+        expense.documents && expense.documents.length > 0
+          ? expense.documents[0].fileUrl
+          : '';
+      const cells = [
+        String(index + 1),
+        expense.expenseHead,
+        expense.subCategory?.trim() ?? '',
+        expense.location,
+        expense.purpose,
+        displayCell(expense.fromLocation),
+        displayCell(expense.toLocation),
+        displayCell(expense.returnType),
+        formatKm(expense.kilometers),
+        formatDateCell(expense.stayDateFrom),
+        formatDateCell(expense.stayDateTo),
+        expense.serviceProvider,
+        expense.billNumber,
+        formatDateCell(expense.date),
+        String(expense.amount),
+        docUrl,
+        ...(privileged ? [expense.employeeName] : []),
+        expense.monthYear,
+      ];
+      lines.push(cells.map(escapeCsvCell).join(','));
+    });
+
+    const csv = `\uFEFF${lines.join('\n')}`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `expenses-export-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${rows.length} expense record(s)`);
   };
+
+  /** Legacy name from template download — same as CSV export (avoids stale JSX / hot-reload crashes). */
+  const handleDownloadTemplate = handleExportData;
 
   // Filter expenses based on role and filters
   const filteredExpenses = expenses.filter(expense => {
     // Employee can only see their own records
-    if (!isAdmin && expense.employeeName !== currentUserName) {
+    if (!privileged && expense.employeeName !== currentUserName) {
       return false;
     }
 
     // Apply admin filters
-    if (isAdmin && selectedEmployee !== 'all' && expense.employeeName !== selectedEmployee) {
+    if (privileged && selectedEmployee !== 'all' && expense.employeeName !== selectedEmployee) {
       return false;
     }
 
@@ -232,14 +430,32 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
 
     // Apply search filter
     if (searchTerm) {
-      const search = searchTerm.toLowerCase();
-      return (
-        expense.locationPurpose.toLowerCase().includes(search) ||
-        expense.serviceProvider.toLowerCase().includes(search) ||
-        expense.billNumber.toLowerCase().includes(search) ||
-        expense.expenseHead.toLowerCase().includes(search) ||
-        (expense.subCategory?.toLowerCase().includes(search) ?? false)
-      );
+      const hay = [
+        expense.location,
+        expense.purpose,
+        expense.serviceProvider,
+        expense.billNumber,
+        expense.expenseHead,
+        expense.subCategory ?? '',
+        expense.fromLocation ?? '',
+        expense.toLocation ?? '',
+        expense.returnType ?? '',
+        expense.stayDateFrom ?? '',
+        expense.stayDateTo ?? '',
+        expense.kilometers !== undefined && expense.kilometers !== null
+          ? String(expense.kilometers)
+          : '',
+        expense.employeeName ?? '',
+        expense.monthYear ?? '',
+      ]
+        .join(' ')
+        .toLowerCase();
+      const tokens = searchTerm
+        .toLowerCase()
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      return tokens.every((t) => hay.includes(t));
     }
 
     return true;
@@ -341,7 +557,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
-              placeholder="Location, provider, bill no, sub category..."
+              placeholder="Location, purpose, from, to, km, hotel dates, provider..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-9"
@@ -353,34 +569,42 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
       {/* Expenses Table */}
       <div className="border rounded-lg overflow-hidden">
         <TooltipProvider>
-          <Table>
+          <div className="w-full overflow-x-auto">
+          <Table className="min-w-[1100px]">
             <TableHeader>
               <TableRow className="bg-gray-50">
-                <TableHead>Sr. #</TableHead>
-                <TableHead>Expense Head</TableHead>
-                <TableHead>Sub Category</TableHead>
-                <TableHead>Location & Purpose</TableHead>
-                <TableHead>Service Provider</TableHead>
-                <TableHead>Bill Number</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Amount (Rs)</TableHead>
-                <TableHead>Document</TableHead>
-                {privileged && <TableHead>Employee Name</TableHead>}
-                <TableHead>Month-Year</TableHead>
-                <TableHead>Actions</TableHead>
+                <TableHead className="whitespace-nowrap">Sr. #</TableHead>
+                <TableHead className="whitespace-nowrap">Expense Head</TableHead>
+                <TableHead className="whitespace-nowrap">Sub Category</TableHead>
+                <TableHead className="whitespace-nowrap">Location</TableHead>
+                <TableHead className="whitespace-nowrap">Purpose</TableHead>
+                <TableHead className="whitespace-nowrap">From</TableHead>
+                <TableHead className="whitespace-nowrap">To</TableHead>
+                <TableHead className="whitespace-nowrap">Return</TableHead>
+                <TableHead className="whitespace-nowrap">Kilometers (km)</TableHead>
+                <TableHead className="whitespace-nowrap">Stay date (from)</TableHead>
+                <TableHead className="whitespace-nowrap">Stay date (to)</TableHead>
+                <TableHead className="whitespace-nowrap">Service Provider</TableHead>
+                <TableHead className="whitespace-nowrap">Bill Number</TableHead>
+                <TableHead className="whitespace-nowrap">Date</TableHead>
+                <TableHead className="whitespace-nowrap">Amount (Rs)</TableHead>
+                <TableHead className="whitespace-nowrap">Document</TableHead>
+                {privileged && <TableHead className="whitespace-nowrap">Employee Name</TableHead>}
+                <TableHead className="whitespace-nowrap">Month-Year</TableHead>
+                <TableHead className="whitespace-nowrap">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredExpenses.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={privileged ? 12 : 11} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={privileged ? 19 : 18} className="text-center py-8 text-gray-500">
                     No expense records found
                   </TableCell>
                 </TableRow>
               ) : (
                 filteredExpenses.map((expense, index) => (
                   <TableRow key={expense.expenseId} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                    <TableCell>{index + 1}</TableCell>
+                    <TableCell className="whitespace-nowrap">{index + 1}</TableCell>
                     <TableCell>
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs bg-blue-100 text-blue-800">
                         {expense.expenseHead}
@@ -391,14 +615,41 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
                         {expense.subCategory?.trim() ? expense.subCategory : '—'}
                       </span>
                     </TableCell>
-                    <TableCell className="max-w-xs">
-                      <div className="truncate" title={expense.locationPurpose}>
-                        {expense.locationPurpose}
+                    <TableCell className="max-w-[10rem]">
+                      <div className="truncate" title={expense.location || undefined}>
+                        {displayCell(expense.location)}
                       </div>
                     </TableCell>
-                    <TableCell>{expense.serviceProvider}</TableCell>
-                    <TableCell>{expense.billNumber}</TableCell>
-                    <TableCell>{new Date(expense.date).toLocaleDateString('en-GB')}</TableCell>
+                    <TableCell className="max-w-[10rem]">
+                      <div className="truncate" title={expense.purpose || undefined}>
+                        {displayCell(expense.purpose)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[8rem]">
+                      <div className="truncate" title={expense.fromLocation || undefined}>
+                        {displayCell(expense.fromLocation)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[8rem]">
+                      <div className="truncate" title={expense.toLocation || undefined}>
+                        {displayCell(expense.toLocation)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[6rem]">
+                      <div className="truncate" title={expense.returnType || undefined}>
+                        {displayCell(expense.returnType)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-right tabular-nums">
+                      {formatKm(expense.kilometers)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">{formatDateCell(expense.stayDateFrom)}</TableCell>
+                    <TableCell className="whitespace-nowrap">{formatDateCell(expense.stayDateTo)}</TableCell>
+                    <TableCell>{displayCell(expense.serviceProvider)}</TableCell>
+                    <TableCell>{displayCell(expense.billNumber)}</TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {expense.date ? new Date(expense.date).toLocaleDateString('en-GB') : '—'}
+                    </TableCell>
                     <TableCell>₹{expense.amount.toLocaleString('en-IN')}</TableCell>
                     <TableCell>
                       {expense.documents && expense.documents.length > 0 ? (
@@ -428,11 +679,11 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
                           👁
                         </a>
                       ) : (
-                        '-'
+                        '—'
                       )}
                     </TableCell>
-                    {privileged && <TableCell>{expense.employeeName}</TableCell>}
-                    <TableCell>{expense.monthYear}</TableCell>
+                    {privileged && <TableCell>{displayCell(expense.employeeName)}</TableCell>}
+                    <TableCell className="whitespace-nowrap">{displayCell(expense.monthYear)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
                         {canEditRecords && (
@@ -472,6 +723,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
               )}
             </TableBody>
           </Table>
+          </div>
         </TooltipProvider>
       </div>
 
@@ -480,7 +732,6 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
         isOpen={isFormModalOpen}
         onClose={() => setIsFormModalOpen(false)}
         onSubmit={handleCreateExpense}
-        availableUsers={availableUsers}
         isAdmin={privileged}
         currentEmployeeCode={currentEmployeeCode}
         currentUserName={currentUserName}
@@ -490,7 +741,6 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
         isOpen={!!editingExpense}
         onClose={() => setEditingExpense(null)}
         onSubmit={handleEditExpense}
-        availableUsers={availableUsers}
         isAdmin={privileged}
         currentEmployeeCode={currentEmployeeCode}
         currentUserName={currentUserName}

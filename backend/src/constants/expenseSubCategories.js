@@ -7,6 +7,7 @@ export const EXPENSE_SUBCATEGORY_MAP = {
     'Bus',
     'Cancellation Charges',
     'Car',
+    'Bike',
     'Driver Charges',
     'Excess Baggage',
     'Auto',

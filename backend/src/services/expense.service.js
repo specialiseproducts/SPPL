@@ -7,6 +7,7 @@
 
 import * as ExpenseModel from '../models/Expenses.js';
 import * as ExpenseDocumentsModel from '../models/ExpenseDocuments.js';
+import * as EmployeeModel from '../models/EmployeeMaster.js';
 import {
   isCanonicalExpenseHead,
   validateSubCategoryForHead,
@@ -17,17 +18,41 @@ import { canAccessAllRecords, isOwnedByUser } from '../utils/accessControl.js';
 import { withApprovalDefaults } from '../utils/approval.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
+import { validateExpenseBusinessRules } from '../utils/expenseValidation.js';
+import { resolveLocationFieldsFromRow } from '../utils/expenseLocationFields.js';
+import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy.js';
 import log from '../utils/logger.js';
 
 const SUB_OR_HEAD_KEYS = ['expenseHead', 'subCategory'];
 const OTHER_FORM_FIELDS = [
-  'locationPurpose',
+  'location',
+  'purpose',
   'serviceProvider',
   'billNumber',
   'date',
   'monthYear',
-  'employeeName',
+  'fromLocation',
+  'toLocation',
+  'returnType',
+  'kilometers',
+  'stayDateFrom',
+  'stayDateTo',
 ];
+
+function trimText(v) {
+  if (v === undefined || v === null) {
+    return '';
+  }
+  return String(v).trim();
+}
+
+function enrichExpenseRow(row) {
+  if (!row || typeof row !== 'object') {
+    return row;
+  }
+  const { location, purpose } = resolveLocationFieldsFromRow(row);
+  return { ...row, location, purpose };
+}
 
 function validateMergedSubCategoryOnUpdate(merged, updateData) {
   if (!isCanonicalExpenseHead(merged.expenseHead)) {
@@ -71,19 +96,21 @@ export const getExpenseById = async (expenseId, authUser = null, effectiveRole =
       throw new Error('Expense not found');
     }
 
+    const canonicalExpenseId = expense.expenseId;
+
     if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;
     }
 
-    const documentsFromTable = await ExpenseDocumentsModel.getDocumentsByExpenseId(expenseId);
+    const documentsFromTable = await ExpenseDocumentsModel.getDocumentsByExpenseId(canonicalExpenseId);
     const inlineDocuments = Array.isArray(expense.documents) ? expense.documents : [];
     const documents = inlineDocuments.length > 0 ? inlineDocuments : documentsFromTable;
-    return {
+    return enrichExpenseRow({
       ...expense,
       documents,
-    };
+    });
   } catch (error) {
     log.error('Error getting expense:', error);
     throw error;
@@ -100,10 +127,11 @@ export const getExpenses = async (filters = {}, options = {}, authUser = null, e
   try {
     log.info('Getting expenses with filters:', filters);
     const rows = await ExpenseModel.getAllExpenses(filters, options);
-    if (!authUser || canAccessAllRecords(effectiveRole)) {
-      return rows;
-    }
-    return rows.filter((row) => isOwnedByUser(row, authUser));
+    const filtered =
+      !authUser || canAccessAllRecords(effectiveRole)
+        ? rows
+        : rows.filter((row) => isOwnedByUser(row, authUser));
+    return filtered.map((row) => enrichExpenseRow(row));
   } catch (error) {
     log.error('Error getting expenses:', error);
     throw error;
@@ -118,41 +146,140 @@ export const getExpenses = async (filters = {}, options = {}, authUser = null, e
  */
 export const createExpense = async (expenseData, documents = [], authUser = null) => {
   try {
-    if (!expenseData?.expenseHead) {
+    if (!authUser?.employeeCode) {
+      const err = new Error('Unauthorized');
+      err.statusCode = 401;
+      throw err;
+    }
+
+    const raw = expenseData && typeof expenseData === 'object' ? expenseData : {};
+
+    const expenseHead = trimText(raw.expenseHead);
+    const subCategory = trimText(raw.subCategory);
+    const serviceProvider = trimText(raw.serviceProvider);
+    const billNumber = trimText(raw.billNumber);
+    const date = trimText(raw.date);
+    const monthYear = trimText(raw.monthYear);
+
+    if (!expenseHead) {
       throw new Error('expenseHead is required');
     }
-    if (!expenseData?.locationPurpose) {
-      throw new Error('locationPurpose is required');
-    }
-    if (!expenseData?.serviceProvider) {
+    if (!serviceProvider) {
       throw new Error('serviceProvider is required');
     }
-    if (!expenseData?.billNumber) {
+    if (!billNumber) {
       throw new Error('billNumber is required');
     }
-    if (!expenseData?.date) {
+    if (!date) {
       throw new Error('date is required');
     }
-    if (Number.isNaN(Number(expenseData?.amount))) {
+
+    const amountRaw = raw.amount;
+    if (amountRaw === undefined || amountRaw === null || trimText(amountRaw) === '') {
+      throw new Error('amount is required');
+    }
+    const amountNum = Number(amountRaw);
+    if (Number.isNaN(amountNum)) {
       throw new Error('amount must be a number');
     }
-    if (!expenseData?.employeeName) {
-      throw new Error('employeeName is required');
+
+    let location = trimText(raw.location);
+    let purpose = trimText(raw.purpose);
+    const legacyCombined = trimText(raw[EXPENSE_LEGACY_COMBINED_LOCATION_ATTR]);
+    if (!location && legacyCombined) {
+      location = legacyCombined;
+    }
+    if (!purpose && legacyCombined) {
+      purpose = legacyCombined;
+    }
+    if (!location) {
+      throw new Error('location is required');
+    }
+    if (!purpose) {
+      throw new Error('purpose is required');
     }
 
-    validateSubCategoryForHead(expenseData.expenseHead, expenseData.subCategory);
+    validateSubCategoryForHead(expenseHead, subCategory || undefined);
 
-    const auditFields = authUser ? buildAuditFields(authUser) : {};
+    const employeeRow = await EmployeeModel.getEmployeeByCode(authUser.employeeCode);
+    const employeeEmail =
+      String(employeeRow?.officialEmail || employeeRow?.personalEmail || '').trim() || '';
+
+    const auditFields = buildAuditFields(authUser);
+    const employeeName =
+      String(authUser.fullName || '').trim() ||
+      `${String(authUser.firstName || '').trim()} ${String(authUser.lastName || '').trim()}`.trim() ||
+      String(authUser.employeeCode || '').trim();
+
+    const travelExtras = {};
+    const fromLoc = trimText(raw.fromLocation);
+    const toLoc = trimText(raw.toLocation);
+    const retT = trimText(raw.returnType);
+    if (fromLoc) {
+      travelExtras.fromLocation = fromLoc;
+    }
+    if (toLoc) {
+      travelExtras.toLocation = toLoc;
+    }
+    if (retT) {
+      travelExtras.returnType = retT;
+    }
+    if (
+      raw.kilometers !== undefined &&
+      raw.kilometers !== null &&
+      trimText(raw.kilometers) !== ''
+    ) {
+      const km = Number(raw.kilometers);
+      if (Number.isFinite(km)) {
+        travelExtras.kilometers = km;
+      }
+    }
+
+    const hotelExtras = {};
+    const sdf = trimText(raw.stayDateFrom);
+    const sdt = trimText(raw.stayDateTo);
+    if (sdf) {
+      hotelExtras.stayDateFrom = sdf;
+    }
+    if (sdt) {
+      hotelExtras.stayDateTo = sdt;
+    }
+
+    const basePayload = {
+      expenseHead,
+      ...(subCategory ? { subCategory } : {}),
+      serviceProvider,
+      billNumber,
+      date,
+      ...(monthYear ? { monthYear } : {}),
+      location,
+      purpose,
+      employeeId: String(authUser.employeeCode || '').trim(),
+      employeeName,
+      employeeEmail,
+      amount: amountNum,
+      ...travelExtras,
+      ...hotelExtras,
+    };
+
+    validateExpenseBusinessRules(basePayload);
+
     const payload = {
-      ...withApprovalDefaults(expenseData),
+      ...withApprovalDefaults(basePayload),
       ...auditFields,
       documents: Array.isArray(documents) ? documents : [],
-      // Keep existing camelCase timestamp conventions in current models
-      createdAt: expenseData.createdAt || auditFields.created_at || undefined,
+      createdAt: raw.createdAt || auditFields.created_at || undefined,
       updatedAt: auditFields.updated_at || undefined,
     };
 
-    log.info('Creating expense:', payload);
+    log.info('Creating expense (sanitized keys):', {
+      expenseHead: payload.expenseHead,
+      subCategory: payload.subCategory,
+      hasLocation: Boolean(payload.location),
+      hasPurpose: Boolean(payload.purpose),
+      amount: payload.amount,
+      employeeId: payload.employeeId,
+    });
     const expense = await ExpenseModel.createExpense(payload);
     await logActivity({
       actorEmployeeCode: authUser?.employeeCode || '',
@@ -168,8 +295,8 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (Array.isArray(documents)) {
       mergedDocuments.push(...documents);
     }
-    if (Array.isArray(expenseData.documents)) {
-      mergedDocuments.push(...expenseData.documents);
+    if (Array.isArray(raw.documents) && raw.documents.every((d) => d && typeof d === 'object')) {
+      mergedDocuments.push(...raw.documents);
     }
     const savedDocuments = [];
 
@@ -195,7 +322,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     }
 
     return {
-      ...expense,
+      ...enrichExpenseRow(expense),
       documents: savedDocuments,
     };
   } catch (error) {
@@ -224,6 +351,7 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     if (!existing) {
       throw new Error('Expense not found');
     }
+    const canonicalExpenseId = existing.expenseId;
     if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
@@ -234,14 +362,32 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       ...updateData,
     };
 
+    delete updatePayload.employeeName;
+    delete updatePayload.employeeId;
+    delete updatePayload.employeeEmail;
+
     const merged = {
       ...existing,
       ...updatePayload,
     };
-    validateMergedSubCategoryOnUpdate(merged, updatePayload);
 
-    log.info('Updating expense:', expenseId);
-    const updated = await ExpenseModel.updateExpense(expenseId, updatePayload);
+    const resolvedLp = resolveLocationFieldsFromRow(merged);
+    if (!resolvedLp.location) {
+      throw new Error('location is required');
+    }
+    if (!resolvedLp.purpose) {
+      throw new Error('purpose is required');
+    }
+    merged.location = resolvedLp.location;
+    merged.purpose = resolvedLp.purpose;
+    updatePayload.location = resolvedLp.location;
+    updatePayload.purpose = resolvedLp.purpose;
+
+    validateMergedSubCategoryOnUpdate(merged, updatePayload);
+    validateExpenseBusinessRules(merged);
+
+    log.info('Updating expense:', { routeOrClientId: expenseId, dynamoKey: canonicalExpenseId });
+    const updated = await ExpenseModel.updateExpense(canonicalExpenseId, updatePayload);
     await logActivity({
       actorEmployeeCode: authUser?.employeeCode || '',
       actorName: authUser?.fullName || '',
@@ -249,9 +395,9 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       module: 'expenses',
       actionType: 'UPDATE',
       targetEntity: 'expense',
-      targetId: expenseId,
+      targetId: canonicalExpenseId,
     });
-    return updated;
+    return enrichExpenseRow(updated);
   } catch (error) {
     log.error('Error updating expense:', error);
     throw error;
@@ -274,19 +420,20 @@ export const deleteExpense = async (expenseId, userId, authUser = null, effectiv
     if (!existing) {
       throw new Error('Expense not found');
     }
+    const canonicalExpenseId = existing.expenseId;
     if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;
     }
 
-    log.info('Deleting expense:', expenseId);
-    const documents = await ExpenseDocumentsModel.getDocumentsByExpenseId(expenseId);
+    log.info('Deleting expense:', { routeOrClientId: expenseId, dynamoKey: canonicalExpenseId });
+    const documents = await ExpenseDocumentsModel.getDocumentsByExpenseId(canonicalExpenseId);
     for (const document of documents) {
       await ExpenseDocumentsModel.deleteDocument(document.documentId);
     }
 
-    const deleted = await ExpenseModel.updateExpense(expenseId, buildSoftDeleteFields(authUser));
+    const deleted = await ExpenseModel.updateExpense(canonicalExpenseId, buildSoftDeleteFields(authUser));
     await logActivity({
       actorEmployeeCode: authUser?.employeeCode || '',
       actorName: authUser?.fullName || '',
@@ -294,9 +441,9 @@ export const deleteExpense = async (expenseId, userId, authUser = null, effectiv
       module: 'expenses',
       actionType: 'DELETE',
       targetEntity: 'expense',
-      targetId: expenseId,
+      targetId: canonicalExpenseId,
     });
-    return deleted;
+    return enrichExpenseRow(deleted);
   } catch (error) {
     log.error('Error deleting expense:', error);
     throw error;
@@ -313,14 +460,15 @@ export const getExpenseDocuments = async (expenseId, authUser = null, effectiveR
     if (!expense) {
       throw new Error('Expense not found');
     }
+    const canonicalExpenseId = expense.expenseId;
     if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;
     }
 
-    log.info('Getting expense documents:', expenseId);
-    return await ExpenseDocumentsModel.getDocumentsByExpenseId(expenseId);
+    log.info('Getting expense documents:', { routeOrClientId: expenseId, dynamoKey: canonicalExpenseId });
+    return await ExpenseDocumentsModel.getDocumentsByExpenseId(canonicalExpenseId);
   } catch (error) {
     log.error('Error getting expense documents:', error);
     throw error;

@@ -27,15 +27,24 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const defaultCorsOrigins = [
+  'http://localhost:5173',
+  'https://design-company-management-erp.vercel.app',
+  'https://design-company-management-596vfvlx0.vercel.app',
+];
+const extraCorsOrigins = String(process.env.CORS_EXTRA_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const corsOrigins = [...defaultCorsOrigins, ...extraCorsOrigins];
+
 // Middleware
-app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "https://design-company-management-erp.vercel.app",
-    "https://design-company-management-596vfvlx0.vercel.app"
-  ],
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: corsOrigins,
+    credentials: true,
+  })
+);
 app.use(express.json()); // Parse JSON request bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
 

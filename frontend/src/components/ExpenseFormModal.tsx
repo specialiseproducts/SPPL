@@ -3,39 +3,63 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ExpenseRecord } from './ExpensesTab';
-import type { UserMaster } from './UserCreationTab';
 import {
   EXPENSE_HEADS,
   getSubcategoriesForHead,
   isCanonicalExpenseHead,
 } from '../constants/expenseSubCategories';
+import {
+  isTravelCarOrBike,
+  isHotelBookingSelf,
+  computeTravelCarBikeAmount,
+} from '../utils/expenseAmountCalculation';
 
 interface ExpenseFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (expense: ExpenseRecord) => void | Promise<void>;
-  availableUsers: UserMaster[];
   isAdmin: boolean;
-  currentEmployeeCode: string;
+  /** Reserved for future employee-scoped defaults */
+  currentEmployeeCode?: string;
   currentUserName: string;
   initialData?: ExpenseRecord;
   isEdit?: boolean;
 }
 
+/** Radix Select requires `value` to match an item; use sentinel for "not chosen yet". */
+const SUB_CATEGORY_UNSET = '__unset__';
+
+const emptyForm = {
+  expenseHead: 'Travel',
+  subCategory: SUB_CATEGORY_UNSET,
+  location: '',
+  purpose: '',
+  serviceProvider: '',
+  billNumber: '',
+  date: '',
+  amount: '',
+  monthYear: '',
+  fromLocation: '',
+  toLocation: '',
+  returnType: '',
+  kilometers: '',
+  stayDateFrom: '',
+  stayDateTo: '',
+};
+
 export default function ExpenseFormModal({
   isOpen,
   onClose,
   onSubmit,
-  availableUsers,
-  isAdmin,
+  isAdmin: _privileged,
   currentUserName,
+  currentEmployeeCode: _currentEmployeeCode,
   initialData,
-  isEdit
+  isEdit,
 }: ExpenseFormModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
@@ -48,73 +72,66 @@ export default function ExpenseFormModal({
     return base;
   }, [initialData?.expenseHead]);
 
-  const [formData, setFormData] = useState({
-    expenseHead: initialData?.expenseHead || 'Travel',
-    subCategory: initialData?.subCategory?.trim() || '',
-    locationPurpose: initialData?.locationPurpose || '',
-    serviceProvider: initialData?.serviceProvider || '',
-    billNumber: initialData?.billNumber || '',
-    date: initialData?.date || '',
-    amount: initialData?.amount?.toString() || '',
-    employeeName: initialData?.employeeName || (isAdmin ? '' : currentUserName),
-    monthYear: initialData?.monthYear || '',
-  });
+  const [formData, setFormData] = useState({ ...emptyForm });
 
-  // Update form when initialData changes
   useEffect(() => {
     if (initialData) {
       const head = initialData.expenseHead;
       const savedSub = initialData.subCategory?.trim() || '';
       const options = getSubcategoriesForHead(head);
       const subCategory =
-        savedSub && options.includes(savedSub) ? savedSub : '';
+        savedSub && options.includes(savedSub) ? savedSub : SUB_CATEGORY_UNSET;
       setFormData({
         expenseHead: head,
         subCategory,
-        locationPurpose: initialData.locationPurpose,
+        location: initialData.location || '',
+        purpose: initialData.purpose || '',
         serviceProvider: initialData.serviceProvider,
         billNumber: initialData.billNumber,
         date: initialData.date,
         amount: initialData.amount.toString(),
-        employeeName: initialData.employeeName,
         monthYear: initialData.monthYear,
+        fromLocation: initialData.fromLocation ?? '',
+        toLocation: initialData.toLocation ?? '',
+        returnType: initialData.returnType ?? '',
+        kilometers:
+          initialData.kilometers !== undefined && initialData.kilometers !== null
+            ? String(initialData.kilometers)
+            : '',
+        stayDateFrom: initialData.stayDateFrom ?? '',
+        stayDateTo: initialData.stayDateTo ?? '',
       });
     } else {
-      setFormData({
-        expenseHead: 'Travel',
-        subCategory: '',
-        locationPurpose: '',
-        serviceProvider: '',
-        billNumber: '',
-        date: '',
-        amount: '',
-        employeeName: isAdmin ? '' : currentUserName,
-        monthYear: '',
-      });
+      setFormData({ ...emptyForm });
     }
     setSelectedFile(null);
-  }, [initialData, isOpen, isAdmin, currentUserName]);
+  }, [initialData, isOpen]);
 
-  // Auto-detect month and year from date
   useEffect(() => {
     if (formData.date) {
       const dateObj = new Date(formData.date);
       const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
       const year = String(dateObj.getUTCFullYear());
-      setFormData(prev => ({ ...prev, monthYear: `${month}-${year}` }));
+      setFormData((prev) => ({ ...prev, monthYear: `${month}-${year}` }));
     }
   }, [formData.date]);
+
+  const effectiveSubCategory =
+    formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
+  const showTravelDetail =
+    isTravelCarOrBike(formData.expenseHead, effectiveSubCategory) && Boolean(effectiveSubCategory);
+  const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
+  const isAutoAmount = showTravelDetail;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Validation
-    if (!formData.employeeName) {
-      toast.error('Please select an employee');
+    if (!formData.location.trim()) {
+      toast.error('Please enter location');
       return;
     }
-    if (!formData.locationPurpose.trim()) {
-      toast.error('Please enter location and purpose');
+    if (!formData.purpose.trim()) {
+      toast.error('Please enter purpose');
       return;
     }
     if (!formData.serviceProvider.trim()) {
@@ -129,32 +146,103 @@ export default function ExpenseFormModal({
       toast.error('Please select a date');
       return;
     }
-    if (!formData.amount || parseFloat(formData.amount) <= 0) {
-      toast.error('Please enter a valid amount');
-      return;
-    }
 
     if (isCanonicalExpenseHead(formData.expenseHead)) {
-      if (!formData.subCategory.trim()) {
+      const sub = formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
+      if (!sub) {
         toast.error('Please select a sub category');
         return;
       }
-      if (!getSubcategoriesForHead(formData.expenseHead).includes(formData.subCategory)) {
+      if (!getSubcategoriesForHead(formData.expenseHead).includes(sub)) {
         toast.error('Sub category does not match expense head');
         return;
       }
     }
 
+    if (showTravelDetail) {
+      if (!formData.fromLocation.trim()) {
+        toast.error('Please enter From');
+        return;
+      }
+      if (!formData.toLocation.trim()) {
+        toast.error('Please enter To');
+        return;
+      }
+      if (!formData.returnType.trim()) {
+        toast.error('Please enter Return');
+        return;
+      }
+      if (!formData.kilometers.trim()) {
+        toast.error('Please enter kilometers');
+        return;
+      }
+      const km = parseFloat(formData.kilometers);
+      if (Number.isNaN(km) || km < 0) {
+        toast.error('Kilometers must be a valid non-negative number');
+        return;
+      }
+    }
+
+    if (showHotelStay) {
+      if (!formData.stayDateFrom) {
+        toast.error('Please select date (from)');
+        return;
+      }
+      if (!formData.stayDateTo) {
+        toast.error('Please select date (to)');
+        return;
+      }
+      if (new Date(formData.stayDateTo) < new Date(formData.stayDateFrom)) {
+        toast.error('Date (to) cannot be earlier than date (from)');
+        return;
+      }
+    }
+
+    let amountNum: number;
+    if (isAutoAmount) {
+      const computed = computeTravelCarBikeAmount({
+        expenseHead: formData.expenseHead,
+        subCategory: effectiveSubCategory,
+        fromLocation: formData.fromLocation,
+        toLocation: formData.toLocation,
+        returnType: formData.returnType,
+        kilometers: parseFloat(formData.kilometers) || 0,
+      });
+      amountNum =
+        computed !== null && !Number.isNaN(computed)
+          ? computed
+          : parseFloat(formData.amount) || 0;
+      if (Number.isNaN(amountNum) || amountNum < 0) {
+        toast.error('Amount will be auto-calculated; using 0 until policy is configured');
+        amountNum = 0;
+      }
+    } else {
+      if (!formData.amount || parseFloat(formData.amount) <= 0) {
+        toast.error('Please enter a valid amount');
+        return;
+      }
+      amountNum = parseFloat(formData.amount);
+    }
+
+    const employeeName =
+      (isEdit && initialData?.employeeName) || currentUserName;
+
+    const subCategoryResolved =
+      formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
+
     const expense: ExpenseRecord = {
       expenseId: isEdit && initialData ? initialData.expenseId : '',
       expenseHead: formData.expenseHead,
-      subCategory: formData.subCategory.trim() || undefined,
-      locationPurpose: formData.locationPurpose,
+      subCategory: subCategoryResolved || undefined,
+      location: formData.location.trim(),
+      purpose: formData.purpose.trim(),
       serviceProvider: formData.serviceProvider,
       billNumber: formData.billNumber,
       date: formData.date,
-      amount: parseFloat(formData.amount),
-      employeeName: formData.employeeName,
+      amount: amountNum,
+      employeeName,
+      employeeId: initialData?.employeeId,
+      employeeEmail: initialData?.employeeEmail,
       monthYear: formData.monthYear,
       createdAt: initialData?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -167,23 +255,26 @@ export default function ExpenseFormModal({
             },
           ]
         : initialData?.documents || [],
+      ...(showTravelDetail
+        ? {
+            fromLocation: formData.fromLocation.trim(),
+            toLocation: formData.toLocation.trim(),
+            returnType: formData.returnType.trim(),
+            kilometers: parseFloat(formData.kilometers) || 0,
+          }
+        : {}),
+      ...(showHotelStay
+        ? {
+            stayDateFrom: formData.stayDateFrom,
+            stayDateTo: formData.stayDateTo,
+          }
+        : {}),
     };
 
     onSubmit(expense);
-    
-    // Reset form only if not editing
+
     if (!isEdit) {
-      setFormData({
-        expenseHead: 'Travel',
-        subCategory: '',
-        locationPurpose: '',
-        serviceProvider: '',
-        billNumber: '',
-        date: '',
-        amount: '',
-        employeeName: isAdmin ? '' : currentUserName,
-        monthYear: '',
-      });
+      setFormData({ ...emptyForm });
       setSelectedFile(null);
     }
   };
@@ -203,39 +294,23 @@ export default function ExpenseFormModal({
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            {/* Employee Name (Admin only) */}
-            {isAdmin && (
-              <div className="space-y-2">
-                <Label htmlFor="employee">Employee Name *</Label>
-                <Select 
-                  value={formData.employeeName} 
-                  onValueChange={(value) => setFormData({ ...formData, employeeName: value })}
-                >
-                  <SelectTrigger id="employee">
-                    <SelectValue placeholder="Select Employee" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableUsers.map(user => (
-                      <SelectItem key={user.employee_code} value={user.name}>
-                        {user.name} — {user.employee_code}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {/* Expense Head */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="expense_head">Expense Head *</Label>
-              <Select 
-                value={formData.expenseHead} 
+              <Select
+                value={formData.expenseHead}
                 onValueChange={(value) =>
                   setFormData({
                     ...formData,
                     expenseHead: value,
-                    subCategory: '',
+                    subCategory: SUB_CATEGORY_UNSET,
+                    fromLocation: '',
+                    toLocation: '',
+                    returnType: '',
+                    kilometers: '',
+                    stayDateFrom: '',
+                    stayDateTo: '',
+                    amount: isTravelCarOrBike(value, '') ? '0' : formData.amount,
                   })
                 }
               >
@@ -257,16 +332,45 @@ export default function ExpenseFormModal({
                 Sub Category{!subCategoryDisabled ? ' *' : ''}
               </Label>
               <Select
-                value={formData.subCategory || undefined}
-                onValueChange={(value) =>
-                  setFormData({ ...formData, subCategory: value })
-                }
+                value={formData.subCategory}
+                onValueChange={(value) => {
+                  const wasTravelDetail = isTravelCarOrBike(
+                    formData.expenseHead,
+                    effectiveSubCategory
+                  );
+                  const willTravelDetail = isTravelCarOrBike(formData.expenseHead, value);
+                  const wasHotelSelf = isHotelBookingSelf(
+                    formData.expenseHead,
+                    effectiveSubCategory
+                  );
+                  const willHotelSelf = isHotelBookingSelf(formData.expenseHead, value);
+                  setFormData({
+                    ...formData,
+                    subCategory: value,
+                    ...(wasTravelDetail && !willTravelDetail
+                      ? {
+                          fromLocation: '',
+                          toLocation: '',
+                          returnType: '',
+                          kilometers: '',
+                          amount: formData.amount === '0' ? '' : formData.amount,
+                        }
+                      : {}),
+                    ...(willTravelDetail && !wasTravelDetail ? { amount: '0' } : {}),
+                    ...(wasHotelSelf && !willHotelSelf
+                      ? { stayDateFrom: '', stayDateTo: '' }
+                      : {}),
+                  });
+                }}
                 disabled={subCategoryDisabled}
               >
                 <SelectTrigger id="sub_category" className={subCategoryDisabled ? 'opacity-70' : ''}>
                   <SelectValue placeholder="Select Sub Category" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={SUB_CATEGORY_UNSET} disabled className="text-muted-foreground">
+                    Select sub category
+                  </SelectItem>
                   {subCategoryOptions.map((opt) => (
                     <SelectItem key={opt} value={opt}>
                       {opt}
@@ -276,7 +380,6 @@ export default function ExpenseFormModal({
               </Select>
             </div>
 
-            {/* Date */}
             <div className="space-y-2">
               <Label htmlFor="date">Date *</Label>
               <Input
@@ -287,34 +390,116 @@ export default function ExpenseFormModal({
               />
             </div>
 
-            {/* Amount */}
             <div className="space-y-2">
               <Label htmlFor="amount">Amount (Rs) *</Label>
               <Input
                 id="amount"
                 type="number"
                 step="0.01"
-                placeholder="0.00"
+                placeholder={isAutoAmount ? 'Auto calculated' : '0.00'}
                 value={formData.amount}
                 onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                disabled={isAutoAmount}
+                readOnly={isAutoAmount}
+                className={isAutoAmount ? 'bg-gray-50' : ''}
+              />
+              {isAutoAmount && (
+                <p className="text-xs text-gray-500">
+                  Amount is auto-calculated for Travel → Car/Bike (formula pending).
+                </p>
+              )}
+            </div>
+          </div>
+
+          {showTravelDetail && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="from_location">From *</Label>
+                <Input
+                  id="from_location"
+                  value={formData.fromLocation}
+                  onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
+                  placeholder="Start location"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="to_location">To *</Label>
+                <Input
+                  id="to_location"
+                  value={formData.toLocation}
+                  onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
+                  placeholder="Destination"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="return_type">Return *</Label>
+                <Input
+                  id="return_type"
+                  value={formData.returnType}
+                  onChange={(e) => setFormData({ ...formData, returnType: e.target.value })}
+                  placeholder="e.g. Same day / Next day"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="kilometers">Kilometers (km) *</Label>
+                <Input
+                  id="kilometers"
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={formData.kilometers}
+                  onChange={(e) => setFormData({ ...formData, kilometers: e.target.value })}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          )}
+
+          {showHotelStay && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="stay_from">Date (from) *</Label>
+                <Input
+                  id="stay_from"
+                  type="date"
+                  value={formData.stayDateFrom}
+                  onChange={(e) => setFormData({ ...formData, stayDateFrom: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="stay_to">Date (to) *</Label>
+                <Input
+                  id="stay_to"
+                  type="date"
+                  value={formData.stayDateTo}
+                  onChange={(e) => setFormData({ ...formData, stayDateTo: e.target.value })}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="location">Location *</Label>
+              <Input
+                id="location"
+                placeholder="Enter location"
+                value={formData.location}
+                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="purpose">Purpose *</Label>
+              <Input
+                id="purpose"
+                placeholder="Enter purpose of expense"
+                value={formData.purpose}
+                onChange={(e) => setFormData({ ...formData, purpose: e.target.value })}
               />
             </div>
           </div>
 
-          {/* Location & Purpose */}
-          <div className="space-y-2">
-            <Label htmlFor="location_purpose">Location & Purpose *</Label>
-            <Textarea
-              id="location_purpose"
-              placeholder="Enter location and purpose of expense"
-              rows={3}
-                value={formData.locationPurpose}
-                onChange={(e) => setFormData({ ...formData, locationPurpose: e.target.value })}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {/* Service Provider */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="service_provider">Service Provider Name *</Label>
               <Input
@@ -325,7 +510,6 @@ export default function ExpenseFormModal({
               />
             </div>
 
-            {/* Bill Number */}
             <div className="space-y-2">
               <Label htmlFor="bill_number">Bill Number *</Label>
               <Input
@@ -337,20 +521,13 @@ export default function ExpenseFormModal({
             </div>
           </div>
 
-          {/* Month-Year (Auto-detected) */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="monthYear">Month-Year (Auto-detected)</Label>
-              <Input
-                id="monthYear"
-                value={formData.monthYear}
-                disabled
-                className="bg-gray-50"
-              />
+              <Input id="monthYear" value={formData.monthYear} disabled className="bg-gray-50" />
             </div>
           </div>
 
-          {/* Supporting Document */}
           <div className="space-y-2">
             <Label htmlFor="supporting_file">Supporting Document</Label>
             <div className="flex items-center gap-3">
@@ -361,12 +538,10 @@ export default function ExpenseFormModal({
                 onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
                 className="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-sm file:font-medium"
               />
-              <Upload className="w-5 h-5 text-gray-400" />
+              <Upload className="w-5 h-5 text-gray-400 shrink-0" />
             </div>
             <p className="text-xs text-gray-500">Upload PDF, JPG, PNG, or Excel file</p>
-            {selectedFile && (
-              <p className="text-xs text-green-600">✓ {selectedFile.name}</p>
-            )}
+            {selectedFile && <p className="text-xs text-green-600">✓ {selectedFile.name}</p>}
           </div>
 
           <DialogFooter>

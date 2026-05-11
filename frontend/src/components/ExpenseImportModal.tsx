@@ -20,7 +20,8 @@ interface ExpenseImportModalProps {
 interface ImportPreviewRow {
   expense_head: string;
   sub_category?: string;
-  location_purpose: string;
+  location: string;
+  purpose: string;
   service_provider: string;
   bill_number: string;
   date: string;
@@ -112,7 +113,8 @@ export default function ExpenseImportModal({
         {
           expense_head: 'Travel',
           sub_category: 'Taxi',
-          location_purpose: 'Delhi trip for client meeting',
+          location: 'Delhi',
+          purpose: 'Client meeting',
           service_provider: 'Uber',
           bill_number: 'UBR789',
           date: '2024-04-20',
@@ -127,7 +129,8 @@ export default function ExpenseImportModal({
         {
           expense_head: 'Food',
           sub_category: 'Lunch',
-          location_purpose: 'Team lunch',
+          location: 'Office',
+          purpose: 'Team lunch',
           service_provider: 'Restaurant ABC',
           bill_number: 'ABC/2024/123',
           date: '2024-04-21',
@@ -142,7 +145,8 @@ export default function ExpenseImportModal({
         {
           expense_head: 'Travel',
           sub_category: '',
-          location_purpose: '',
+          location: '',
+          purpose: '',
           service_provider: 'Ola',
           bill_number: 'OLA456',
           date: '2024-04-22',
@@ -152,7 +156,7 @@ export default function ExpenseImportModal({
           month: 'April',
           year: '2024',
           status: 'error',
-          errors: ['Missing location & purpose', 'Missing amount'],
+          errors: ['Missing location', 'Missing purpose', 'Missing amount'],
         },
       ];
 
@@ -184,7 +188,8 @@ export default function ExpenseImportModal({
       expenseId: '',
       expenseHead: row.expense_head,
       subCategory: row.sub_category?.trim() || undefined,
-      locationPurpose: row.location_purpose,
+      location: row.location,
+      purpose: row.purpose,
       serviceProvider: row.service_provider,
       billNumber: row.bill_number,
       date: row.date,
@@ -261,7 +266,7 @@ export default function ExpenseImportModal({
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
-                <strong>Expected columns:</strong> Expense Head, Sub Category, Location & Purpose, Service Provider, 
+                <strong>Expected columns:</strong> Expense Head, Sub Category, Location, Purpose, Service Provider, 
                 Bill Number, Date, Amount{isAdmin ? ', Employee Name' : ''}
               </AlertDescription>
             </Alert>
@@ -299,6 +304,7 @@ export default function ExpenseImportModal({
                     <TableHead>Expense Head</TableHead>
                     <TableHead>Sub Category</TableHead>
                     <TableHead>Location</TableHead>
+                    <TableHead>Purpose</TableHead>
                     <TableHead>Provider</TableHead>
                     <TableHead>Bill No</TableHead>
                     <TableHead>Date</TableHead>
@@ -319,7 +325,8 @@ export default function ExpenseImportModal({
                       </TableCell>
                       <TableCell>{row.expense_head}</TableCell>
                       <TableCell>{row.sub_category?.trim() ? row.sub_category : '—'}</TableCell>
-                      <TableCell className="max-w-xs truncate">{row.location_purpose || '—'}</TableCell>
+                      <TableCell className="max-w-xs truncate">{row.location || '—'}</TableCell>
+                      <TableCell className="max-w-xs truncate">{row.purpose || '—'}</TableCell>
                       <TableCell>{row.service_provider}</TableCell>
                       <TableCell>{row.bill_number}</TableCell>
                       <TableCell>{row.date}</TableCell>

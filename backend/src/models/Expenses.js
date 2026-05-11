@@ -7,22 +7,51 @@
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
 import { v4 as uuidv4 } from 'uuid';
+import log from '../utils/logger.js';
 
 const TABLE_NAME = TABLES.EXPENSES;
 
+async function getExpenseByIdSingleKey(key) {
+  const result = await dynamoDB
+    .get({
+      TableName: TABLE_NAME,
+      Key: { expenseId: key },
+    })
+    .promise();
+
+  if (result.Item?.is_deleted) return null;
+  return result.Item || null;
+}
+
 /**
- * Get expense by ID
+ * Get expense by ID (supports legacy EXPENSE#… vs current EXP#… partition keys).
  * @param {string} expenseId - Expense ID
  * @returns {Promise<Object>} Expense record
  */
 export const getExpenseById = async (expenseId) => {
-  const result = await dynamoDB.get({
-    TableName: TABLE_NAME,
-    Key: { expenseId },
-  }).promise();
+  const id = String(expenseId ?? '').trim();
+  if (!id) return null;
 
-  if (result.Item?.is_deleted) return null;
-  return result.Item || null;
+  let item = await getExpenseByIdSingleKey(id);
+  if (item) return item;
+
+  const alternates = [];
+  if (id.startsWith('EXP#')) alternates.push(id.replace(/^EXP#/, 'EXPENSE#'));
+  if (id.startsWith('EXPENSE#')) alternates.push(id.replace(/^EXPENSE#/, 'EXP#'));
+
+  for (const alt of alternates) {
+    if (!alt || alt === id) continue;
+    item = await getExpenseByIdSingleKey(alt);
+    if (item) {
+      log.info('Expense lookup resolved with alternate pk', {
+        requestedRouteId: id,
+        dynamoExpenseId: item.expenseId,
+      });
+      return item;
+    }
+  }
+
+  return null;
 };
 
 /**
@@ -92,12 +121,15 @@ export const createExpense = async (expenseData) => {
     expenseId: `EXP#${uuidv4()}`,
     expenseHead: expenseData.expenseHead,
     ...(subCategoryTrimmed ? { subCategory: subCategoryTrimmed } : {}),
-    locationPurpose: expenseData.locationPurpose,
+    location: expenseData.location || '',
+    purpose: expenseData.purpose || '',
     serviceProvider: expenseData.serviceProvider,
     billNumber: expenseData.billNumber,
     date: expenseData.date,
     amount: Number(expenseData.amount),
+    employeeId: expenseData.employeeId || expenseData.created_by_employee_code || '',
     employeeName: expenseData.employeeName,
+    employeeEmail: expenseData.employeeEmail || '',
     monthYear,
     documents,
     created_by_employee_code: expenseData.created_by_employee_code || '',
@@ -119,6 +151,30 @@ export const createExpense = async (expenseData) => {
     rejected_at: expenseData.rejected_at || '',
     approval_comments: expenseData.approval_comments || '',
   };
+
+  if (expenseData.fromLocation) {
+    item.fromLocation = expenseData.fromLocation;
+  }
+  if (expenseData.toLocation) {
+    item.toLocation = expenseData.toLocation;
+  }
+  if (expenseData.returnType) {
+    item.returnType = expenseData.returnType;
+  }
+  if (
+    expenseData.kilometers !== undefined &&
+    expenseData.kilometers !== null &&
+    String(expenseData.kilometers).trim() !== '' &&
+    !Number.isNaN(Number(expenseData.kilometers))
+  ) {
+    item.kilometers = Number(expenseData.kilometers);
+  }
+  if (expenseData.stayDateFrom) {
+    item.stayDateFrom = expenseData.stayDateFrom;
+  }
+  if (expenseData.stayDateTo) {
+    item.stayDateTo = expenseData.stayDateTo;
+  }
 
   await dynamoDB.put({
     TableName: TABLE_NAME,

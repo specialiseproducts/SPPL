@@ -21,6 +21,7 @@ export interface User {
   name: string;
   role: UserRole;
   profilePhoto?: string;
+  officialEmail?: string;
 }
 
 export default function App() {
@@ -117,6 +118,7 @@ export default function App() {
         name: user.name,
         role: user.role,
         profilePhoto: user.profilePhoto,
+        officialEmail: user.officialEmail,
       }
     : null;
 

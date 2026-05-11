@@ -38,7 +38,21 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
 
   const contentType = response.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
-  const payload = isJson ? await response.json() : null;
+  let payload: Record<string, unknown> | null = null;
+  let rawText = '';
+  if (isJson) {
+    try {
+      payload = (await response.json()) as Record<string, unknown>;
+    } catch {
+      payload = null;
+    }
+  } else {
+    try {
+      rawText = await response.text();
+    } catch {
+      rawText = '';
+    }
+  }
 
   if (response.status === 401) {
     removeToken();
@@ -46,7 +60,16 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
   }
 
   if (!response.ok) {
-    const message = payload?.message || 'Request failed';
+    const fromPayload =
+      (typeof payload?.message === 'string' && payload.message.trim()) ||
+      (typeof payload?.error === 'string' && payload.error.trim()) ||
+      (Array.isArray(payload?.errors) && payload.errors.map(String).join('; ')) ||
+      '';
+    const fromText = rawText && rawText.length < 500 ? rawText.trim() : '';
+    const message =
+      fromPayload ||
+      fromText ||
+      `Request failed (${response.status})`;
     const error = new Error(message);
     (error as any).status = response.status;
     (error as any).payload = payload;
