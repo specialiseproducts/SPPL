@@ -7,7 +7,7 @@ import {
   removeToken,
 } from '../services/authService';
 
-export type AuthRole = 'Developer' | 'Admin' | 'User' | 'Accountant' | 'None';
+export type AuthRole = 'Developer' | 'Admin' | 'Super Admin' | 'User' | 'Accountant' | 'None';
 
 export interface AuthUser {
   id: string;
@@ -64,9 +64,17 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 function toRole(role: string): AuthRole {
   const value = String(role || '').trim();
-  if (value === 'Developer' || value === 'Admin' || value === 'User' || value === 'Accountant' || value === 'None') {
+  if (
+    value === 'Developer' ||
+    value === 'Admin' ||
+    value === 'Super Admin' ||
+    value === 'User' ||
+    value === 'Accountant' ||
+    value === 'None'
+  ) {
     return value;
   }
+  if (value.toLowerCase() === 'super admin') return 'Super Admin';
   return 'User';
 }
 

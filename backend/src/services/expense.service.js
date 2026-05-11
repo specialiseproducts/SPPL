@@ -14,7 +14,7 @@ import {
   EXPENSE_SUBCATEGORY_MAP,
 } from '../constants/expenseSubCategories.js';
 import { buildAuditFields } from '../utils/audit.js';
-import { canAccessAllRecords, isOwnedByUser } from '../utils/accessControl.js';
+import { canAccessAllExpenseRecords, isOwnedByUser } from '../utils/accessControl.js';
 import { withApprovalDefaults } from '../utils/approval.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
@@ -98,7 +98,7 @@ export const getExpenseById = async (expenseId, authUser = null, effectiveRole =
 
     const canonicalExpenseId = expense.expenseId;
 
-    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
+    if (authUser && !canAccessAllExpenseRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;
@@ -128,7 +128,7 @@ export const getExpenses = async (filters = {}, options = {}, authUser = null, e
     log.info('Getting expenses with filters:', filters);
     const rows = await ExpenseModel.getAllExpenses(filters, options);
     const filtered =
-      !authUser || canAccessAllRecords(effectiveRole)
+      !authUser || canAccessAllExpenseRecords(effectiveRole)
         ? rows
         : rows.filter((row) => isOwnedByUser(row, authUser));
     return filtered.map((row) => enrichExpenseRow(row));
@@ -352,7 +352,7 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       throw new Error('Expense not found');
     }
     const canonicalExpenseId = existing.expenseId;
-    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
+    if (authUser && !canAccessAllExpenseRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;
@@ -421,7 +421,7 @@ export const deleteExpense = async (expenseId, userId, authUser = null, effectiv
       throw new Error('Expense not found');
     }
     const canonicalExpenseId = existing.expenseId;
-    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
+    if (authUser && !canAccessAllExpenseRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;
@@ -461,7 +461,7 @@ export const getExpenseDocuments = async (expenseId, authUser = null, effectiveR
       throw new Error('Expense not found');
     }
     const canonicalExpenseId = expense.expenseId;
-    if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
+    if (authUser && !canAccessAllExpenseRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;

@@ -1,8 +1,8 @@
 import * as AccessModel from '../models/UserAccessControl.js';
 import { logActivity } from '../utils/activityLogger.js';
 
-const GLOBAL_ROLES = new Set(['Developer', 'Admin', 'User']);
-const OVERRIDE_ROLES = new Set(['Developer', 'Admin', 'User', 'None']);
+const GLOBAL_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User']);
+const OVERRIDE_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User', 'None']);
 const MODULES = new Set(['salesForecasting', 'expenses', 'payroll', 'purchases', 'crm', 'userManagement']);
 
 function validatePayload(payload = {}) {

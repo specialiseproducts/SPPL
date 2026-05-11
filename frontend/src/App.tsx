@@ -10,7 +10,7 @@ import ProfilePage from './components/ProfilePage';
 import type { UserMaster } from './components/UserCreationTab';
 import { isAdmin, isDeveloper } from './utils/accessControl';
 
-export type UserRole = 'Developer' | 'Admin' | 'User' | 'Accountant' | 'None';
+export type UserRole = 'Developer' | 'Admin' | 'Super Admin' | 'User' | 'Accountant' | 'None';
 
 export interface User {
   id: string;

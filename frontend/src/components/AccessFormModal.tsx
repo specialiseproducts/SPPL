@@ -163,6 +163,7 @@ export default function AccessFormModal({ isOpen, onClose, onSubmit, availableUs
               <SelectContent>
                 <SelectItem value="Developer">Developer</SelectItem>
                 <SelectItem value="Admin">Admin</SelectItem>
+                <SelectItem value="Super Admin">Super Admin</SelectItem>
                 <SelectItem value="User">User</SelectItem>
               </SelectContent>
             </Select>
@@ -216,6 +217,7 @@ export default function AccessFormModal({ isOpen, onClose, onSubmit, availableUs
                         <SelectContent>
                           <SelectItem value="Developer">Developer</SelectItem>
                           <SelectItem value="Admin">Admin</SelectItem>
+                          <SelectItem value="Super Admin">Super Admin</SelectItem>
                           <SelectItem value="User">User</SelectItem>
                           <SelectItem value="None">None</SelectItem>
                         </SelectContent>

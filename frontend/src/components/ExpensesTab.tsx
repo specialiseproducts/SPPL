@@ -95,6 +95,8 @@ function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord {
 
 interface ExpensesTabProps {
   userRole: UserRole;
+  /** When true, list and filters behave like a standard user (own records only); CRUD still follows userRole. Used for Admin/Super Admin "My Expenses" tab. */
+  scopeSelfOnly?: boolean;
   currentUserName: string;
   currentEmployeeCode: string;
   availableUsers: UserMaster[];
@@ -137,7 +139,13 @@ function escapeCsvCell(value: string): string {
   return s;
 }
 
-export default function ExpensesTab({ userRole, currentUserName, currentEmployeeCode, availableUsers }: ExpensesTabProps) {
+export default function ExpensesTab({
+  userRole,
+  scopeSelfOnly = false,
+  currentUserName,
+  currentEmployeeCode,
+  availableUsers,
+}: ExpensesTabProps) {
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -147,7 +155,7 @@ export default function ExpensesTab({ userRole, currentUserName, currentEmployee
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState<string>('all');
 
-  const privileged = isAdmin(userRole) || isDeveloper(userRole);
+  const privileged = !scopeSelfOnly && (isAdmin(userRole) || isDeveloper(userRole));
   const canCreateRecords = canCreate(userRole);
   const canEditRecords = canEdit(userRole);
   const canDeleteRecords = canDelete(userRole);

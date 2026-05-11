@@ -5,7 +5,7 @@ import UserManagement from './UserManagement';
 import Expenses from './Expenses';
 import SalesForecasting from './SalesForecasting';
 import Purchases from './Purchases';
-import type { User } from '../App';
+import type { User, UserRole } from '../App';
 import { Card } from './ui/card';
 import type { UserMaster } from './UserCreationTab';
 
@@ -47,7 +47,7 @@ export default function Dashboard({ user, onLogout, initialModule, onBackToDashb
         <Expenses
           user={user}
           availableUsers={availableUsers}
-          moduleRole={moduleRoles.expenses || user.role}
+          moduleRole={(moduleRoles.expenses || user.role) as UserRole}
         />
       );
     }

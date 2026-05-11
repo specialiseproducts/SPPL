@@ -6,12 +6,19 @@
 function normalizeRole(role) {
   const value = String(role || '').trim();
   if (!value) return 'User';
-  if (value === 'Developer' || value === 'Admin' || value === 'User' || value === 'None') {
+  if (
+    value === 'Developer' ||
+    value === 'Admin' ||
+    value === 'Super Admin' ||
+    value === 'User' ||
+    value === 'None'
+  ) {
     return value;
   }
   const lower = value.toLowerCase();
   if (lower === 'developer') return 'Developer';
   if (lower === 'admin') return 'Admin';
+  if (lower === 'super admin') return 'Super Admin';
   if (lower === 'none') return 'None';
   return 'User';
 }
@@ -24,8 +31,17 @@ export function isAdmin(role) {
   return normalizeRole(role) === 'Admin';
 }
 
+export function isSuperAdmin(role) {
+  return normalizeRole(role) === 'Super Admin';
+}
+
 export function isUser(role) {
   return normalizeRole(role) === 'User';
+}
+
+/** Expenses list/API: only Developer may read or act on all employees' records. */
+export function canAccessAllExpenseRecords(role) {
+  return isDeveloper(role);
 }
 
 export function getEffectiveRole(accessControl, moduleName) {
@@ -68,7 +84,7 @@ export function canExport(role) {
 
 export function canAccessAllRecords(role) {
   const r = normalizeRole(role);
-  return isDeveloper(r) || isAdmin(r);
+  return isDeveloper(r) || isAdmin(r) || isSuperAdmin(r);
 }
 
 export function buildOwnershipFilter(user, role) {

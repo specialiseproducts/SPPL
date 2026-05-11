@@ -205,7 +205,9 @@ export default function AccessManagementTab({ availableUsers }: AccessManagement
                           ? 'bg-purple-100 text-purple-800'
                           : rule.baseRole === 'Admin'
                             ? 'bg-blue-100 text-blue-800'
-                            : 'bg-gray-100 text-gray-800'
+                            : rule.baseRole === 'Super Admin'
+                              ? 'bg-indigo-100 text-indigo-900'
+                              : 'bg-gray-100 text-gray-800'
                       }`}>
                         {rule.baseRole}
                       </span>

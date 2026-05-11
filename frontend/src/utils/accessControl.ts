@@ -5,10 +5,19 @@ type AccessControl = {
 
 function normalizeRole(role?: string) {
   const value = String(role || '').trim();
-  if (value === 'Developer' || value === 'Admin' || value === 'User' || value === 'None') return value;
+  if (
+    value === 'Developer' ||
+    value === 'Admin' ||
+    value === 'Super Admin' ||
+    value === 'User' ||
+    value === 'None'
+  ) {
+    return value;
+  }
   const lower = value.toLowerCase();
   if (lower === 'developer') return 'Developer';
   if (lower === 'admin') return 'Admin';
+  if (lower === 'super admin') return 'Super Admin';
   if (lower === 'none') return 'None';
   return 'User';
 }
@@ -35,6 +44,10 @@ export function isDeveloper(role: string) {
 
 export function isAdmin(role: string) {
   return normalizeRole(role) === 'Admin';
+}
+
+export function isSuperAdmin(role: string) {
+  return normalizeRole(role) === 'Super Admin';
 }
 
 export function isUser(role: string) {
