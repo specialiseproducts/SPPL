@@ -23,4 +23,7 @@ Thumbs.db
 dist/
 build/
 
+# Local fallback when DynamoDB ExpenseTravelRateSettings table is not created
+data/expense-travel-rates.json
+
 

@@ -18,7 +18,12 @@ import { canAccessAllExpenseRecords, isOwnedByUser } from '../utils/accessContro
 import { withApprovalDefaults } from '../utils/approval.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
-import { validateExpenseBusinessRules } from '../utils/expenseValidation.js';
+import {
+  validateExpenseBusinessRules,
+  isTravelCarOrBike,
+} from '../utils/expenseValidation.js';
+import { computeTravelCarBikeRupeeAmount } from '../utils/expenseTravelAmount.js';
+import * as ExpenseTravelRateSettingsService from './expenseTravelRateSettings.service.js';
 import { resolveLocationFieldsFromRow } from '../utils/expenseLocationFields.js';
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy.js';
 import log from '../utils/logger.js';
@@ -37,6 +42,8 @@ const OTHER_FORM_FIELDS = [
   'kilometers',
   'stayDateFrom',
   'stayDateTo',
+  'fuelType',
+  'supportingDocument',
 ];
 
 function trimText(v) {
@@ -44,6 +51,14 @@ function trimText(v) {
     return '';
   }
   return String(v).trim();
+}
+
+function normalizeSupportingDocumentLabel(value, hasFile) {
+  const t = trimText(value).toLowerCase();
+  if (t === 'yes') return 'Yes';
+  if (t === 'no') return 'No';
+  if (hasFile) return 'Yes';
+  return 'No';
 }
 
 function enrichExpenseRow(row) {
@@ -174,15 +189,6 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       throw new Error('date is required');
     }
 
-    const amountRaw = raw.amount;
-    if (amountRaw === undefined || amountRaw === null || trimText(amountRaw) === '') {
-      throw new Error('amount is required');
-    }
-    const amountNum = Number(amountRaw);
-    if (Number.isNaN(amountNum)) {
-      throw new Error('amount must be a number');
-    }
-
     let location = trimText(raw.location);
     let purpose = trimText(raw.purpose);
     const legacyCombined = trimText(raw[EXPENSE_LEGACY_COMBINED_LOCATION_ATTR]);
@@ -235,6 +241,35 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       }
     }
 
+    if (isTravelCarOrBike(expenseHead, subCategory || '')) {
+      const ft = trimText(raw.fuelType);
+      if (ft !== 'Petrol/Diesel' && ft !== 'Electric') {
+        throw new Error('fuelType must be Petrol/Diesel or Electric for Travel Car/Bike');
+      }
+      travelExtras.fuelType = ft;
+    }
+
+    let amountNum;
+    if (isTravelCarOrBike(expenseHead, subCategory || '')) {
+      const rates = await ExpenseTravelRateSettingsService.getTravelRateSettingsForApi();
+      amountNum = computeTravelCarBikeRupeeAmount({
+        expenseHead,
+        subCategory: subCategory || '',
+        kilometers: travelExtras.kilometers,
+        fuelType: travelExtras.fuelType,
+        rates: { car: rates.car, bike: rates.bike },
+      });
+    } else {
+      const amountRaw = raw.amount;
+      if (amountRaw === undefined || amountRaw === null || trimText(amountRaw) === '') {
+        throw new Error('amount is required');
+      }
+      amountNum = Number(amountRaw);
+      if (Number.isNaN(amountNum)) {
+        throw new Error('amount must be a number');
+      }
+    }
+
     const hotelExtras = {};
     const sdf = trimText(raw.stayDateFrom);
     const sdt = trimText(raw.stayDateTo);
@@ -244,6 +279,16 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (sdt) {
       hotelExtras.stayDateTo = sdt;
     }
+
+    const hasUploadedDocs = Array.isArray(documents) && documents.length > 0;
+    const supportingDocument = normalizeSupportingDocumentLabel(
+      raw.supportingDocument,
+      hasUploadedDocs
+    );
+    if (supportingDocument === 'Yes' && !hasUploadedDocs) {
+      throw new Error('Supporting document file is required when Supporting Document is Yes');
+    }
+    const documentsForItem = supportingDocument === 'No' ? [] : documents || [];
 
     const basePayload = {
       expenseHead,
@@ -258,6 +303,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       employeeName,
       employeeEmail,
       amount: amountNum,
+      supportingDocument,
       ...travelExtras,
       ...hotelExtras,
     };
@@ -267,7 +313,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     const payload = {
       ...withApprovalDefaults(basePayload),
       ...auditFields,
-      documents: Array.isArray(documents) ? documents : [],
+      documents: documentsForItem,
       createdAt: raw.createdAt || auditFields.created_at || undefined,
       updatedAt: auditFields.updated_at || undefined,
     };
@@ -292,11 +338,13 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     });
 
     const mergedDocuments = [];
-    if (Array.isArray(documents)) {
-      mergedDocuments.push(...documents);
-    }
-    if (Array.isArray(raw.documents) && raw.documents.every((d) => d && typeof d === 'object')) {
-      mergedDocuments.push(...raw.documents);
+    if (supportingDocument === 'Yes') {
+      if (Array.isArray(documentsForItem)) {
+        mergedDocuments.push(...documentsForItem);
+      }
+      if (Array.isArray(raw.documents) && raw.documents.every((d) => d && typeof d === 'object')) {
+        mergedDocuments.push(...raw.documents);
+      }
     }
     const savedDocuments = [];
 
@@ -366,6 +414,20 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     delete updatePayload.employeeId;
     delete updatePayload.employeeEmail;
 
+    const sdUpdate = trimText(updatePayload.supportingDocument);
+    if (sdUpdate.toLowerCase() === 'no') {
+      const existingDocs = await ExpenseDocumentsModel.getDocumentsByExpenseId(canonicalExpenseId);
+      for (const d of existingDocs) {
+        if (d?.documentId) {
+          await ExpenseDocumentsModel.deleteDocument(d.documentId);
+        }
+      }
+      updatePayload.documents = [];
+      updatePayload.supportingDocument = 'No';
+    } else if (sdUpdate.toLowerCase() === 'yes') {
+      updatePayload.supportingDocument = 'Yes';
+    }
+
     const merged = {
       ...existing,
       ...updatePayload,
@@ -383,7 +445,34 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     updatePayload.location = resolvedLp.location;
     updatePayload.purpose = resolvedLp.purpose;
 
+    const mergedSub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
+    if (!isTravelCarOrBike(merged.expenseHead, mergedSub)) {
+      updatePayload.fuelType = '';
+    }
+
+    if (trimText(updatePayload.supportingDocument).toLowerCase() === 'yes') {
+      const hasNewDocs = Array.isArray(updatePayload.documents) && updatePayload.documents.length > 0;
+      const hasOldDocs = Array.isArray(existing.documents) && existing.documents.length > 0;
+      if (!hasNewDocs && !hasOldDocs) {
+        throw new Error('Supporting document file is required when Supporting Document is Yes');
+      }
+    }
+
     validateMergedSubCategoryOnUpdate(merged, updatePayload);
+
+    if (isTravelCarOrBike(merged.expenseHead, mergedSub)) {
+      const rates = await ExpenseTravelRateSettingsService.getTravelRateSettingsForApi();
+      const authoritative = computeTravelCarBikeRupeeAmount({
+        expenseHead: merged.expenseHead,
+        subCategory: mergedSub,
+        kilometers: merged.kilometers,
+        fuelType: merged.fuelType,
+        rates: { car: rates.car, bike: rates.bike },
+      });
+      updatePayload.amount = authoritative;
+      merged.amount = authoritative;
+    }
+
     validateExpenseBusinessRules(merged);
 
     log.info('Updating expense:', { routeOrClientId: expenseId, dynamoKey: canonicalExpenseId });

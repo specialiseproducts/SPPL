@@ -121,6 +121,9 @@ export const createExpense = async (expenseData) => {
     expenseId: `EXP#${uuidv4()}`,
     expenseHead: expenseData.expenseHead,
     ...(subCategoryTrimmed ? { subCategory: subCategoryTrimmed } : {}),
+    ...(expenseData.supportingDocument
+      ? { supportingDocument: String(expenseData.supportingDocument) }
+      : {}),
     location: expenseData.location || '',
     purpose: expenseData.purpose || '',
     serviceProvider: expenseData.serviceProvider,
@@ -168,6 +171,9 @@ export const createExpense = async (expenseData) => {
     !Number.isNaN(Number(expenseData.kilometers))
   ) {
     item.kilometers = Number(expenseData.kilometers);
+  }
+  if (expenseData.fuelType != null && String(expenseData.fuelType).trim() !== '') {
+    item.fuelType = String(expenseData.fuelType).trim();
   }
   if (expenseData.stayDateFrom) {
     item.stayDateFrom = expenseData.stayDateFrom;

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Download, Upload, Search, Edit, Trash2 } from 'lucide-react';
+import { Plus, Download, Upload, Search, Edit, Trash2, Settings } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Input } from './ui/input';
@@ -9,11 +9,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { toast } from 'sonner';
 import ExpenseFormModal from './ExpenseFormModal';
 import ExpenseImportModal from './ExpenseImportModal';
+import ExpenseRateSettingsModal, {
+  type ExpenseTravelRateSettings,
+} from './ExpenseRateSettingsModal';
 import type { UserRole } from '../App';
 import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy';
-import { canCreate, canDelete, canEdit, canExport, isAdmin, isDeveloper } from '../utils/accessControl';
+import {
+  canCreate,
+  canDelete,
+  canEdit,
+  canExport,
+  isAdmin,
+  isDeveloper,
+  isSuperAdmin,
+} from '../utils/accessControl';
 
 interface ExpenseDocument {
   documentId?: string;
@@ -45,6 +56,9 @@ export interface ExpenseRecord {
   kilometers?: number;
   stayDateFrom?: string;
   stayDateTo?: string;
+  /** Yes = supporting file expected/present; No = none */
+  supportingDocument?: 'Yes' | 'No';
+  fuelType?: string;
   documents?: ExpenseDocument[];
   selectedFile?: File;
 }
@@ -89,6 +103,11 @@ function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord {
     kilometers,
     stayDateFrom: raw.stayDateFrom != null ? String(raw.stayDateFrom) : undefined,
     stayDateTo: raw.stayDateTo != null ? String(raw.stayDateTo) : undefined,
+    supportingDocument:
+      raw.supportingDocument === 'Yes' || raw.supportingDocument === 'No'
+        ? raw.supportingDocument
+        : undefined,
+    fuelType: raw.fuelType != null ? String(raw.fuelType).trim() : undefined,
     documents: Array.isArray(raw.documents) ? (raw.documents as ExpenseDocument[]) : undefined,
   };
 }
@@ -104,6 +123,11 @@ interface ExpensesTabProps {
 
 const months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
 const years = Array.from({ length: 11 }, (_, i) => (2020 + i).toString());
+
+const DEFAULT_TRAVEL_RATES: ExpenseTravelRateSettings = {
+  car: { petrolDieselRate: 0, electricRate: 0 },
+  bike: { petrolDieselRate: 0, electricRate: 0 },
+};
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
@@ -149,6 +173,8 @@ export default function ExpensesTab({
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isRateSettingsOpen, setIsRateSettingsOpen] = useState(false);
+  const [travelRates, setTravelRates] = useState<ExpenseTravelRateSettings>(DEFAULT_TRAVEL_RATES);
   const [editingExpense, setEditingExpense] = useState<ExpenseRecord | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState<string>('all');
@@ -177,6 +203,57 @@ export default function ExpensesTab({
       toast.error('Failed to load expenses');
     });
   }, []);
+
+  useEffect(() => {
+    if (!isSuperAdmin(userRole)) return;
+    (async () => {
+      try {
+        const res = await apiFetch('/api/expenses/settings/travel-rates');
+        if (res?.success && res.data?.car && res.data?.bike) {
+          setTravelRates({
+            car: {
+              petrolDieselRate: Number(res.data.car.petrolDieselRate) || 0,
+              electricRate: Number(res.data.car.electricRate) || 0,
+            },
+            bike: {
+              petrolDieselRate: Number(res.data.bike.petrolDieselRate) || 0,
+              electricRate: Number(res.data.bike.electricRate) || 0,
+            },
+          });
+        }
+      } catch {
+        /* non–Super Admin or table missing: ignore */
+      }
+    })();
+  }, [userRole]);
+
+  const handleSaveTravelRates = async (rates: ExpenseTravelRateSettings) => {
+    try {
+      const res = await apiFetch('/api/expenses/settings/travel-rates', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rates),
+      });
+      if (!res?.success) {
+        throw new Error(res?.message || 'Failed to save settings');
+      }
+      setTravelRates({
+        car: {
+          petrolDieselRate: Number(res.data?.car?.petrolDieselRate) ?? rates.car.petrolDieselRate,
+          electricRate: Number(res.data?.car?.electricRate) ?? rates.car.electricRate,
+        },
+        bike: {
+          petrolDieselRate: Number(res.data?.bike?.petrolDieselRate) ?? rates.bike.petrolDieselRate,
+          electricRate: Number(res.data?.bike?.electricRate) ?? rates.bike.electricRate,
+        },
+      });
+      setIsRateSettingsOpen(false);
+      toast.success('Expense rate settings saved');
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+      throw error;
+    }
+  };
 
   const handleCreateExpense = async (expense: ExpenseRecord) => {
     try {
@@ -209,6 +286,12 @@ export default function ExpensesTab({
       }
       if (expense.stayDateTo) {
         formData.append('stayDateTo', expense.stayDateTo);
+      }
+      if (expense.supportingDocument) {
+        formData.append('supportingDocument', expense.supportingDocument);
+      }
+      if (expense.fuelType) {
+        formData.append('fuelType', expense.fuelType);
       }
 
       if (expense.selectedFile) {
@@ -288,6 +371,12 @@ export default function ExpensesTab({
       if (stayDateTo) {
         formData.append('stayDateTo', stayDateTo);
       }
+      if (expense.supportingDocument) {
+        formData.append('supportingDocument', expense.supportingDocument);
+      }
+      if (expense.fuelType) {
+        formData.append('fuelType', expense.fuelType);
+      }
 
       if (selectedFile) {
         formData.append('file', selectedFile);
@@ -366,6 +455,8 @@ export default function ExpensesTab({
       'Date',
       'Amount (Rs)',
       'Document URL',
+      'Supporting document',
+      'Fuel type',
       ...(privileged ? ['Employee Name'] : []),
       'Month-Year',
     ];
@@ -394,6 +485,9 @@ export default function ExpensesTab({
         formatDateCell(expense.date),
         String(expense.amount),
         docUrl,
+        expense.supportingDocument ??
+          (expense.documents && expense.documents.length > 0 ? 'Yes' : 'No'),
+        displayCell(expense.fuelType),
         ...(privileged ? [expense.employeeName] : []),
         expense.monthYear,
       ];
@@ -453,6 +547,8 @@ export default function ExpensesTab({
         expense.kilometers !== undefined && expense.kilometers !== null
           ? String(expense.kilometers)
           : '',
+        expense.fuelType ?? '',
+        expense.supportingDocument ?? '',
         expense.employeeName ?? '',
         expense.monthYear ?? '',
       ]
@@ -481,6 +577,17 @@ export default function ExpensesTab({
             >
               <Download className="w-4 h-4" />
               Export Data
+            </Button>
+          )}
+          {isSuperAdmin(userRole) && (
+            <Button
+              type="button"
+              onClick={() => setIsRateSettingsOpen(true)}
+              variant="outline"
+              size="icon"
+              title="Expense rate settings"
+            >
+              <Settings className="w-4 h-4" />
             </Button>
           )}
           {canCreateRecords && (
@@ -578,7 +685,7 @@ export default function ExpensesTab({
       <div className="border rounded-lg overflow-hidden">
         <TooltipProvider>
           <div className="w-full overflow-x-auto">
-          <Table className="min-w-[1100px]">
+          <Table className="min-w-[1280px]">
             <TableHeader>
               <TableRow className="bg-gray-50">
                 <TableHead className="whitespace-nowrap">Sr. #</TableHead>
@@ -597,6 +704,8 @@ export default function ExpensesTab({
                 <TableHead className="whitespace-nowrap">Date</TableHead>
                 <TableHead className="whitespace-nowrap">Amount (Rs)</TableHead>
                 <TableHead className="whitespace-nowrap">Document</TableHead>
+                <TableHead className="whitespace-nowrap">Supporting doc.</TableHead>
+                <TableHead className="whitespace-nowrap">Fuel type</TableHead>
                 {privileged && <TableHead className="whitespace-nowrap">Employee Name</TableHead>}
                 <TableHead className="whitespace-nowrap">Month-Year</TableHead>
                 <TableHead className="whitespace-nowrap">Actions</TableHead>
@@ -605,7 +714,7 @@ export default function ExpensesTab({
             <TableBody>
               {filteredExpenses.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={privileged ? 19 : 18} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={privileged ? 21 : 20} className="text-center py-8 text-gray-500">
                     No expense records found
                   </TableCell>
                 </TableRow>
@@ -690,6 +799,11 @@ export default function ExpensesTab({
                         '—'
                       )}
                     </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {expense.supportingDocument ??
+                        (expense.documents && expense.documents.length > 0 ? 'Yes' : 'No')}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">{displayCell(expense.fuelType)}</TableCell>
                     {privileged && <TableCell>{displayCell(expense.employeeName)}</TableCell>}
                     <TableCell className="whitespace-nowrap">{displayCell(expense.monthYear)}</TableCell>
                     <TableCell>
@@ -764,6 +878,15 @@ export default function ExpensesTab({
         currentEmployeeCode={currentEmployeeCode}
         currentUserName={currentUserName}
       />}
+
+      {isSuperAdmin(userRole) && (
+        <ExpenseRateSettingsModal
+          isOpen={isRateSettingsOpen}
+          onClose={() => setIsRateSettingsOpen(false)}
+          initialRates={travelRates}
+          onSave={handleSaveTravelRates}
+        />
+      )}
     </Card>
   );
 }

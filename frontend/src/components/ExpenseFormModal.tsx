@@ -15,8 +15,11 @@ import {
 import {
   isTravelCarOrBike,
   isHotelBookingSelf,
-  computeTravelCarBikeAmount,
+  computeTravelCarBikeRupeeAmount,
+  formatTravelCarBikeAmountField,
+  type ExpenseTravelRates,
 } from '../utils/expenseAmountCalculation';
+import { apiFetch } from '../services/api';
 
 interface ExpenseFormModalProps {
   isOpen: boolean;
@@ -32,6 +35,9 @@ interface ExpenseFormModalProps {
 
 /** Radix Select requires `value` to match an item; use sentinel for "not chosen yet". */
 const SUB_CATEGORY_UNSET = '__unset__';
+const FUEL_TYPE_UNSET = '__fuel_unset__';
+
+const SUPPORTING_FILE_EXT = /\.(doc|docx|pdf|jpg|jpeg|png|xls|xlsx)$/i;
 
 const emptyForm = {
   expenseHead: 'Travel',
@@ -49,6 +55,8 @@ const emptyForm = {
   kilometers: '',
   stayDateFrom: '',
   stayDateTo: '',
+  supportingDocument: 'No' as 'Yes' | 'No',
+  fuelType: FUEL_TYPE_UNSET,
 };
 
 export default function ExpenseFormModal({
@@ -62,6 +70,7 @@ export default function ExpenseFormModal({
   isEdit,
 }: ExpenseFormModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [travelRates, setTravelRates] = useState<ExpenseTravelRates | null>(null);
 
   const expenseHeadOptions = useMemo(() => {
     const base: string[] = [...EXPENSE_HEADS];
@@ -81,6 +90,17 @@ export default function ExpenseFormModal({
       const options = getSubcategoriesForHead(head);
       const subCategory =
         savedSub && options.includes(savedSub) ? savedSub : SUB_CATEGORY_UNSET;
+      const sdRaw = initialData.supportingDocument;
+      const supportingDocument: 'Yes' | 'No' =
+        sdRaw === 'Yes' || sdRaw === 'No'
+          ? sdRaw
+          : initialData.documents && initialData.documents.length > 0
+            ? 'Yes'
+            : 'No';
+      const ft = initialData.fuelType?.trim();
+      const fuelType =
+        ft === 'Petrol/Diesel' || ft === 'Electric' ? ft : FUEL_TYPE_UNSET;
+
       setFormData({
         expenseHead: head,
         subCategory,
@@ -100,12 +120,64 @@ export default function ExpenseFormModal({
             : '',
         stayDateFrom: initialData.stayDateFrom ?? '',
         stayDateTo: initialData.stayDateTo ?? '',
+        supportingDocument,
+        fuelType,
       });
     } else {
       setFormData({ ...emptyForm });
     }
     setSelectedFile(null);
   }, [initialData, isOpen]);
+
+  useEffect(() => {
+    if (formData.supportingDocument === 'No') {
+      setSelectedFile(null);
+    }
+  }, [formData.supportingDocument]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = (await apiFetch('/api/expenses/settings/travel-rates')) as {
+          success?: boolean;
+          data?: {
+            car?: { petrolDieselRate?: number; electricRate?: number };
+            bike?: { petrolDieselRate?: number; electricRate?: number };
+          };
+        };
+        if (cancelled) return;
+        if (res?.success && res.data?.car && res.data?.bike) {
+          setTravelRates({
+            car: {
+              petrolDieselRate: Number(res.data.car.petrolDieselRate) || 0,
+              electricRate: Number(res.data.car.electricRate) || 0,
+            },
+            bike: {
+              petrolDieselRate: Number(res.data.bike.petrolDieselRate) || 0,
+              electricRate: Number(res.data.bike.electricRate) || 0,
+            },
+          });
+        } else {
+          setTravelRates({
+            car: { petrolDieselRate: 0, electricRate: 0 },
+            bike: { petrolDieselRate: 0, electricRate: 0 },
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setTravelRates({
+            car: { petrolDieselRate: 0, electricRate: 0 },
+            bike: { petrolDieselRate: 0, electricRate: 0 },
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     if (formData.date) {
@@ -122,6 +194,39 @@ export default function ExpenseFormModal({
     isTravelCarOrBike(formData.expenseHead, effectiveSubCategory) && Boolean(effectiveSubCategory);
   const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
   const isAutoAmount = showTravelDetail;
+
+  useEffect(() => {
+    if (!isOpen || !travelRates || !showTravelDetail) return;
+
+    const rawKm = formData.kilometers.trim();
+    const kmParsed = rawKm === '' ? 0 : parseFloat(rawKm);
+    const kmSafe = Number.isFinite(kmParsed) ? kmParsed : 0;
+    const fuel =
+      formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType.trim() : '';
+
+    const computed = computeTravelCarBikeRupeeAmount({
+      expenseHead: formData.expenseHead,
+      subCategory: effectiveSubCategory,
+      kilometers: kmSafe,
+      fuelType: fuel,
+      rates: travelRates,
+    });
+    const nextAmount = formatTravelCarBikeAmountField(computed);
+
+    setFormData((prev) => {
+      if (prev.amount === nextAmount) return prev;
+      return { ...prev, amount: nextAmount };
+    });
+  }, [
+    isOpen,
+    travelRates,
+    showTravelDetail,
+    formData.expenseHead,
+    formData.subCategory,
+    formData.kilometers,
+    formData.fuelType,
+    effectiveSubCategory,
+  ]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -181,6 +286,24 @@ export default function ExpenseFormModal({
         toast.error('Kilometers must be a valid non-negative number');
         return;
       }
+      if (formData.fuelType === FUEL_TYPE_UNSET || !formData.fuelType.trim()) {
+        toast.error('Please select fuel type');
+        return;
+      }
+    }
+
+    if (formData.supportingDocument === 'Yes') {
+      const hasNewFile = Boolean(selectedFile);
+      const hasExistingDoc =
+        Boolean(isEdit && initialData?.documents && initialData.documents.length > 0);
+      if (!hasNewFile && !hasExistingDoc) {
+        toast.error('Please attach a supporting document');
+        return;
+      }
+      if (selectedFile && !SUPPORTING_FILE_EXT.test(selectedFile.name)) {
+        toast.error('Invalid file type. Allowed: DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX');
+        return;
+      }
     }
 
     if (showHotelStay) {
@@ -200,21 +323,25 @@ export default function ExpenseFormModal({
 
     let amountNum: number;
     if (isAutoAmount) {
-      const computed = computeTravelCarBikeAmount({
+      if (!travelRates) {
+        toast.error('Travel rates could not be loaded. Please try again.');
+        return;
+      }
+      const rawKm = formData.kilometers.trim();
+      const kmParsed = rawKm === '' ? 0 : parseFloat(rawKm);
+      const kmSafe = Number.isFinite(kmParsed) ? kmParsed : 0;
+      const fuel =
+        formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType.trim() : '';
+      amountNum = computeTravelCarBikeRupeeAmount({
         expenseHead: formData.expenseHead,
         subCategory: effectiveSubCategory,
-        fromLocation: formData.fromLocation,
-        toLocation: formData.toLocation,
-        returnType: formData.returnType,
-        kilometers: parseFloat(formData.kilometers) || 0,
+        kilometers: kmSafe,
+        fuelType: fuel,
+        rates: travelRates,
       });
-      amountNum =
-        computed !== null && !Number.isNaN(computed)
-          ? computed
-          : parseFloat(formData.amount) || 0;
-      if (Number.isNaN(amountNum) || amountNum < 0) {
-        toast.error('Amount will be auto-calculated; using 0 until policy is configured');
-        amountNum = 0;
+      if (!Number.isFinite(amountNum) || amountNum < 0) {
+        toast.error('Invalid calculated amount');
+        return;
       }
     } else {
       if (!formData.amount || parseFloat(formData.amount) <= 0) {
@@ -229,6 +356,8 @@ export default function ExpenseFormModal({
 
     const subCategoryResolved =
       formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
+
+    const wantsSupportingFile = formData.supportingDocument === 'Yes';
 
     const expense: ExpenseRecord = {
       expenseId: isEdit && initialData ? initialData.expenseId : '',
@@ -246,21 +375,28 @@ export default function ExpenseFormModal({
       monthYear: formData.monthYear,
       createdAt: initialData?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      selectedFile: selectedFile || undefined,
-      documents: selectedFile
-        ? [
-            {
-              fileName: selectedFile.name,
-              fileUrl: `/uploads/expenses/${selectedFile.name}`,
-            },
-          ]
-        : initialData?.documents || [],
+      supportingDocument: formData.supportingDocument,
+      selectedFile: wantsSupportingFile ? selectedFile || undefined : undefined,
+      documents: !wantsSupportingFile
+        ? []
+        : selectedFile
+          ? [
+              {
+                fileName: selectedFile.name,
+                fileUrl: `/uploads/expenses/${selectedFile.name}`,
+              },
+            ]
+          : initialData?.documents || [],
       ...(showTravelDetail
         ? {
             fromLocation: formData.fromLocation.trim(),
             toLocation: formData.toLocation.trim(),
             returnType: formData.returnType.trim(),
             kilometers: parseFloat(formData.kilometers) || 0,
+            fuelType:
+              formData.fuelType !== FUEL_TYPE_UNSET
+                ? formData.fuelType
+                : undefined,
           }
         : {}),
       ...(showHotelStay
@@ -310,6 +446,7 @@ export default function ExpenseFormModal({
                     kilometers: '',
                     stayDateFrom: '',
                     stayDateTo: '',
+                    fuelType: FUEL_TYPE_UNSET,
                     amount: isTravelCarOrBike(value, '') ? '0' : formData.amount,
                   })
                 }
@@ -353,10 +490,13 @@ export default function ExpenseFormModal({
                           toLocation: '',
                           returnType: '',
                           kilometers: '',
+                          fuelType: FUEL_TYPE_UNSET,
                           amount: formData.amount === '0' ? '' : formData.amount,
                         }
                       : {}),
-                    ...(willTravelDetail && !wasTravelDetail ? { amount: '0' } : {}),
+                    ...(willTravelDetail && !wasTravelDetail
+                      ? { amount: '0', fuelType: FUEL_TYPE_UNSET }
+                      : {}),
                     ...(wasHotelSelf && !willHotelSelf
                       ? { stayDateFrom: '', stayDateTo: '' }
                       : {}),
@@ -405,7 +545,7 @@ export default function ExpenseFormModal({
               />
               {isAutoAmount && (
                 <p className="text-xs text-gray-500">
-                  Amount is auto-calculated for Travel → Car/Bike (formula pending).
+                  Auto-calculated using configured travel rates.
                 </p>
               )}
             </div>
@@ -413,6 +553,24 @@ export default function ExpenseFormModal({
 
           {showTravelDetail && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="fuel_type">Fuel Type *</Label>
+                <Select
+                  value={formData.fuelType}
+                  onValueChange={(value) => setFormData({ ...formData, fuelType: value })}
+                >
+                  <SelectTrigger id="fuel_type">
+                    <SelectValue placeholder="Select fuel type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={FUEL_TYPE_UNSET} disabled className="text-muted-foreground">
+                      Select fuel type
+                    </SelectItem>
+                    <SelectItem value="Petrol/Diesel">Petrol/Diesel</SelectItem>
+                    <SelectItem value="Electric">Electric</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="from_location">From *</Label>
                 <Input
@@ -528,21 +686,64 @@ export default function ExpenseFormModal({
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="supporting_file">Supporting Document</Label>
-            <div className="flex items-center gap-3">
-              <input
-                id="supporting_file"
-                type="file"
-                accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls"
-                onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-                className="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-sm file:font-medium"
-              />
-              <Upload className="w-5 h-5 text-gray-400 shrink-0" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="supporting_doc_choice">Supporting Document *</Label>
+              <Select
+                value={formData.supportingDocument}
+                onValueChange={(value: 'Yes' | 'No') =>
+                  setFormData({ ...formData, supportingDocument: value })
+                }
+              >
+                <SelectTrigger id="supporting_doc_choice">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Yes">Yes</SelectItem>
+                  <SelectItem value="No">No</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <p className="text-xs text-gray-500">Upload PDF, JPG, PNG, or Excel file</p>
-            {selectedFile && <p className="text-xs text-green-600">✓ {selectedFile.name}</p>}
           </div>
+
+          {formData.supportingDocument === 'Yes' && (
+            <div className="space-y-2 min-h-[5.5rem]">
+              <Label htmlFor="supporting_file">Upload supporting document *</Label>
+              <div className="flex items-center gap-3">
+                <input
+                  id="supporting_file"
+                  type="file"
+                  accept=".doc,.docx,.pdf,.jpg,.jpeg,.png,.xls,.xlsx"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    if (f && !SUPPORTING_FILE_EXT.test(f.name)) {
+                      toast.error(
+                        'Invalid file type. Allowed: DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX'
+                      );
+                      e.target.value = '';
+                      setSelectedFile(null);
+                      return;
+                    }
+                    setSelectedFile(f);
+                  }}
+                  className="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-sm file:font-medium"
+                />
+                <Upload className="w-5 h-5 text-gray-400 shrink-0" />
+              </div>
+              <p className="text-xs text-gray-500">
+                DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX
+              </p>
+              {selectedFile && <p className="text-xs text-green-600">✓ {selectedFile.name}</p>}
+              {isEdit &&
+                initialData?.documents &&
+                initialData.documents.length > 0 &&
+                !selectedFile && (
+                  <p className="text-xs text-gray-600">
+                    Current: {initialData.documents[0].fileName} (upload a new file to replace)
+                  </p>
+                )}
+            </div>
+          )}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>

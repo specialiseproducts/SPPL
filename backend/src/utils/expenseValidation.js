@@ -1,6 +1,7 @@
 /**
  * Shared expense conditional rules (keep in sync with frontend).
- * Amount formula for Travel → Car/Bike will plug in here later.
+ * Authoritative Travel → Car/Bike amount is computed in the expense service using
+ * `expenseTravelAmount.js` and stored global rates.
  */
 
 export function isTravelCarOrBike(expenseHead, subCategory) {
@@ -11,14 +12,6 @@ export function isTravelCarOrBike(expenseHead, subCategory) {
 export function isHotelBookingSelf(expenseHead, subCategory) {
   const sub = String(subCategory || '').trim();
   return expenseHead === 'Hotel_Booking' && sub === 'Self';
-}
-
-/**
- * Future: compute reimbursement from km / slabs / policy.
- * @returns {number|null} null = not yet implemented; caller should treat as 0 for persistence.
- */
-export function computeTravelCarBikeAmount(_ctx) {
-  return null;
 }
 
 export function assertTravelCarBikeFields(data) {
@@ -35,6 +28,18 @@ export function assertTravelCarBikeFields(data) {
   const km = Number(kmRaw);
   if (Number.isNaN(km) || km < 0) {
     throw new Error('kilometers must be a non-negative number');
+  }
+}
+
+const FUEL_TYPES = new Set(['Petrol/Diesel', 'Electric']);
+
+export function assertFuelTypeForTravelCarBike(data) {
+  const ft = String(data.fuelType ?? '').trim();
+  if (!ft) {
+    throw new Error('fuelType is required for Travel Car/Bike');
+  }
+  if (!FUEL_TYPES.has(ft)) {
+    throw new Error('fuelType must be Petrol/Diesel or Electric');
   }
 }
 
@@ -58,15 +63,7 @@ export function validateExpenseBusinessRules(merged) {
 
   if (isTravelCarOrBike(head, sub)) {
     assertTravelCarBikeFields(merged);
-    const computed = computeTravelCarBikeAmount({
-      expenseHead: head,
-      subCategory: sub,
-      fromLocation: merged.fromLocation,
-      toLocation: merged.toLocation,
-      returnType: merged.returnType,
-      kilometers: merged.kilometers,
-    });
-    void computed; // reserved for when formula returns a value
+    assertFuelTypeForTravelCarBike(merged);
     if (Number.isNaN(amountNum) || amountNum < 0) {
       throw new Error('amount must be a non-negative number for Travel Car/Bike');
     }

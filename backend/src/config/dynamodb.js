@@ -44,6 +44,8 @@ export const TABLES = {
   PURCHASE_LINE_ITEMS: process.env.DYNAMODB_TABLE_PURCHASE_LINE_ITEMS || 'PurchaseLineItems',
   SALES_FORECASTS: process.env.DYNAMODB_TABLE_SALES_FORECASTS || 'SalesForecasts',
   CURRENCY_RATES: process.env.DYNAMODB_TABLE_CURRENCY_RATES || 'CurrencyRates',
+  EXPENSE_TRAVEL_RATE_SETTINGS:
+    process.env.DYNAMODB_TABLE_EXPENSE_TRAVEL_RATE_SETTINGS || 'ExpenseTravelRateSettings',
   AUDIT_LOGS: process.env.DYNAMODB_TABLE_AUDIT_LOGS || 'AuditLogs',
 };
 

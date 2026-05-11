@@ -75,7 +75,7 @@ export const getExpenses = async (req, res, next) => {
  */
 export const createExpense = async (req, res, next) => {
   try {
-    const expenseData = req.body;
+    const expenseData = { ...req.body };
     const authUser = req.user;
     const file = req.file;
 
@@ -85,14 +85,22 @@ export const createExpense = async (req, res, next) => {
       employeeCode: authUser?.employeeCode || '',
     });
 
-    const documents = file
-      ? [
-          {
-            fileName: file.originalname,
-            fileUrl: file.location,
-          },
-        ]
-      : [];
+    const sdRaw = String(expenseData.supportingDocument || '').trim().toLowerCase();
+    const supportingDocument =
+      sdRaw === 'yes' ? 'Yes' : sdRaw === 'no' ? 'No' : file ? 'Yes' : 'No';
+    expenseData.supportingDocument = supportingDocument;
+
+    const documents =
+      supportingDocument === 'No'
+        ? []
+        : file
+          ? [
+              {
+                fileName: file.originalname,
+                fileUrl: file.location,
+              },
+            ]
+          : [];
 
     if (documents.length > 0) {
       console.log('Expense document fileUrl:', documents[0].fileUrl);
@@ -134,7 +142,16 @@ export const updateExpense = async (req, res, next) => {
       });
     }
 
-    if (req.file) {
+    const supNorm = String(req.body?.supportingDocument ?? updateData.supportingDocument ?? '')
+      .trim()
+      .toLowerCase();
+    if (supNorm === 'yes') {
+      updateData.supportingDocument = 'Yes';
+    } else if (supNorm === 'no') {
+      updateData.supportingDocument = 'No';
+    }
+
+    if (req.file && supNorm !== 'no') {
       updateData.documents = [
         {
           fileName: req.file.originalname,

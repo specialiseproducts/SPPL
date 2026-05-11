@@ -6,14 +6,26 @@
 
 import express from 'express';
 import * as ExpenseController from '../controllers/expense.controller.js';
+import * as ExpenseTravelRateSettingsController from '../controllers/expenseTravelRateSettings.controller.js';
 import { upload } from '../config/s3.js';
 import { authenticateToken, authorize } from '../middleware/auth.middleware.js';
+import { isSuperAdmin } from '../utils/accessControl.js';
 import log from '../utils/logger.js';
 // import { authenticate, authorize } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
 router.use(authenticateToken, authorize('expenses'));
+
+function requireExpensesSuperAdmin(req, res, next) {
+  if (!isSuperAdmin(req.effectiveRole)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden',
+    });
+  }
+  next();
+}
 
 function uploadExpenseFile(req, res, next) {
   upload.single('file')(req, res, (err) => {
@@ -28,6 +40,18 @@ function uploadExpenseFile(req, res, next) {
     next();
   });
 }
+
+/*
+ * IMPORTANT: Static paths MUST stay above any "/:id" route.
+ * GET is readable by any user with Expenses module access (for Car/Bike amount calculation).
+ * PUT remains Super Admin only.
+ */
+router.get('/settings/travel-rates', ExpenseTravelRateSettingsController.getTravelRateSettings);
+router.put(
+  '/settings/travel-rates',
+  requireExpensesSuperAdmin,
+  ExpenseTravelRateSettingsController.putTravelRateSettings
+);
 
 // Expense CRUD operations
 router.get('/', ExpenseController.getExpenses);
