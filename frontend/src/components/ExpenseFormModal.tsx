@@ -179,21 +179,51 @@ export default function ExpenseFormModal({
     };
   }, [isOpen]);
 
-  useEffect(() => {
-    if (formData.date) {
-      const dateObj = new Date(formData.date);
-      const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
-      const year = String(dateObj.getUTCFullYear());
-      setFormData((prev) => ({ ...prev, monthYear: `${month}-${year}` }));
-    }
-  }, [formData.date]);
-
   const effectiveSubCategory =
     formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
   const showTravelDetail =
     isTravelCarOrBike(formData.expenseHead, effectiveSubCategory) && Boolean(effectiveSubCategory);
   const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
   const isAutoAmount = showTravelDetail;
+
+  /** Month-Year from main Date, or from stay range when Hotel_Booking → Self (single Date hidden). */
+  useEffect(() => {
+    let src = '';
+    if (showHotelStay) {
+      src = (formData.stayDateFrom || formData.stayDateTo || '').trim();
+    } else if (formData.date) {
+      src = formData.date.trim();
+    }
+    if (!src) {
+      setFormData((prev) => (prev.monthYear !== '' ? { ...prev, monthYear: '' } : prev));
+      return;
+    }
+    const dateObj = new Date(src);
+    if (Number.isNaN(dateObj.getTime())) return;
+    const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+    const year = String(dateObj.getUTCFullYear());
+    const nextMonthYear = `${month}-${year}`;
+    setFormData((prev) => {
+      if (prev.monthYear === nextMonthYear) return prev;
+      return { ...prev, monthYear: nextMonthYear };
+    });
+  }, [showHotelStay, formData.date, formData.stayDateFrom, formData.stayDateTo]);
+
+  useEffect(() => {
+    if (!showHotelStay) return;
+    setFormData((prev) => (prev.date ? { ...prev, date: '' } : prev));
+  }, [showHotelStay]);
+
+  useEffect(() => {
+    if (!showTravelDetail) return;
+    setFormData((prev) => ({
+      ...prev,
+      serviceProvider: '',
+      billNumber: '',
+      supportingDocument: 'No',
+    }));
+    setSelectedFile(null);
+  }, [showTravelDetail]);
 
   useEffect(() => {
     if (!isOpen || !travelRates || !showTravelDetail) return;
@@ -239,15 +269,15 @@ export default function ExpenseFormModal({
       toast.error('Please enter purpose');
       return;
     }
-    if (!formData.serviceProvider.trim()) {
+    if (!showTravelDetail && !formData.serviceProvider.trim()) {
       toast.error('Please enter service provider name');
       return;
     }
-    if (!formData.billNumber.trim()) {
+    if (!showTravelDetail && !formData.billNumber.trim()) {
       toast.error('Please enter bill number or "NA"');
       return;
     }
-    if (!formData.date) {
+    if (!showHotelStay && !formData.date) {
       toast.error('Please select a date');
       return;
     }
@@ -292,7 +322,7 @@ export default function ExpenseFormModal({
       }
     }
 
-    if (formData.supportingDocument === 'Yes') {
+    if (!showTravelDetail && formData.supportingDocument === 'Yes') {
       const hasNewFile = Boolean(selectedFile);
       const hasExistingDoc =
         Boolean(isEdit && initialData?.documents && initialData.documents.length > 0);
@@ -357,7 +387,12 @@ export default function ExpenseFormModal({
     const subCategoryResolved =
       formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
 
-    const wantsSupportingFile = formData.supportingDocument === 'Yes';
+    const submissionDate = showHotelStay
+      ? (formData.stayDateFrom || formData.stayDateTo || '').trim()
+      : formData.date.trim();
+
+    const wantsSupportingFile =
+      !showTravelDetail && formData.supportingDocument === 'Yes';
 
     const expense: ExpenseRecord = {
       expenseId: isEdit && initialData ? initialData.expenseId : '',
@@ -365,9 +400,9 @@ export default function ExpenseFormModal({
       subCategory: subCategoryResolved || undefined,
       location: formData.location.trim(),
       purpose: formData.purpose.trim(),
-      serviceProvider: formData.serviceProvider,
-      billNumber: formData.billNumber,
-      date: formData.date,
+      serviceProvider: showTravelDetail ? '' : formData.serviceProvider.trim(),
+      billNumber: showTravelDetail ? '' : formData.billNumber.trim(),
+      date: submissionDate,
       amount: amountNum,
       employeeName,
       employeeId: initialData?.employeeId,
@@ -375,18 +410,20 @@ export default function ExpenseFormModal({
       monthYear: formData.monthYear,
       createdAt: initialData?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      supportingDocument: formData.supportingDocument,
+      supportingDocument: showTravelDetail ? 'No' : formData.supportingDocument,
       selectedFile: wantsSupportingFile ? selectedFile || undefined : undefined,
-      documents: !wantsSupportingFile
+      documents: showTravelDetail
         ? []
-        : selectedFile
-          ? [
-              {
-                fileName: selectedFile.name,
-                fileUrl: `/uploads/expenses/${selectedFile.name}`,
-              },
-            ]
-          : initialData?.documents || [],
+        : !wantsSupportingFile
+          ? []
+          : selectedFile
+            ? [
+                {
+                  fileName: selectedFile.name,
+                  fileUrl: `/uploads/expenses/${selectedFile.name}`,
+                },
+              ]
+            : initialData?.documents || [],
       ...(showTravelDetail
         ? {
             fromLocation: formData.fromLocation.trim(),
@@ -492,14 +529,24 @@ export default function ExpenseFormModal({
                           kilometers: '',
                           fuelType: FUEL_TYPE_UNSET,
                           amount: formData.amount === '0' ? '' : formData.amount,
+                          serviceProvider: '',
+                          billNumber: '',
+                          supportingDocument: 'No' as const,
                         }
                       : {}),
                     ...(willTravelDetail && !wasTravelDetail
-                      ? { amount: '0', fuelType: FUEL_TYPE_UNSET }
+                      ? {
+                          amount: '0',
+                          fuelType: FUEL_TYPE_UNSET,
+                          serviceProvider: '',
+                          billNumber: '',
+                          supportingDocument: 'No' as const,
+                        }
                       : {}),
                     ...(wasHotelSelf && !willHotelSelf
                       ? { stayDateFrom: '', stayDateTo: '' }
                       : {}),
+                    ...(willHotelSelf && !wasHotelSelf ? { date: '' } : {}),
                   });
                 }}
                 disabled={subCategoryDisabled}
@@ -520,15 +567,17 @@ export default function ExpenseFormModal({
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="date">Date *</Label>
-              <Input
-                id="date"
-                type="date"
-                value={formData.date}
-                onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-              />
-            </div>
+            {!showHotelStay && (
+              <div className="space-y-2">
+                <Label htmlFor="date">Date *</Label>
+                <Input
+                  id="date"
+                  type="date"
+                  value={formData.date}
+                  onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                />
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="amount">Amount (Rs) *</Label>
@@ -657,27 +706,29 @@ export default function ExpenseFormModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="service_provider">Service Provider Name *</Label>
-              <Input
-                id="service_provider"
-                placeholder="Enter service provider"
-                value={formData.serviceProvider}
-                onChange={(e) => setFormData({ ...formData, serviceProvider: e.target.value })}
-              />
-            </div>
+          {!showTravelDetail && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="service_provider">Service Provider Name *</Label>
+                <Input
+                  id="service_provider"
+                  placeholder="Enter service provider"
+                  value={formData.serviceProvider}
+                  onChange={(e) => setFormData({ ...formData, serviceProvider: e.target.value })}
+                />
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="bill_number">Bill Number *</Label>
-              <Input
-                id="bill_number"
-                placeholder="Enter bill number or NA"
-                value={formData.billNumber}
-                onChange={(e) => setFormData({ ...formData, billNumber: e.target.value })}
-              />
+              <div className="space-y-2">
+                <Label htmlFor="bill_number">Bill Number *</Label>
+                <Input
+                  id="bill_number"
+                  placeholder="Enter bill number or NA"
+                  value={formData.billNumber}
+                  onChange={(e) => setFormData({ ...formData, billNumber: e.target.value })}
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -686,27 +737,29 @@ export default function ExpenseFormModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="supporting_doc_choice">Supporting Document *</Label>
-              <Select
-                value={formData.supportingDocument}
-                onValueChange={(value: 'Yes' | 'No') =>
-                  setFormData({ ...formData, supportingDocument: value })
-                }
-              >
-                <SelectTrigger id="supporting_doc_choice">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Yes">Yes</SelectItem>
-                  <SelectItem value="No">No</SelectItem>
-                </SelectContent>
-              </Select>
+          {!showTravelDetail && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="supporting_doc_choice">Supporting Document *</Label>
+                <Select
+                  value={formData.supportingDocument}
+                  onValueChange={(value: 'Yes' | 'No') =>
+                    setFormData({ ...formData, supportingDocument: value })
+                  }
+                >
+                  <SelectTrigger id="supporting_doc_choice">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Yes">Yes</SelectItem>
+                    <SelectItem value="No">No</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-          </div>
+          )}
 
-          {formData.supportingDocument === 'Yes' && (
+          {!showTravelDetail && formData.supportingDocument === 'Yes' && (
             <div className="space-y-2 min-h-[5.5rem]">
               <Label htmlFor="supporting_file">Upload supporting document *</Label>
               <div className="flex items-center gap-3">

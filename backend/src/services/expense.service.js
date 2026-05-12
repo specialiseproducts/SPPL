@@ -21,6 +21,7 @@ import { logActivity } from '../utils/activityLogger.js';
 import {
   validateExpenseBusinessRules,
   isTravelCarOrBike,
+  isHotelBookingSelf,
 } from '../utils/expenseValidation.js';
 import { computeTravelCarBikeRupeeAmount } from '../utils/expenseTravelAmount.js';
 import * as ExpenseTravelRateSettingsService from './expenseTravelRateSettings.service.js';
@@ -173,17 +174,24 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     const subCategory = trimText(raw.subCategory);
     const serviceProvider = trimText(raw.serviceProvider);
     const billNumber = trimText(raw.billNumber);
-    const date = trimText(raw.date);
+    let date = trimText(raw.date);
     const monthYear = trimText(raw.monthYear);
+    const travelCarBike = isTravelCarOrBike(expenseHead, subCategory || '');
+    const hotelSelf = isHotelBookingSelf(expenseHead, subCategory || '');
 
     if (!expenseHead) {
       throw new Error('expenseHead is required');
     }
-    if (!serviceProvider) {
-      throw new Error('serviceProvider is required');
+    if (!travelCarBike) {
+      if (!serviceProvider) {
+        throw new Error('serviceProvider is required');
+      }
+      if (!billNumber) {
+        throw new Error('billNumber is required');
+      }
     }
-    if (!billNumber) {
-      throw new Error('billNumber is required');
+    if (!date && hotelSelf) {
+      date = trimText(raw.stayDateFrom) || trimText(raw.stayDateTo);
     }
     if (!date) {
       throw new Error('date is required');
@@ -241,7 +249,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       }
     }
 
-    if (isTravelCarOrBike(expenseHead, subCategory || '')) {
+    if (travelCarBike) {
       const ft = trimText(raw.fuelType);
       if (ft !== 'Petrol/Diesel' && ft !== 'Electric') {
         throw new Error('fuelType must be Petrol/Diesel or Electric for Travel Car/Bike');
@@ -250,7 +258,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     }
 
     let amountNum;
-    if (isTravelCarOrBike(expenseHead, subCategory || '')) {
+    if (travelCarBike) {
       const rates = await ExpenseTravelRateSettingsService.getTravelRateSettingsForApi();
       amountNum = computeTravelCarBikeRupeeAmount({
         expenseHead,
@@ -281,20 +289,25 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     }
 
     const hasUploadedDocs = Array.isArray(documents) && documents.length > 0;
-    const supportingDocument = normalizeSupportingDocumentLabel(
+    let supportingDocument = normalizeSupportingDocumentLabel(
       raw.supportingDocument,
       hasUploadedDocs
     );
+    if (travelCarBike) {
+      supportingDocument = 'No';
+    }
     if (supportingDocument === 'Yes' && !hasUploadedDocs) {
       throw new Error('Supporting document file is required when Supporting Document is Yes');
     }
-    const documentsForItem = supportingDocument === 'No' ? [] : documents || [];
+    const documentsForItem =
+      supportingDocument === 'No' || travelCarBike ? [] : documents || [];
 
     const basePayload = {
       expenseHead,
       ...(subCategory ? { subCategory } : {}),
-      serviceProvider,
-      billNumber,
+      ...(travelCarBike
+        ? { serviceProvider: '', billNumber: '' }
+        : { serviceProvider, billNumber }),
       date,
       ...(monthYear ? { monthYear } : {}),
       location,
@@ -414,6 +427,22 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     delete updatePayload.employeeId;
     delete updatePayload.employeeEmail;
 
+    const nextHead =
+      updatePayload.expenseHead !== undefined
+        ? trimText(updatePayload.expenseHead)
+        : trimText(existing.expenseHead);
+    const nextSubRaw =
+      updatePayload.subCategory !== undefined
+        ? updatePayload.subCategory
+        : existing.subCategory;
+    const nextSub = nextSubRaw != null ? String(nextSubRaw).trim() : '';
+
+    if (isTravelCarOrBike(nextHead, nextSub)) {
+      updatePayload.serviceProvider = '';
+      updatePayload.billNumber = '';
+      updatePayload.supportingDocument = 'No';
+    }
+
     const sdUpdate = trimText(updatePayload.supportingDocument);
     if (sdUpdate.toLowerCase() === 'no') {
       const existingDocs = await ExpenseDocumentsModel.getDocumentsByExpenseId(canonicalExpenseId);
@@ -446,6 +475,18 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     updatePayload.purpose = resolvedLp.purpose;
 
     const mergedSub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
+
+    if (isHotelBookingSelf(merged.expenseHead, mergedSub)) {
+      const derivedDate =
+        trimText(merged.stayDateFrom) ||
+        trimText(merged.stayDateTo) ||
+        trimText(merged.date);
+      if (derivedDate) {
+        updatePayload.date = derivedDate;
+        merged.date = derivedDate;
+      }
+    }
+
     if (!isTravelCarOrBike(merged.expenseHead, mergedSub)) {
       updatePayload.fuelType = '';
     }

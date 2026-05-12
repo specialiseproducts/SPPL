@@ -16,6 +16,7 @@ import type { UserRole } from '../App';
 import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy';
+import { isTravelCarOrBike } from '../utils/expenseAmountCalculation';
 import {
   canCreate,
   canDelete,
@@ -257,6 +258,7 @@ export default function ExpensesTab({
 
   const handleCreateExpense = async (expense: ExpenseRecord) => {
     try {
+      const travelCarBike = isTravelCarOrBike(expense.expenseHead, expense.subCategory ?? '');
       const formData = new FormData();
       formData.append('expenseHead', expense.expenseHead);
       if (expense.subCategory) {
@@ -264,8 +266,10 @@ export default function ExpensesTab({
       }
       formData.append('location', expense.location);
       formData.append('purpose', expense.purpose);
-      formData.append('serviceProvider', expense.serviceProvider);
-      formData.append('billNumber', expense.billNumber);
+      if (!travelCarBike) {
+        formData.append('serviceProvider', expense.serviceProvider);
+        formData.append('billNumber', expense.billNumber);
+      }
       formData.append('date', expense.date);
       formData.append('amount', String(expense.amount));
       formData.append('monthYear', expense.monthYear);
@@ -287,7 +291,7 @@ export default function ExpensesTab({
       if (expense.stayDateTo) {
         formData.append('stayDateTo', expense.stayDateTo);
       }
-      if (expense.supportingDocument) {
+      if (expense.supportingDocument && !travelCarBike) {
         formData.append('supportingDocument', expense.supportingDocument);
       }
       if (expense.fuelType) {
@@ -341,6 +345,8 @@ export default function ExpensesTab({
         stayDateTo,
       } = expense;
 
+      const travelCarBike = isTravelCarOrBike(expenseHead, subCategory ?? '');
+
       const formData = new FormData();
       formData.append('expenseHead', expenseHead);
       if (subCategory) {
@@ -348,8 +354,10 @@ export default function ExpensesTab({
       }
       formData.append('location', location);
       formData.append('purpose', purpose);
-      formData.append('serviceProvider', serviceProvider);
-      formData.append('billNumber', billNumber);
+      if (!travelCarBike) {
+        formData.append('serviceProvider', serviceProvider);
+        formData.append('billNumber', billNumber);
+      }
       formData.append('amount', String(amount));
       formData.append('date', date);
       formData.append('monthYear', monthYear);
@@ -371,7 +379,7 @@ export default function ExpensesTab({
       if (stayDateTo) {
         formData.append('stayDateTo', stayDateTo);
       }
-      if (expense.supportingDocument) {
+      if (expense.supportingDocument && !travelCarBike) {
         formData.append('supportingDocument', expense.supportingDocument);
       }
       if (expense.fuelType) {
