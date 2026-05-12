@@ -1,10 +1,11 @@
 /**
  * Expense per-km rate settings — UX mirrors Sales Forecasting `CurrencyRateSettingsModal`
  * (fixed overlay, header bar, helper panel, footer Save/Cancel).
- * Future: auto travel amount = f(vehicle subCategory, fuelType, km, these rates).
+ * Rates are loaded from GET /api/expenses/settings/travel-rates on each open (DynamoDB is source of truth).
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -17,7 +18,10 @@ export interface ExpenseTravelRateSettings {
 interface ExpenseRateSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Fallback if load fails (e.g. last known tab state). */
   initialRates: ExpenseTravelRateSettings;
+  /** Fetch latest persisted rates when the modal opens. */
+  loadRates: () => Promise<ExpenseTravelRateSettings>;
   onSave: (rates: ExpenseTravelRateSettings) => void | Promise<void>;
 }
 
@@ -25,17 +29,32 @@ export default function ExpenseRateSettingsModal({
   isOpen,
   onClose,
   initialRates,
+  loadRates,
   onSave,
 }: ExpenseRateSettingsModalProps) {
   const [rates, setRates] = useState<ExpenseTravelRateSettings>(initialRates);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const hydrateFromApi = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const next = await loadRates();
+      setRates(next);
+      setErrors({});
+    } catch (e) {
+      setRates(initialRates);
+      toast.error(e instanceof Error ? e.message : 'Failed to load expense travel rates');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadRates, initialRates]);
 
   useEffect(() => {
-    if (isOpen) {
-      setRates(initialRates);
-      setErrors({});
-    }
-  }, [isOpen, initialRates]);
+    if (!isOpen) return;
+    hydrateFromApi();
+  }, [isOpen, hydrateFromApi]);
 
   const validateForm = () => {
     const next: Record<string, string> = {};
@@ -55,10 +74,13 @@ export default function ExpenseRateSettingsModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateForm()) return;
+    setIsSaving(true);
     try {
       await Promise.resolve(onSave(rates));
     } catch {
       /* parent shows toast */
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -80,13 +102,24 @@ export default function ExpenseRateSettingsModal({
       <div className="bg-white rounded-lg w-full max-w-md">
         <div className="border-b px-6 py-4 flex items-center justify-between">
           <h2 className="text-[#212529]">Expense Rate Settings</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSaving}
+            className="text-gray-500 hover:text-gray-700 disabled:opacity-50"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6">
-          <div className="space-y-4">
+          {isLoading && (
+            <p className="text-sm text-muted-foreground mb-4" role="status">
+              Loading saved rates…
+            </p>
+          )}
+
+          <div className={`space-y-4 ${isLoading ? 'opacity-60 pointer-events-none' : ''}`}>
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
               <p className="text-sm text-blue-800">
                 These rates will be used for automatic travel expense amount calculation.
@@ -106,6 +139,7 @@ export default function ExpenseRateSettingsModal({
                     inputMode="decimal"
                     value={rates.car.petrolDieselRate}
                     onChange={(e) => setRate('car', 'petrolDieselRate', e.target.value)}
+                    disabled={isLoading || isSaving}
                   />
                   {errors['car.petrolDieselRate'] && (
                     <p className="text-sm text-red-500 mt-1">{errors['car.petrolDieselRate']}</p>
@@ -121,6 +155,7 @@ export default function ExpenseRateSettingsModal({
                     inputMode="decimal"
                     value={rates.car.electricRate}
                     onChange={(e) => setRate('car', 'electricRate', e.target.value)}
+                    disabled={isLoading || isSaving}
                   />
                   {errors['car.electricRate'] && (
                     <p className="text-sm text-red-500 mt-1">{errors['car.electricRate']}</p>
@@ -142,6 +177,7 @@ export default function ExpenseRateSettingsModal({
                     inputMode="decimal"
                     value={rates.bike.petrolDieselRate}
                     onChange={(e) => setRate('bike', 'petrolDieselRate', e.target.value)}
+                    disabled={isLoading || isSaving}
                   />
                   {errors['bike.petrolDieselRate'] && (
                     <p className="text-sm text-red-500 mt-1">{errors['bike.petrolDieselRate']}</p>
@@ -157,6 +193,7 @@ export default function ExpenseRateSettingsModal({
                     inputMode="decimal"
                     value={rates.bike.electricRate}
                     onChange={(e) => setRate('bike', 'electricRate', e.target.value)}
+                    disabled={isLoading || isSaving}
                   />
                   {errors['bike.electricRate'] && (
                     <p className="text-sm text-red-500 mt-1">{errors['bike.electricRate']}</p>
@@ -167,11 +204,15 @@ export default function ExpenseRateSettingsModal({
           </div>
 
           <div className="flex justify-end gap-3 mt-6 pt-6 border-t">
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={isSaving}>
               Cancel
             </Button>
-            <Button type="submit" className="bg-[#007BFF] hover:bg-[#0056b3]">
-              Save Rates
+            <Button
+              type="submit"
+              className="bg-[#007BFF] hover:bg-[#0056b3]"
+              disabled={isLoading || isSaving}
+            >
+              {isSaving ? 'Saving…' : 'Save Rates'}
             </Button>
           </div>
         </form>

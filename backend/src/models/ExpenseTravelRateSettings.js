@@ -48,6 +48,8 @@ export async function getTravelRateSettings() {
       .get({
         TableName: TABLE_NAME,
         Key: { settingId: EXPENSE_TRAVEL_RATES_SETTING_ID },
+        /** Avoid stale reads immediately after Put (especially when save re-reads). */
+        ConsistentRead: true,
       })
       .promise();
     return result.Item || null;

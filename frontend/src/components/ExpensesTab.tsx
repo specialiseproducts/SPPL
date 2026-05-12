@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Plus, Download, Upload, Search, Edit, Trash2, Settings } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
@@ -17,6 +17,7 @@ import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy';
 import { isTravelCarOrBike } from '../utils/expenseAmountCalculation';
+import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
 import {
   canCreate,
   canDelete,
@@ -177,6 +178,26 @@ export default function ExpensesTab({
   const [isRateSettingsOpen, setIsRateSettingsOpen] = useState(false);
   const [travelRates, setTravelRates] = useState<ExpenseTravelRateSettings>(DEFAULT_TRAVEL_RATES);
   const [editingExpense, setEditingExpense] = useState<ExpenseRecord | null>(null);
+
+  const loadTravelRatesFromApi = useCallback(async (): Promise<ExpenseTravelRateSettings> => {
+    const res = (await apiFetch('/api/expenses/settings/travel-rates')) as {
+      success?: boolean;
+      message?: string;
+      data?: unknown;
+    };
+    if (!res?.success) {
+      throw new Error(
+        typeof res?.message === 'string' && res.message.trim()
+          ? res.message
+          : 'Failed to load travel rates'
+      );
+    }
+    const parsed = parseTravelRatesApiData(res.data);
+    if (!parsed) {
+      throw new Error('Invalid travel rates response from server');
+    }
+    return parsed;
+  }, []);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState<string>('all');
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
@@ -207,47 +228,30 @@ export default function ExpensesTab({
 
   useEffect(() => {
     if (!isSuperAdmin(userRole)) return;
-    (async () => {
-      try {
-        const res = await apiFetch('/api/expenses/settings/travel-rates');
-        if (res?.success && res.data?.car && res.data?.bike) {
-          setTravelRates({
-            car: {
-              petrolDieselRate: Number(res.data.car.petrolDieselRate) || 0,
-              electricRate: Number(res.data.car.electricRate) || 0,
-            },
-            bike: {
-              petrolDieselRate: Number(res.data.bike.petrolDieselRate) || 0,
-              electricRate: Number(res.data.bike.electricRate) || 0,
-            },
-          });
-        }
-      } catch {
-        /* non–Super Admin or table missing: ignore */
-      }
-    })();
-  }, [userRole]);
+    loadTravelRatesFromApi()
+      .then(setTravelRates)
+      .catch((error) => {
+        console.error('Travel rates fetch error:', error);
+        toast.error(getErrorMessage(error));
+      });
+  }, [userRole, loadTravelRatesFromApi]);
 
   const handleSaveTravelRates = async (rates: ExpenseTravelRateSettings) => {
     try {
-      const res = await apiFetch('/api/expenses/settings/travel-rates', {
+      const res = (await apiFetch('/api/expenses/settings/travel-rates', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rates),
-      });
-      if (!res?.success) {
-        throw new Error(res?.message || 'Failed to save settings');
+      })) as { success?: boolean; message?: string; data?: unknown };
+      const parsed = parseTravelRatesApiData(res?.data);
+      if (!res?.success || !parsed) {
+        throw new Error(
+          typeof res?.message === 'string' && res.message.trim()
+            ? res.message
+            : 'Failed to save settings'
+        );
       }
-      setTravelRates({
-        car: {
-          petrolDieselRate: Number(res.data?.car?.petrolDieselRate) ?? rates.car.petrolDieselRate,
-          electricRate: Number(res.data?.car?.electricRate) ?? rates.car.electricRate,
-        },
-        bike: {
-          petrolDieselRate: Number(res.data?.bike?.petrolDieselRate) ?? rates.bike.petrolDieselRate,
-          electricRate: Number(res.data?.bike?.electricRate) ?? rates.bike.electricRate,
-        },
-      });
+      setTravelRates(parsed);
       setIsRateSettingsOpen(false);
       toast.success('Expense rate settings saved');
     } catch (error) {
@@ -892,6 +896,7 @@ export default function ExpensesTab({
           isOpen={isRateSettingsOpen}
           onClose={() => setIsRateSettingsOpen(false)}
           initialRates={travelRates}
+          loadRates={loadTravelRatesFromApi}
           onSave={handleSaveTravelRates}
         />
       )}

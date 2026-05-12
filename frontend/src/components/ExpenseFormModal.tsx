@@ -19,6 +19,7 @@ import {
   formatTravelCarBikeAmountField,
   type ExpenseTravelRates,
 } from '../utils/expenseAmountCalculation';
+import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
 import { apiFetch } from '../services/api';
 
 interface ExpenseFormModalProps {
@@ -142,36 +143,15 @@ export default function ExpenseFormModal({
       try {
         const res = (await apiFetch('/api/expenses/settings/travel-rates')) as {
           success?: boolean;
-          data?: {
-            car?: { petrolDieselRate?: number; electricRate?: number };
-            bike?: { petrolDieselRate?: number; electricRate?: number };
-          };
+          data?: unknown;
         };
         if (cancelled) return;
-        if (res?.success && res.data?.car && res.data?.bike) {
-          setTravelRates({
-            car: {
-              petrolDieselRate: Number(res.data.car.petrolDieselRate) || 0,
-              electricRate: Number(res.data.car.electricRate) || 0,
-            },
-            bike: {
-              petrolDieselRate: Number(res.data.bike.petrolDieselRate) || 0,
-              electricRate: Number(res.data.bike.electricRate) || 0,
-            },
-          });
-        } else {
-          setTravelRates({
-            car: { petrolDieselRate: 0, electricRate: 0 },
-            bike: { petrolDieselRate: 0, electricRate: 0 },
-          });
+        const parsed = parseTravelRatesApiData(res?.data);
+        if (res?.success && parsed) {
+          setTravelRates(parsed);
         }
       } catch {
-        if (!cancelled) {
-          setTravelRates({
-            car: { petrolDieselRate: 0, electricRate: 0 },
-            bike: { petrolDieselRate: 0, electricRate: 0 },
-          });
-        }
+        /* keep previous travelRates / null; submit path validates when needed */
       }
     })();
     return () => {
