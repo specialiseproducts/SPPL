@@ -30,10 +30,10 @@ export default function PurchaseLineItemsScreen({
   const handleAddLineItem = (lineItem: PurchaseRecord) => {
     if (editingLineItem) {
       setLineItems(lineItems.map(item => item.id === lineItem.id ? lineItem : item));
-      toast.success('✅ Line Item Updated Successfully');
+      toast.success('Line Item Updated Successfully');
     } else {
       setLineItems([...lineItems, lineItem]);
-      toast.success('✅ Line Item Added Successfully');
+      toast.success('Line Item Added Successfully');
     }
     setIsLineItemModalOpen(false);
     setEditingLineItem(null);
@@ -47,7 +47,7 @@ export default function PurchaseLineItemsScreen({
   const handleDeleteLineItem = (lineItemId: string) => {
     if (window.confirm('Are you sure you want to delete this line item?')) {
       setLineItems(lineItems.filter(item => item.id !== lineItemId));
-      toast.success('✅ Line Item Deleted');
+      toast.success('Line Item Deleted');
     }
   };
 
@@ -59,7 +59,7 @@ export default function PurchaseLineItemsScreen({
       updated_at: new Date().toISOString(),
     };
     setLineItems([...lineItems, duplicated]);
-    toast.success('✅ Line Item Duplicated');
+    toast.success('Line Item Duplicated');
   };
 
   const handleExportPO = () => {
@@ -100,7 +100,7 @@ export default function PurchaseLineItemsScreen({
     a.href = url;
     a.download = `PO_${poHeader.po_number}_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
-    toast.success('✅ PO Exported Successfully');
+    toast.success('PO Exported Successfully');
   };
 
   const handleFinalizePO = () => {
@@ -111,7 +111,7 @@ export default function PurchaseLineItemsScreen({
     
     if (window.confirm(`Finalize PO ${poHeader.po_number} with ${lineItems.length} line item(s)?`)) {
       onFinalizePO(poHeader, lineItems);
-      toast.success('✅ PO Finalized Successfully');
+      toast.success('PO Finalized Successfully');
     }
   };
 

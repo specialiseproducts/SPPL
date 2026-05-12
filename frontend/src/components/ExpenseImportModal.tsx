@@ -172,7 +172,7 @@ export default function ExpenseImportModal({
 
       setPreviewData(validated);
       setStep('preview');
-      toast.success('✅ File processed successfully');
+      toast.success('File processed successfully');
     }, 1500);
   };
 

@@ -310,7 +310,7 @@ export default function SalesForecastingImportModal({
                 <CheckCircle2 className="w-16 h-16 mx-auto text-green-600 mb-4" />
                 <h3 className="text-green-900 mb-2">Import Completed Successfully!</h3>
                 <div className="text-sm text-green-700 space-y-1">
-                  <p>✅ Imported: {importResult.imported} records</p>
+                  <p>Imported: {importResult.imported} records</p>
                   {importResult.failed > 0 && <p>❌ Failed: {importResult.failed} records</p>}
                   {importResult.skipped > 0 && <p>⚠ Skipped: {importResult.skipped} records</p>}
                 </div>

@@ -316,7 +316,7 @@ export default function ExpensesTab({
 
       await fetchExpenses();
       setIsFormModalOpen(false);
-      toast.success('✅ Expense Record Created Successfully');
+      toast.success('Expense Record Created Successfully');
     } catch (error) {
       console.error('Create expense error:', error);
       toast.error(getErrorMessage(error));
@@ -404,7 +404,7 @@ export default function ExpensesTab({
 
       await fetchExpenses();
       setEditingExpense(null);
-      toast.success('✅ Expense Record Updated Successfully');
+      toast.success('Expense Record Updated Successfully');
     } catch (error) {
       console.error('Update expense error:', error);
       toast.error(getErrorMessage(error));
@@ -430,7 +430,7 @@ export default function ExpensesTab({
       }
 
       await fetchExpenses();
-      toast.success('✅ Expense Record Deleted');
+      toast.success('Expense Record Deleted');
     } catch (error) {
       console.error('Delete expense error:', error);
       toast.error(getErrorMessage(error));
@@ -440,7 +440,7 @@ export default function ExpensesTab({
   const handleImportSuccess = (importedExpenses: ExpenseRecord[]) => {
     setExpenses([...expenses, ...importedExpenses]);
     setIsImportModalOpen(false);
-    toast.success(`✅ Successfully imported ${importedExpenses.length} expense records`);
+    toast.success(`Successfully imported ${importedExpenses.length} expense records`);
   };
 
   const handleExportData = () => {

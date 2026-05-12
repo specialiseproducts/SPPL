@@ -278,7 +278,7 @@ export default function SalesForecastingTab({
 
       await fetchForecasts();
       setIsFormModalOpen(false);
-      toast.success('✅ Sales Forecast Record Created Successfully');
+      toast.success('Sales Forecast Record Created Successfully');
     } catch (error) {
       console.error('Create sales forecast error:', error);
       toast.error('Failed to create sales forecast');
@@ -306,7 +306,7 @@ export default function SalesForecastingTab({
 
       await fetchForecasts();
       setEditingForecast(null);
-      toast.success('✅ Sales Forecast Record Updated Successfully');
+      toast.success('Sales Forecast Record Updated Successfully');
     } catch (error) {
       console.error('Update sales forecast error:', error);
       toast.error('Failed to update sales forecast');
@@ -325,7 +325,7 @@ export default function SalesForecastingTab({
         }
 
         await fetchForecasts();
-        toast.success('✅ Sales Forecast Record Deleted Successfully');
+        toast.success('Sales Forecast Record Deleted Successfully');
       } catch (error) {
         console.error('Delete sales forecast error:', error);
         toast.error('Failed to delete sales forecast');
@@ -336,7 +336,7 @@ export default function SalesForecastingTab({
   const handleImportForecasts = (importedForecasts: SalesForecastRecord[]) => {
     setForecasts([...forecasts, ...importedForecasts]);
     setIsImportModalOpen(false);
-    toast.success(`✅ ${importedForecasts.length} Sales Forecast Records Imported Successfully`);
+    toast.success(`${importedForecasts.length} Sales Forecast Records Imported Successfully`);
   };
 
   const handleDownloadTemplate = () => {
@@ -365,7 +365,7 @@ export default function SalesForecastingTab({
     a.href = url;
     a.download = 'sales_forecasting_template.csv';
     a.click();
-    toast.success('✅ Template Downloaded');
+    toast.success('Template Downloaded');
   };
 
   const handleExportData = () => {
@@ -420,13 +420,13 @@ export default function SalesForecastingTab({
     a.href = url;
     a.download = `sales_forecasting_export_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
-    toast.success('✅ Data Exported Successfully');
+    toast.success('Data Exported Successfully');
   };
 
   const handleUpdateRates = (newRates: CurrencyRates) => {
     setCurrencyRates(newRates);
     setIsRateSettingsOpen(false);
-    toast.success('✅ Currency Rates Updated Successfully');
+    toast.success('Currency Rates Updated Successfully');
   };
 
   const handleSort = (column: string) => {

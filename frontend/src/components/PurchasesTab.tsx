@@ -476,7 +476,7 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
       setPurchases([...purchases, ...lineItems]);
       setShowLineItemsScreen(false);
       setCurrentPOHeader(null);
-      toast.success(`✅ PO ${header.po_number} finalized with ${lineItems.length} line item(s)`);
+      toast.success(`PO ${header.po_number} finalized with ${lineItems.length} line item(s)`);
     } catch (error) {
       console.error('Finalize purchase error:', error);
       toast.error('Failed to finalize PO. Your current UI data is preserved.');
@@ -527,7 +527,7 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
     a.href = url;
     a.download = `purchases_export_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
-    toast.success('✅ Data Exported Successfully');
+    toast.success('Data Exported Successfully');
   };
 
   const handleImportComplete = (importedPurchases: PurchaseRecord[]) => {
@@ -537,7 +537,7 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
     });
     setPurchases([...purchases, ...withComputedFields]);
     setIsImportModalOpen(false);
-    toast.success(`✅ ${importedPurchases.length} Purchase Records Imported Successfully`);
+    toast.success(`${importedPurchases.length} Purchase Records Imported Successfully`);
   };
 
   // Get unique values for filters
@@ -689,13 +689,13 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
     a.href = url;
     a.download = `PO_${poNumber}_export.csv`;
     a.click();
-    toast.success(`✅ PO ${poNumber} Exported Successfully`);
+    toast.success(`PO ${poNumber} Exported Successfully`);
   };
 
   const handleDeletePO = (poNumber: string, itemCount: number) => {
     if (window.confirm(`Delete PO ${poNumber} and all its ${itemCount} line item(s)? This cannot be undone.`)) {
       setPurchases(purchases.filter(p => p.po_number !== poNumber));
-      toast.success(`✅ PO ${poNumber} Deleted Successfully`);
+      toast.success(`PO ${poNumber} Deleted Successfully`);
     }
   };
 
@@ -706,12 +706,12 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
     ));
     setIsEditModalOpen(false);
     setEditingLineItem(null);
-    toast.success(`✅ Line item updated successfully for PO ${updatedLineItem.po_number}`);
+    toast.success(`Line item updated successfully for PO ${updatedLineItem.po_number}`);
   };
 
   const handleDeleteLineItem = (itemId: string) => {
     setPurchases(purchases.filter(p => p.id !== itemId));
-    toast.success(`✅ Line Item Deleted Successfully`);
+    toast.success(`Line Item Deleted Successfully`);
   };
 
   return (

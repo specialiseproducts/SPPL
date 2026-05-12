@@ -57,7 +57,7 @@ export default function Dashboard({ user, onLogout, initialModule, onBackToDashb
         <SalesForecasting
           user={user}
           availableUsers={availableUsers}
-          moduleRole={moduleRoles.salesForecasting || user.role}
+          moduleRole={(moduleRoles.salesForecasting || user.role) as UserRole}
         />
       );
     }
@@ -67,7 +67,7 @@ export default function Dashboard({ user, onLogout, initialModule, onBackToDashb
         <Purchases
           user={user}
           availableUsers={availableUsers}
-          moduleRole={moduleRoles.purchases || user.role}
+          moduleRole={(moduleRoles.purchases || user.role) as UserRole}
         />
       );
     }

@@ -213,7 +213,7 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
         profilePhoto: profilePhotoFile,
       });
       if (isEdit) {
-        toast.success('✅ User Updated Successfully');
+        toast.success('User Updated Successfully');
         onClose();
       }
     } catch (error) {
