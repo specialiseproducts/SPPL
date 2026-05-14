@@ -31,7 +31,8 @@ const defaultCorsOrigins = [
   'http://localhost:5173',
   'https://design-company-management-erp.vercel.app',
   'https://design-company-management-596vfvlx0.vercel.app',
-  'https://sppl-nu.vercel.app'
+  'https://sppl-nu.vercel.app',
+  'https://erp.specialiseproducts.com',
 ];
 const extraCorsOrigins = String(process.env.CORS_EXTRA_ORIGINS || '')
   .split(',')
