@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import LoginPage from './components/LoginPage';
 import Dashboard from './components/Dashboard';
-import ModuleDashboard from './components/ModuleDashboard';
+import { queryClient } from './lib/queryClient';
 import { Toaster } from 'sonner';
 import { useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/auth/ProtectedRoute';
@@ -42,6 +42,7 @@ export default function App() {
 
   const handleLogout = () => {
     logout();
+    queryClient.clear();
     setSelectedModule(null);
     setSelectedEmployeeProfile(null);
     try { localStorage.removeItem('sppl_selected_module'); } catch {}
@@ -150,25 +151,17 @@ export default function App() {
                 onBack={selectedEmployeeProfile ? handleBackFromEmployeeProfile : handleBackToDashboard}
               />
             </div>
-          ) : currentUser && safeSelectedModule ? (
+          ) : currentUser ? (
             <Dashboard
               user={currentUser}
               onLogout={handleLogout}
-              initialModule={safeSelectedModule}
+              activeModuleId={safeSelectedModule}
+              onModuleSelect={handleModuleSelect}
               onBackToDashboard={handleBackToDashboard}
               moduleAccess={moduleAccess}
               moduleRoles={moduleRoles}
               onProfile={handleProfileOpen}
               onEmployeeCodeClick={handleEmployeeProfileOpen}
-            />
-          ) : currentUser ? (
-            <ModuleDashboard
-              userRole={currentUser.role}
-              currentUser={currentUser.name}
-              onModuleSelect={handleModuleSelect}
-              moduleAccess={moduleAccess}
-              onLogout={handleLogout}
-              onProfile={handleProfileOpen}
             />
           ) : null}
         </ProtectedRoute>

@@ -24,6 +24,7 @@ import {
   useInvalidateExpenseTravelRates,
   useInvalidateExpensesList,
 } from '../hooks/expenses/useExpensesQueries';
+import { isQueryColdLoading } from '../utils/queryLoading';
 import {
   canCreate,
   canDelete,
@@ -478,7 +479,7 @@ export default function ExpensesTab({
     searchTerm,
   ]);
 
-  const isInitialLoading = expensesQuery.isPending && expensesQuery.data === undefined;
+  const isInitialLoading = isQueryColdLoading(expensesQuery);
   const showEmptyState =
     !isInitialLoading && !expensesQuery.isError && filteredExpenses.length === 0;
 

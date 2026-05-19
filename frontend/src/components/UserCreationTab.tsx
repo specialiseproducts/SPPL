@@ -15,6 +15,7 @@ import {
   useEmployeesListQuery,
   useInvalidateEmployeesList,
 } from '../hooks/employees/useEmployeesQuery';
+import { isQueryColdLoading } from '../utils/queryLoading';
 
 const API_BASE = '/api/employees';
 const SIGNED_URL_ENDPOINT = '/api/users/file-url';
@@ -346,7 +347,7 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
     return hay.includes(term);
   });
 
-  const isInitialLoading = employeesQuery.isPending && employeesQuery.data === undefined;
+  const isInitialLoading = isQueryColdLoading(employeesQuery);
   const showEmptyState =
     !isInitialLoading && !employeesQuery.isError && filteredUsers.length === 0;
 

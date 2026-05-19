@@ -4,9 +4,10 @@ import SalesForecastingTab from './SalesForecastingTab';
 import SalesMasterDataPage from './sales/SalesMasterDataPage';
 import type { User } from '../App';
 import type { UserMaster } from './UserCreationTab';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { isAdmin, isDeveloper, isSuperAdmin } from '../utils/accessControl';
 import { salesQueryKeys } from '../hooks/sales/salesQueryKeys';
+import { cn } from './ui/utils';
 
 interface SalesForecastingProps {
   user: User;
@@ -29,7 +30,6 @@ export default function SalesForecasting({ user, availableUsers, moduleRole }: S
 
   const handleMastersChanged = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.masters() });
-    void queryClient.invalidateQueries({ queryKey: salesQueryKeys.all });
   }, [queryClient]);
 
   return (
@@ -39,34 +39,30 @@ export default function SalesForecasting({ user, availableUsers, moduleRole }: S
       </div>
 
       {showAdminTabs ? (
-        <Tabs value={salesTab} onValueChange={setSalesTab} className="w-full">
-          <TabsList className="grid w-full max-w-2xl grid-cols-3">
-            <TabsTrigger value="my-quotations">My Quotations</TabsTrigger>
-            <TabsTrigger value="team-quotations">Team Quotations</TabsTrigger>
-            <TabsTrigger value="master-data">Sales Master Data</TabsTrigger>
-          </TabsList>
-          <TabsContent value="my-quotations" className="mt-6">
-            {salesTab === 'my-quotations' ? (
-              <SalesForecastingTab
-                {...sharedTabProps(user, availableUsers, moduleRole)}
-                viewScope="self"
-              />
-            ) : null}
-          </TabsContent>
-          <TabsContent value="team-quotations" className="mt-6">
-            {salesTab === 'team-quotations' ? (
-              <SalesForecastingTab
-                {...sharedTabProps(user, availableUsers, moduleRole)}
-                viewScope="team"
-              />
-            ) : null}
-          </TabsContent>
-          <TabsContent value="master-data" className="mt-6">
-            {salesTab === 'master-data' ? (
-              <SalesMasterDataPage onMastersChanged={handleMastersChanged} />
-            ) : null}
-          </TabsContent>
-        </Tabs>
+        <>
+          <Tabs value={salesTab} onValueChange={setSalesTab} className="w-full">
+            <TabsList className="grid w-full max-w-2xl grid-cols-3">
+              <TabsTrigger value="my-quotations">My Quotations</TabsTrigger>
+              <TabsTrigger value="team-quotations">Team Quotations</TabsTrigger>
+              <TabsTrigger value="master-data">Sales Master Data</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div className={cn('mt-6', salesTab !== 'my-quotations' ? 'hidden' : undefined)}>
+            <SalesForecastingTab
+              {...sharedTabProps(user, availableUsers, moduleRole)}
+              viewScope="self"
+            />
+          </div>
+          <div className={cn('mt-6', salesTab !== 'team-quotations' ? 'hidden' : undefined)}>
+            <SalesForecastingTab
+              {...sharedTabProps(user, availableUsers, moduleRole)}
+              viewScope="team"
+            />
+          </div>
+          <div className={cn('mt-6', salesTab !== 'master-data' ? 'hidden' : undefined)}>
+            <SalesMasterDataPage onMastersChanged={handleMastersChanged} />
+          </div>
+        </>
       ) : (
         <SalesForecastingTab {...sharedTabProps(user, availableUsers, moduleRole)} viewScope="self" />
       )}

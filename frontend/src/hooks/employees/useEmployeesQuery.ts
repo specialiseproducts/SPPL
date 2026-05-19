@@ -2,9 +2,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../services/api';
 import type { UserMaster } from '../../types/userMaster';
 import { mapApiEmployee } from '../../utils/mapApiEmployee';
+import { queryDefaults } from '../queryDefaults';
 import { employeesQueryKeys } from './employeesQueryKeys';
-
-const EMPLOYEES_LIST_STALE_MS = 60 * 1000;
 
 export async function fetchEmployeesList(): Promise<UserMaster[]> {
   const data = await apiFetch('/api/employees');
@@ -20,8 +19,7 @@ export function useEmployeesListQuery() {
   return useQuery({
     queryKey: employeesQueryKeys.list(),
     queryFn: fetchEmployeesList,
-    staleTime: EMPLOYEES_LIST_STALE_MS,
-    placeholderData: (previous) => previous,
+    ...queryDefaults.employees,
   });
 }
 

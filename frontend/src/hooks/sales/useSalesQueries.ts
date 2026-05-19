@@ -7,18 +7,14 @@ import {
   fetchSalesMasters,
   fetchSalesRates,
 } from './salesApi';
+import { queryDefaults } from '../queryDefaults';
 import { salesQueryKeys } from './salesQueryKeys';
-
-const FORECASTS_STALE_MS = 60 * 1000;
-const MASTERS_STALE_MS = 8 * 60 * 1000;
-const RATES_STALE_MS = 5 * 60 * 1000;
 
 export function useSalesForecastsQuery() {
   return useQuery({
     queryKey: salesQueryKeys.forecasts(),
     queryFn: fetchSalesForecasts,
-    staleTime: FORECASTS_STALE_MS,
-    placeholderData: (previous) => previous,
+    ...queryDefaults.list,
   });
 }
 
@@ -26,8 +22,7 @@ export function useSalesMastersQuery() {
   return useQuery({
     queryKey: salesQueryKeys.masters(),
     queryFn: fetchSalesMasters,
-    staleTime: MASTERS_STALE_MS,
-    placeholderData: (previous) => previous,
+    ...queryDefaults.reference,
   });
 }
 
@@ -35,8 +30,7 @@ export function useSalesRatesQuery() {
   return useQuery({
     queryKey: salesQueryKeys.rates(),
     queryFn: fetchSalesRates,
-    staleTime: RATES_STALE_MS,
-    placeholderData: (previous) => previous ?? DEFAULT_EXCHANGE_RATES,
+    ...queryDefaults.reference,
   });
 }
 
@@ -59,8 +53,7 @@ export function useMasterAdminListQuery(category: string, enabled: boolean) {
     queryKey: salesQueryKeys.masterAdminList(category),
     queryFn: () => fetchMasterAdminList(category),
     enabled,
-    staleTime: MASTERS_STALE_MS,
-    placeholderData: (previous) => previous,
+    ...queryDefaults.reference,
   });
 }
 
@@ -69,8 +62,7 @@ export function useMasterAdminPrincipalsQuery(enabled = true) {
     queryKey: salesQueryKeys.masterAdminPrincipals(),
     queryFn: fetchMasterAdminPrincipals,
     enabled,
-    staleTime: MASTERS_STALE_MS,
-    placeholderData: (previous) => previous,
+    ...queryDefaults.reference,
   });
 }
 

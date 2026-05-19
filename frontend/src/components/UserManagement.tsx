@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import UserCreationTab from './UserCreationTab';
 import AccessManagementTab from './AccessManagementTab';
 import type { UserMaster } from './UserCreationTab';
+import { cn } from './ui/utils';
 
 interface UserManagementProps {
   onUsersChange: (users: UserMaster[]) => void;
@@ -11,6 +12,7 @@ interface UserManagementProps {
 
 export default function UserManagement({ onUsersChange, onEmployeeCodeClick }: UserManagementProps) {
   const [users, setUsers] = useState<UserMaster[]>([]);
+  const [tab, setTab] = useState('creation');
 
   const handleUsersChange = (updatedUsers: UserMaster[]) => {
     setUsers(updatedUsers);
@@ -24,18 +26,19 @@ export default function UserManagement({ onUsersChange, onEmployeeCodeClick }: U
         <p className="text-gray-600">Manage users and access controls for your organization</p>
       </div>
 
-      <Tabs defaultValue="creation" className="w-full">
+      <Tabs value={tab} onValueChange={setTab} className="w-full">
         <TabsList className="grid w-full max-w-md grid-cols-2">
           <TabsTrigger value="creation">User Creation</TabsTrigger>
           <TabsTrigger value="access">Access Management</TabsTrigger>
         </TabsList>
-        <TabsContent value="creation" className="mt-6">
-          <UserCreationTab onUsersChange={handleUsersChange} onEmployeeCodeClick={onEmployeeCodeClick} />
-        </TabsContent>
-        <TabsContent value="access" className="mt-6">
-          <AccessManagementTab availableUsers={users} />
-        </TabsContent>
       </Tabs>
+
+      <div className={cn('mt-6', tab !== 'creation' ? 'hidden' : undefined)}>
+        <UserCreationTab onUsersChange={handleUsersChange} onEmployeeCodeClick={onEmployeeCodeClick} />
+      </div>
+      <div className={cn('mt-6', tab !== 'access' ? 'hidden' : undefined)}>
+        <AccessManagementTab availableUsers={users} />
+      </div>
     </div>
   );
 }
