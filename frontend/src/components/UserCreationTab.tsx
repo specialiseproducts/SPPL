@@ -11,69 +11,17 @@ import * as XLSX from 'xlsx';
 import { toast } from 'sonner';
 import type { UserRole } from '../App';
 import { apiFetch } from '../services/api';
+import {
+  useEmployeesListQuery,
+  useInvalidateEmployeesList,
+} from '../hooks/employees/useEmployeesQuery';
 
 const API_BASE = '/api/employees';
 const SIGNED_URL_ENDPOINT = '/api/users/file-url';
 
-export interface UserMaster {
-  employeeId?: string;
-  employee_code: string;
-  employeeCode?: string;
-  /** Used by some modules (e.g. sales forecasting) as display name */
-  employee_name?: string;
-  name: string;
-  first_name?: string;
-  firstName?: string;
-  last_name?: string;
-  lastName?: string;
-  designation?: string;
-  date_of_joining: string;
-  dateOfJoining?: string;
-  date_of_exit?: string;
-  dateOfExit?: string;
-  date_of_birth?: string;
-  dateOfBirth?: string;
-  gender?: string;
-  phone: string;
-  phoneNumber?: string;
-  official_email: string;
-  officialEmail?: string;
-  personal_email?: string;
-  personalEmail?: string;
-  aadhar_no?: string;
-  aadharNo?: string;
-  pan_no?: string;
-  panNo?: string;
-  account_no?: string;
-  accountNo?: string;
-  bank_name?: string;
-  bankName?: string;
-  ifsc?: string;
-  uan_no?: string;
-  uanNumber?: string;
-  emergency_contact?: string;
-  emergencyContact?: string;
-  address?: string;
-  permanent_address?: string;
-  permanentAddress?: string;
-  biometric_code?: string;
-  biometricCode?: string;
-  biometric_password?: string;
-  biometricPassword?: string;
-  passport_no?: string;
-  passportNo?: string;
-  medi_claim_no?: string;
-  mediClaimNo?: string;
-  location?: string;
-  documentsUrl?: string;
-  pastExperienceUrl?: string;
-  profilePhotoUrl?: string;
-  corporateId?: string;
-  password?: string;
-  role?: UserRole;
-  department?: string;
-  imported?: boolean;
-}
+import type { UserMaster } from '../types/userMaster';
+
+export type { UserMaster } from '../types/userMaster';
 
 interface UserCreationTabProps {
   onUsersChange?: (users: UserMaster[]) => void;
@@ -124,75 +72,10 @@ export function buildEmployeeFormData(user: UserMaster, files?: UserFormFiles): 
   return fd;
 }
 
-function mapApiEmployee(emp: Record<string, unknown>): UserMaster {
-  const rawName = ((emp.name as string) || '').trim();
-  const rawParts = rawName.split(/\s+/).filter(Boolean);
-  const derivedFirst = rawParts[0] || '';
-  const derivedLast = rawParts.length > 1 ? rawParts[rawParts.length - 1] : '';
-  const fullName =
-    rawName ||
-    `${(emp.firstName as string) || (emp.first_name as string) || ''} ${(emp.lastName as string) || (emp.last_name as string) || ''}`.trim();
-  return {
-    employeeId: (emp.employeeId as string) || (emp.employeeCode as string) || (emp.employee_code as string) || '',
-    employee_code:
-      (emp.employeeCode as string) || (emp.employee_code as string) || (emp.employeeId as string) || '',
-    employeeCode: (emp.employeeCode as string) || (emp.employee_code as string) || (emp.employeeId as string) || '',
-    first_name: (emp.firstName as string) || (emp.first_name as string) || derivedFirst,
-    firstName: (emp.firstName as string) || (emp.first_name as string) || derivedFirst,
-    last_name: (emp.lastName as string) || (emp.last_name as string) || derivedLast,
-    lastName: (emp.lastName as string) || (emp.last_name as string) || derivedLast,
-    name: fullName,
-    employee_name: fullName,
-    designation: (emp.designation as string) || (emp.role as string) || '',
-    date_of_joining: (emp.dateOfJoining as string) || (emp.date_of_joining as string) || '',
-    dateOfJoining: (emp.dateOfJoining as string) || (emp.date_of_joining as string) || '',
-    date_of_exit: (emp.dateOfExit as string) || (emp.date_of_exit as string) || '',
-    dateOfExit: (emp.dateOfExit as string) || (emp.date_of_exit as string) || '',
-    date_of_birth: (emp.dateOfBirth as string) || (emp.date_of_birth as string) || '',
-    dateOfBirth: (emp.dateOfBirth as string) || (emp.date_of_birth as string) || '',
-    gender: (emp.gender as string) || '',
-    phone: (emp.phoneNumber as string) || (emp.phone as string) || '',
-    phoneNumber: (emp.phoneNumber as string) || (emp.phone as string) || '',
-    official_email: (emp.officialEmail as string) || (emp.official_email as string) || (emp.email as string) || '',
-    officialEmail: (emp.officialEmail as string) || (emp.official_email as string) || (emp.email as string) || '',
-    personal_email: (emp.personalEmail as string) || (emp.personal_email as string) || '',
-    personalEmail: (emp.personalEmail as string) || (emp.personal_email as string) || '',
-    aadhar_no: (emp.aadharNo as string) || (emp.aadhar_no as string) || '',
-    aadharNo: (emp.aadharNo as string) || (emp.aadhar_no as string) || '',
-    pan_no: (emp.panNo as string) || (emp.pan_no as string) || '',
-    panNo: (emp.panNo as string) || (emp.pan_no as string) || '',
-    account_no: (emp.accountNo as string) || (emp.account_no as string) || '',
-    accountNo: (emp.accountNo as string) || (emp.account_no as string) || '',
-    bank_name: (emp.bankName as string) || (emp.bank_name as string) || '',
-    bankName: (emp.bankName as string) || (emp.bank_name as string) || '',
-    ifsc: (emp.ifsc as string) || '',
-    uan_no: (emp.uanNumber as string) || (emp.uan_no as string) || '',
-    uanNumber: (emp.uanNumber as string) || (emp.uan_no as string) || '',
-    emergency_contact: (emp.emergencyContact as string) || (emp.emergency_contact as string) || '',
-    emergencyContact: (emp.emergencyContact as string) || (emp.emergency_contact as string) || '',
-    address: (emp.address as string) || (emp.department as string) || '',
-    department: (emp.department as string) || '',
-    permanent_address: (emp.permanentAddress as string) || (emp.permanent_address as string) || '',
-    permanentAddress: (emp.permanentAddress as string) || (emp.permanent_address as string) || '',
-    biometric_code: (emp.biometricCode as string) || (emp.biometric_code as string) || '',
-    biometricCode: (emp.biometricCode as string) || (emp.biometric_code as string) || '',
-    biometric_password: (emp.biometricPassword as string) || (emp.biometric_password as string) || '',
-    biometricPassword: (emp.biometricPassword as string) || (emp.biometric_password as string) || '',
-    passport_no: (emp.passportNo as string) || (emp.passport_no as string) || '',
-    passportNo: (emp.passportNo as string) || (emp.passport_no as string) || '',
-    medi_claim_no: (emp.mediClaimNo as string) || (emp.medi_claim_no as string) || '',
-    mediClaimNo: (emp.mediClaimNo as string) || (emp.medi_claim_no as string) || '',
-    location: (emp.location as string) || '',
-    documentsUrl: (emp.documentsUrl as string) || '',
-    pastExperienceUrl: (emp.pastExperienceUrl as string) || '',
-    profilePhotoUrl: (emp.profilePhotoUrl as string) || '',
-    corporateId: (emp.corporateId as string) || '',
-    password: '',
-  };
-}
-
 export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: UserCreationTabProps = {}) {
-  const [employees, setEmployees] = useState<UserMaster[]>([]);
+  const employeesQuery = useEmployeesListQuery();
+  const invalidateEmployeesList = useInvalidateEmployeesList();
+  const employees = employeesQuery.data ?? [];
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserMaster | null>(null);
@@ -274,29 +157,18 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
     };
   }, [extractObjectKey, getSignedUrl]);
 
-  const fetchEmployees = useCallback(async () => {
-    try {
-      const data = await apiFetch(API_BASE);
-      const apiEmployees = Array.isArray(data.data)
-        ? data.data
-        : Array.isArray(data.data?.items)
-          ? data.data.items
-          : [];
-
-      const mappedEmployees: UserMaster[] = apiEmployees.map((emp: Record<string, unknown>) =>
-        mapApiEmployee(emp)
-      );
-
-      setEmployees(mappedEmployees);
-      onUsersChange?.(mappedEmployees);
-    } catch (err) {
-      console.error('API Error:', err);
+  useEffect(() => {
+    if (employeesQuery.data) {
+      onUsersChange?.(employeesQuery.data);
     }
-  }, [onUsersChange]);
+  }, [employeesQuery.data, onUsersChange]);
 
   useEffect(() => {
-    fetchEmployees();
-  }, [fetchEmployees]);
+    if (employeesQuery.isError && employeesQuery.data === undefined) {
+      console.error('API Error:', employeesQuery.error);
+      toast.error('Failed to load employees');
+    }
+  }, [employeesQuery.isError, employeesQuery.error, employeesQuery.data]);
 
   const handleCreateUser = async (user: UserMaster, files?: UserFormFiles) => {
     const fd = buildEmployeeFormData(user, files);
@@ -317,7 +189,7 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
         } else {
           toast.success('User created successfully');
         }
-        await fetchEmployees();
+        void invalidateEmployeesList();
         setIsModalOpen(false);
       } else {
         toast.error(data.message || 'Error creating employee');
@@ -350,7 +222,7 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
         setEditMode(false);
         setSelectedEmployee(null);
         setEditingUser(null);
-        await fetchEmployees();
+        void invalidateEmployeesList();
       } else {
         toast.error(data.message || 'Update failed');
       }
@@ -371,7 +243,7 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
 
       if (data.success) {
         toast.success('Employee deleted');
-        await fetchEmployees();
+        void invalidateEmployeesList();
       } else {
         toast.error('Delete failed');
       }
@@ -396,7 +268,7 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
         failed++;
       }
     }
-    await fetchEmployees();
+    void invalidateEmployeesList();
     if (failed > 0) {
       toast.error(`Imported ${ok} user(s), ${failed} failed`);
     } else {
@@ -473,6 +345,10 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
       .toLowerCase();
     return hay.includes(term);
   });
+
+  const isInitialLoading = employeesQuery.isPending && employeesQuery.data === undefined;
+  const showEmptyState =
+    !isInitialLoading && !employeesQuery.isError && filteredUsers.length === 0;
 
   const exportEmployeesExcel = () => {
     const rows = employees.map(emp => ({
@@ -584,7 +460,20 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filteredUsers.map((user, index) => (
+            {isInitialLoading ? (
+              <TableRow>
+                <TableCell colSpan={30} className="text-center py-8 text-gray-500">
+                  Loading employees…
+                </TableCell>
+              </TableRow>
+            ) : showEmptyState ? (
+              <TableRow>
+                <TableCell colSpan={30} className="text-center py-8 text-gray-500">
+                  No employees found
+                </TableCell>
+              </TableRow>
+            ) : (
+            filteredUsers.map((user, index) => (
               <TableRow
                 key={`${user.employeeId || user.employeeCode}-${index}`}
                 className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
@@ -701,7 +590,8 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
                   </div>
                 </TableCell>
               </TableRow>
-            ))}
+            ))
+            )}
           </TableBody>
         </Table>
       </div>

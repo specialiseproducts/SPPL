@@ -114,6 +114,9 @@ export function isOwnedByUser(record, user) {
 
   if (recordCode && recordCode === code) return true;
 
+  const ownerCode = String(record?.ownerEmployeeCode || '').trim();
+  if (ownerCode && ownerCode === code) return true;
+
   const recordName = String(record?.created_by_name || record?.employeeName || record?.employee_name || '').trim();
   if (fullName && recordName && recordName === fullName) return true;
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Plus, Download, Upload, Search, Edit, Trash2, Settings } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
@@ -15,9 +15,15 @@ import ExpenseRateSettingsModal, {
 import type { UserRole } from '../App';
 import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
-import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy';
 import { isTravelCarOrBike } from '../utils/expenseAmountCalculation';
 import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
+import { fetchExpenseTravelRates } from '../hooks/expenses/expensesApi';
+import {
+  useExpenseTravelRatesQuery,
+  useExpensesListQuery,
+  useInvalidateExpenseTravelRates,
+  useInvalidateExpensesList,
+} from '../hooks/expenses/useExpensesQueries';
 import {
   canCreate,
   canDelete,
@@ -28,91 +34,9 @@ import {
   isSuperAdmin,
 } from '../utils/accessControl';
 
-interface ExpenseDocument {
-  documentId?: string;
-  fileName: string;
-  fileUrl: string;
-  uploadedAt?: string;
-}
+import type { ExpenseRecord } from '../types/expenses';
 
-export interface ExpenseRecord {
-  expenseId: string;
-  expenseHead: string;
-  /** Present for new canonical heads; omitted on older DynamoDB items */
-  subCategory?: string;
-  location: string;
-  purpose: string;
-  serviceProvider: string;
-  billNumber: string;
-  date: string;
-  amount: number;
-  employeeName: string;
-  employeeId?: string;
-  employeeEmail?: string;
-  monthYear: string;
-  createdAt: string;
-  updatedAt: string;
-  fromLocation?: string;
-  toLocation?: string;
-  returnType?: string;
-  kilometers?: number;
-  stayDateFrom?: string;
-  stayDateTo?: string;
-  /** Yes = supporting file expected/present; No = none */
-  supportingDocument?: 'Yes' | 'No';
-  fuelType?: string;
-  documents?: ExpenseDocument[];
-  selectedFile?: File;
-}
-
-function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord {
-  const legacyLp = String(raw[EXPENSE_LEGACY_COMBINED_LOCATION_ATTR] ?? '').trim();
-  let location = String(raw.location ?? '').trim();
-  let purpose = String(raw.purpose ?? '').trim();
-  if (!location && legacyLp) {
-    location = legacyLp;
-  }
-  if (!purpose && legacyLp) {
-    purpose = legacyLp;
-  }
-  const monthYear = String(raw.monthYear ?? '');
-  const kmRaw = raw.kilometers;
-  let kilometers: number | undefined;
-  if (kmRaw !== undefined && kmRaw !== null && String(kmRaw).trim() !== '') {
-    const n = Number(kmRaw);
-    kilometers = Number.isNaN(n) ? undefined : n;
-  }
-
-  return {
-    expenseId: String(raw.expenseId ?? raw.expense_id ?? raw.id ?? '').trim(),
-    expenseHead: String(raw.expenseHead ?? ''),
-    subCategory: raw.subCategory != null ? String(raw.subCategory).trim() : undefined,
-    location,
-    purpose,
-    serviceProvider: String(raw.serviceProvider ?? ''),
-    billNumber: String(raw.billNumber ?? ''),
-    date: String(raw.date ?? ''),
-    amount: Number(raw.amount ?? 0),
-    employeeName: String(raw.employeeName ?? ''),
-    employeeId: raw.employeeId != null ? String(raw.employeeId) : undefined,
-    employeeEmail: raw.employeeEmail != null ? String(raw.employeeEmail) : undefined,
-    monthYear,
-    createdAt: String(raw.createdAt ?? raw.created_at ?? ''),
-    updatedAt: String(raw.updatedAt ?? raw.updated_at ?? ''),
-    fromLocation: raw.fromLocation != null ? String(raw.fromLocation) : undefined,
-    toLocation: raw.toLocation != null ? String(raw.toLocation) : undefined,
-    returnType: raw.returnType != null ? String(raw.returnType) : undefined,
-    kilometers,
-    stayDateFrom: raw.stayDateFrom != null ? String(raw.stayDateFrom) : undefined,
-    stayDateTo: raw.stayDateTo != null ? String(raw.stayDateTo) : undefined,
-    supportingDocument:
-      raw.supportingDocument === 'Yes' || raw.supportingDocument === 'No'
-        ? raw.supportingDocument
-        : undefined,
-    fuelType: raw.fuelType != null ? String(raw.fuelType).trim() : undefined,
-    documents: Array.isArray(raw.documents) ? (raw.documents as ExpenseDocument[]) : undefined,
-  };
-}
+export type { ExpenseRecord } from '../types/expenses';
 
 interface ExpensesTabProps {
   userRole: UserRole;
@@ -172,32 +96,18 @@ export default function ExpensesTab({
   currentEmployeeCode,
   availableUsers,
 }: ExpensesTabProps) {
-  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
+  const expensesQuery = useExpensesListQuery();
+  const invalidateExpensesList = useInvalidateExpensesList();
+  const invalidateTravelRates = useInvalidateExpenseTravelRates();
+  const travelRatesQuery = useExpenseTravelRatesQuery(isSuperAdmin(userRole));
+
+  const expenses = expensesQuery.data ?? [];
+  const travelRates = travelRatesQuery.data ?? DEFAULT_TRAVEL_RATES;
+
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isRateSettingsOpen, setIsRateSettingsOpen] = useState(false);
-  const [travelRates, setTravelRates] = useState<ExpenseTravelRateSettings>(DEFAULT_TRAVEL_RATES);
   const [editingExpense, setEditingExpense] = useState<ExpenseRecord | null>(null);
-
-  const loadTravelRatesFromApi = useCallback(async (): Promise<ExpenseTravelRateSettings> => {
-    const res = (await apiFetch('/api/expenses/settings/travel-rates')) as {
-      success?: boolean;
-      message?: string;
-      data?: unknown;
-    };
-    if (!res?.success) {
-      throw new Error(
-        typeof res?.message === 'string' && res.message.trim()
-          ? res.message
-          : 'Failed to load travel rates'
-      );
-    }
-    const parsed = parseTravelRatesApiData(res.data);
-    if (!parsed) {
-      throw new Error('Invalid travel rates response from server');
-    }
-    return parsed;
-  }, []);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState<string>('all');
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
@@ -209,32 +119,19 @@ export default function ExpensesTab({
   const canDeleteRecords = canDelete(userRole);
   const canExportRecords = canExport(userRole);
 
-  const fetchExpenses = async () => {
-    const payload = await apiFetch('/api/expenses');
-    if (!payload.success) {
-      throw new Error('Failed to fetch expenses');
-    }
-
-    const rows = Array.isArray(payload.data) ? payload.data : [];
-    setExpenses(rows.map((row: Record<string, unknown>) => normalizeExpenseRow(row)));
-  };
-
   useEffect(() => {
-    fetchExpenses().catch((error) => {
-      console.error('Expenses fetch error:', error);
+    if (expensesQuery.isError && expensesQuery.data === undefined) {
+      console.error('Expenses fetch error:', expensesQuery.error);
       toast.error('Failed to load expenses');
-    });
-  }, []);
+    }
+  }, [expensesQuery.isError, expensesQuery.error, expensesQuery.data]);
 
   useEffect(() => {
-    if (!isSuperAdmin(userRole)) return;
-    loadTravelRatesFromApi()
-      .then(setTravelRates)
-      .catch((error) => {
-        console.error('Travel rates fetch error:', error);
-        toast.error(getErrorMessage(error));
-      });
-  }, [userRole, loadTravelRatesFromApi]);
+    if (travelRatesQuery.isError && travelRatesQuery.data === undefined) {
+      console.error('Travel rates fetch error:', travelRatesQuery.error);
+      toast.error(getErrorMessage(travelRatesQuery.error));
+    }
+  }, [travelRatesQuery.isError, travelRatesQuery.error, travelRatesQuery.data]);
 
   const handleSaveTravelRates = async (rates: ExpenseTravelRateSettings) => {
     try {
@@ -251,9 +148,9 @@ export default function ExpensesTab({
             : 'Failed to save settings'
         );
       }
-      setTravelRates(parsed);
       setIsRateSettingsOpen(false);
       toast.success('Expense rate settings saved');
+      void invalidateTravelRates();
     } catch (error) {
       toast.error(getErrorMessage(error));
       throw error;
@@ -314,7 +211,7 @@ export default function ExpensesTab({
         throw new Error('Create failed');
       }
 
-      await fetchExpenses();
+      void invalidateExpensesList();
       setIsFormModalOpen(false);
       toast.success('Expense Record Created Successfully');
     } catch (error) {
@@ -402,7 +299,7 @@ export default function ExpensesTab({
         throw new Error('Update failed');
       }
 
-      await fetchExpenses();
+      void invalidateExpensesList();
       setEditingExpense(null);
       toast.success('Expense Record Updated Successfully');
     } catch (error) {
@@ -429,7 +326,7 @@ export default function ExpensesTab({
         throw new Error('Delete failed');
       }
 
-      await fetchExpenses();
+      void invalidateExpensesList();
       toast.success('Expense Record Deleted');
     } catch (error) {
       console.error('Delete expense error:', error);
@@ -438,7 +335,7 @@ export default function ExpensesTab({
   };
 
   const handleImportSuccess = (importedExpenses: ExpenseRecord[]) => {
-    setExpenses([...expenses, ...importedExpenses]);
+    void invalidateExpensesList();
     setIsImportModalOpen(false);
     toast.success(`Successfully imported ${importedExpenses.length} expense records`);
   };
@@ -520,62 +417,70 @@ export default function ExpensesTab({
   /** Legacy name from template download — same as CSV export (avoids stale JSX / hot-reload crashes). */
   const handleDownloadTemplate = handleExportData;
 
-  // Filter expenses based on role and filters
-  const filteredExpenses = expenses.filter(expense => {
-    // Employee can only see their own records
-    if (!privileged && expense.employeeName !== currentUserName) {
-      return false;
-    }
+  const filteredExpenses = useMemo(() => {
+    return expenses.filter((expense) => {
+      if (!privileged && expense.employeeName !== currentUserName) {
+        return false;
+      }
 
-    // Apply admin filters
-    if (privileged && selectedEmployee !== 'all' && expense.employeeName !== selectedEmployee) {
-      return false;
-    }
+      if (privileged && selectedEmployee !== 'all' && expense.employeeName !== selectedEmployee) {
+        return false;
+      }
 
-    // Apply month filter
-    if (selectedMonth !== 'all' && !expense.monthYear.startsWith(`${selectedMonth}-`)) {
-      return false;
-    }
+      if (selectedMonth !== 'all' && !expense.monthYear.startsWith(`${selectedMonth}-`)) {
+        return false;
+      }
 
-    // Apply year filter
-    if (selectedYear !== 'all' && !expense.monthYear.endsWith(`-${selectedYear}`)) {
-      return false;
-    }
+      if (selectedYear !== 'all' && !expense.monthYear.endsWith(`-${selectedYear}`)) {
+        return false;
+      }
 
-    // Apply search filter
-    if (searchTerm) {
-      const hay = [
-        expense.location,
-        expense.purpose,
-        expense.serviceProvider,
-        expense.billNumber,
-        expense.expenseHead,
-        expense.subCategory ?? '',
-        expense.fromLocation ?? '',
-        expense.toLocation ?? '',
-        expense.returnType ?? '',
-        expense.stayDateFrom ?? '',
-        expense.stayDateTo ?? '',
-        expense.kilometers !== undefined && expense.kilometers !== null
-          ? String(expense.kilometers)
-          : '',
-        expense.fuelType ?? '',
-        expense.supportingDocument ?? '',
-        expense.employeeName ?? '',
-        expense.monthYear ?? '',
-      ]
-        .join(' ')
-        .toLowerCase();
-      const tokens = searchTerm
-        .toLowerCase()
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
-      return tokens.every((t) => hay.includes(t));
-    }
+      if (searchTerm) {
+        const hay = [
+          expense.location,
+          expense.purpose,
+          expense.serviceProvider,
+          expense.billNumber,
+          expense.expenseHead,
+          expense.subCategory ?? '',
+          expense.fromLocation ?? '',
+          expense.toLocation ?? '',
+          expense.returnType ?? '',
+          expense.stayDateFrom ?? '',
+          expense.stayDateTo ?? '',
+          expense.kilometers !== undefined && expense.kilometers !== null
+            ? String(expense.kilometers)
+            : '',
+          expense.fuelType ?? '',
+          expense.supportingDocument ?? '',
+          expense.employeeName ?? '',
+          expense.monthYear ?? '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        const tokens = searchTerm
+          .toLowerCase()
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        return tokens.every((t) => hay.includes(t));
+      }
 
-    return true;
-  });
+      return true;
+    });
+  }, [
+    expenses,
+    privileged,
+    currentUserName,
+    selectedEmployee,
+    selectedMonth,
+    selectedYear,
+    searchTerm,
+  ]);
+
+  const isInitialLoading = expensesQuery.isPending && expensesQuery.data === undefined;
+  const showEmptyState =
+    !isInitialLoading && !expensesQuery.isError && filteredExpenses.length === 0;
 
   return (
     <Card className="p-6">
@@ -724,7 +629,13 @@ export default function ExpensesTab({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredExpenses.length === 0 ? (
+              {isInitialLoading ? (
+                <TableRow>
+                  <TableCell colSpan={privileged ? 21 : 20} className="text-center py-8 text-gray-500">
+                    Loading expense records…
+                  </TableCell>
+                </TableRow>
+              ) : showEmptyState ? (
                 <TableRow>
                   <TableCell colSpan={privileged ? 21 : 20} className="text-center py-8 text-gray-500">
                     No expense records found
@@ -896,7 +807,7 @@ export default function ExpensesTab({
           isOpen={isRateSettingsOpen}
           onClose={() => setIsRateSettingsOpen(false)}
           initialRates={travelRates}
-          loadRates={loadTravelRatesFromApi}
+          loadRates={fetchExpenseTravelRates}
           onSave={handleSaveTravelRates}
         />
       )}
