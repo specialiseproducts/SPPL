@@ -2,5 +2,6 @@
 export const expensesQueryKeys = {
   all: ['expenses'] as const,
   list: () => [...expensesQueryKeys.all, 'list'] as const,
+  listInfinite: () => [...expensesQueryKeys.all, 'list', 'infinite'] as const,
   travelRates: () => [...expensesQueryKeys.all, 'travel-rates'] as const,
 };

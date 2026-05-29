@@ -13,18 +13,20 @@ import ExpenseRateSettingsModal, {
   type ExpenseTravelRateSettings,
 } from './ExpenseRateSettingsModal';
 import type { UserRole } from '../App';
-import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
 import { isTravelCarOrBike } from '../utils/expenseAmountCalculation';
 import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
 import { fetchExpenseTravelRates } from '../hooks/expenses/expensesApi';
 import {
   useExpenseTravelRatesQuery,
-  useExpensesListQuery,
+  useExpensesListRows,
   useInvalidateExpenseTravelRates,
   useInvalidateExpensesList,
 } from '../hooks/expenses/useExpensesQueries';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { isQueryColdLoading } from '../utils/queryLoading';
+import { useEmployeesListQuery } from '../hooks/employees/useEmployeesQuery';
+import { sanitizeSelectOptionsUnique } from '../utils/sanitizeSelectOptions';
 import {
   canCreate,
   canDelete,
@@ -45,7 +47,6 @@ interface ExpensesTabProps {
   scopeSelfOnly?: boolean;
   currentUserName: string;
   currentEmployeeCode: string;
-  availableUsers: UserMaster[];
 }
 
 const months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
@@ -95,14 +96,14 @@ export default function ExpensesTab({
   scopeSelfOnly = false,
   currentUserName,
   currentEmployeeCode,
-  availableUsers,
 }: ExpensesTabProps) {
-  const expensesQuery = useExpensesListQuery();
+  const employeesQuery = useEmployeesListQuery();
+  const expensesQuery = useExpensesListRows();
   const invalidateExpensesList = useInvalidateExpensesList();
   const invalidateTravelRates = useInvalidateExpenseTravelRates();
   const travelRatesQuery = useExpenseTravelRatesQuery(isSuperAdmin(userRole));
 
-  const expenses = expensesQuery.data ?? [];
+  const expenses = expensesQuery.expenses;
   const travelRates = travelRatesQuery.data ?? DEFAULT_TRAVEL_RATES;
 
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
@@ -114,11 +115,18 @@ export default function ExpensesTab({
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState<string>('all');
 
+  const debouncedSearch = useDebouncedValue(searchTerm, 300);
+
   const privileged = !scopeSelfOnly && (isAdmin(userRole) || isDeveloper(userRole));
   const canCreateRecords = canCreate(userRole);
   const canEditRecords = canEdit(userRole);
   const canDeleteRecords = canDelete(userRole);
   const canExportRecords = canExport(userRole);
+
+  const employeeFilterOptions = useMemo(() => {
+    const names = (employeesQuery.data ?? []).map((user) => user.name);
+    return sanitizeSelectOptionsUnique(names);
+  }, [employeesQuery.data]);
 
   useEffect(() => {
     if (expensesQuery.isError && expensesQuery.data === undefined) {
@@ -341,6 +349,77 @@ export default function ExpensesTab({
     toast.success(`Successfully imported ${importedExpenses.length} expense records`);
   };
 
+  const filteredExpenses = useMemo(() => {
+    return expenses.filter((expense) => {
+      if (!privileged && expense.employeeName !== currentUserName) {
+        return false;
+      }
+
+      if (privileged && selectedEmployee !== 'all' && expense.employeeName !== selectedEmployee) {
+        return false;
+      }
+
+      if (selectedMonth !== 'all' && !expense.monthYear.startsWith(`${selectedMonth}-`)) {
+        return false;
+      }
+
+      if (selectedYear !== 'all' && !expense.monthYear.endsWith(`-${selectedYear}`)) {
+        return false;
+      }
+
+      if (debouncedSearch) {
+        const hay = [
+          expense.location,
+          expense.purpose,
+          expense.serviceProvider,
+          expense.billNumber,
+          expense.expenseHead,
+          expense.subCategory ?? '',
+          expense.fromLocation ?? '',
+          expense.toLocation ?? '',
+          expense.returnType ?? '',
+          expense.stayDateFrom ?? '',
+          expense.stayDateTo ?? '',
+          expense.kilometers !== undefined && expense.kilometers !== null
+            ? String(expense.kilometers)
+            : '',
+          expense.fuelType ?? '',
+          expense.supportingDocument ?? '',
+          expense.employeeName ?? '',
+          expense.monthYear ?? '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        const tokens = debouncedSearch
+          .toLowerCase()
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        return tokens.every((t) => hay.includes(t));
+      }
+
+      return true;
+    });
+  }, [
+    expenses,
+    privileged,
+    currentUserName,
+    selectedEmployee,
+    selectedMonth,
+    selectedYear,
+    debouncedSearch,
+  ]);
+
+  const filteredTotalAmount = useMemo(
+    () =>
+      filteredExpenses.reduce(
+        (sum, expense) =>
+          sum + (Number.isFinite(Number(expense.amount)) ? Number(expense.amount) : 0),
+        0
+      ),
+    [filteredExpenses]
+  );
+
   const handleExportData = () => {
     const rows = filteredExpenses;
     if (rows.length === 0) {
@@ -418,67 +497,6 @@ export default function ExpensesTab({
   /** Legacy name from template download — same as CSV export (avoids stale JSX / hot-reload crashes). */
   const handleDownloadTemplate = handleExportData;
 
-  const filteredExpenses = useMemo(() => {
-    return expenses.filter((expense) => {
-      if (!privileged && expense.employeeName !== currentUserName) {
-        return false;
-      }
-
-      if (privileged && selectedEmployee !== 'all' && expense.employeeName !== selectedEmployee) {
-        return false;
-      }
-
-      if (selectedMonth !== 'all' && !expense.monthYear.startsWith(`${selectedMonth}-`)) {
-        return false;
-      }
-
-      if (selectedYear !== 'all' && !expense.monthYear.endsWith(`-${selectedYear}`)) {
-        return false;
-      }
-
-      if (searchTerm) {
-        const hay = [
-          expense.location,
-          expense.purpose,
-          expense.serviceProvider,
-          expense.billNumber,
-          expense.expenseHead,
-          expense.subCategory ?? '',
-          expense.fromLocation ?? '',
-          expense.toLocation ?? '',
-          expense.returnType ?? '',
-          expense.stayDateFrom ?? '',
-          expense.stayDateTo ?? '',
-          expense.kilometers !== undefined && expense.kilometers !== null
-            ? String(expense.kilometers)
-            : '',
-          expense.fuelType ?? '',
-          expense.supportingDocument ?? '',
-          expense.employeeName ?? '',
-          expense.monthYear ?? '',
-        ]
-          .join(' ')
-          .toLowerCase();
-        const tokens = searchTerm
-          .toLowerCase()
-          .trim()
-          .split(/\s+/)
-          .filter(Boolean);
-        return tokens.every((t) => hay.includes(t));
-      }
-
-      return true;
-    });
-  }, [
-    expenses,
-    privileged,
-    currentUserName,
-    selectedEmployee,
-    selectedMonth,
-    selectedYear,
-    searchTerm,
-  ]);
-
   const isInitialLoading = isQueryColdLoading(expensesQuery);
   const showEmptyState =
     !isInitialLoading && !expensesQuery.isError && filteredExpenses.length === 0;
@@ -531,7 +549,9 @@ export default function ExpensesTab({
       </div>
 
       {/* Filters */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+      <div
+        className={`grid grid-cols-1 gap-4 mb-4 ${privileged ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}
+      >
         {privileged && (
           <div className="space-y-2">
             <label className="text-sm">Employee Name</label>
@@ -541,7 +561,7 @@ export default function ExpensesTab({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Employees</SelectItem>
-                {availableUsers.map(user => (
+                {employeeFilterOptions.map((user) => (
                   <SelectItem key={user.employee_code} value={user.name}>
                     {user.name}
                   </SelectItem>
@@ -596,6 +616,19 @@ export default function ExpensesTab({
               className="pl-9"
             />
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm">Total Amount</label>
+          <Button
+            type="button"
+            variant="outline"
+            disabled
+            aria-readonly
+            className="w-full justify-start font-normal cursor-default opacity-100"
+          >
+            Total Amount ₹{filteredTotalAmount.toLocaleString('en-IN')}
+          </Button>
         </div>
       </div>
 
@@ -771,6 +804,18 @@ export default function ExpensesTab({
           </Table>
           </div>
         </TooltipProvider>
+        {expensesQuery.hasNextPage && (
+          <div className="flex justify-end border-t px-4 py-3">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={expensesQuery.isFetchingNextPage}
+              onClick={() => void expensesQuery.fetchNextPage()}
+            >
+              {expensesQuery.isFetchingNextPage ? 'Loading…' : 'Load more expenses'}
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Modals */}

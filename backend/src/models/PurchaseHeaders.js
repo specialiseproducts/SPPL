@@ -6,6 +6,7 @@
  */
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
+import { parsePaginationOptions, encodeCursor } from '../utils/dynamoPagination.js';
 
 const TABLE_NAME = TABLES.PURCHASE_HEADERS;
 
@@ -31,13 +32,19 @@ export const getPurchaseHeaderById = async (purchaseHeaderId) => {
  * @returns {Promise<Object>} List of purchase headers
  */
 export const getPurchaseHeaders = async (filters = {}, options = {}) => {
-  const result = await dynamoDB.scan({
-    TableName: TABLE_NAME,
-  }).promise();
+  const pagination = parsePaginationOptions(options);
+  const params = { TableName: TABLE_NAME };
+  if (pagination.limit) params.Limit = pagination.limit;
+  if (pagination.exclusiveStartKey) params.ExclusiveStartKey = pagination.exclusiveStartKey;
+
+  const result = await dynamoDB.scan(params).promise();
+  const items = (result.Items || []).filter((row) => !row?.is_deleted);
 
   return {
-    items: (result.Items || []).filter((row) => !row?.is_deleted),
+    items,
     lastKey: result.LastEvaluatedKey?.purchaseHeaderId || null,
+    lastEvaluatedKey: result.LastEvaluatedKey || null,
+    nextCursor: encodeCursor(result.LastEvaluatedKey),
   };
 };
 

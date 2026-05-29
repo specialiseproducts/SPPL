@@ -12,6 +12,8 @@ import { buildAuditFields } from '../utils/audit.js';
 import { canAccessAllRecords, isOwnedByUser } from '../utils/accessControl.js';
 import { v4 as uuidv4 } from 'uuid';
 import log from '../utils/logger.js';
+import { DEFAULT_QUERY_LIMIT, parsePaginationOptions, toPaginatedResponse } from '../utils/dynamoPagination.js';
+import { toPurchaseListEntry } from '../utils/listDtos.js';
 
 /**
  * Get purchase header with line items
@@ -67,36 +69,35 @@ export const getPurchaseById = async (purchaseHeaderId, authUser = null, effecti
 export const getPurchases = async (filters = {}, options = {}, authUser = null, effectiveRole = 'User') => {
   try {
     log.info('Getting purchases with filters:', filters);
-    const headers = await PurchaseHeadersModel.getAllHeaders();
+    const pagination = parsePaginationOptions({
+      limit: options.limit ?? DEFAULT_QUERY_LIMIT,
+      cursor: options.cursor ?? options.nextCursor,
+    });
+    const headerResult = await PurchaseHeadersModel.getPurchaseHeaders(filters, pagination);
+    const headers = headerResult.items;
+
     const purchases = await Promise.all(
       headers.map(async (header) => {
-        const lineItems = await PurchaseLineItemsModel.getLineItemsByPurchaseHeaderId(header.purchaseHeaderId);
-        return {
-          header,
-          lineItems,
-        };
+        const lineItems = await PurchaseLineItemsModel.getLineItemsByPurchaseHeaderId(
+          header.purchaseHeaderId
+        );
+        return toPurchaseListEntry(header, lineItems);
       })
     );
 
-    if (!authUser || canAccessAllRecords(effectiveRole)) {
-      return purchases;
+    let result = purchases;
+    if (authUser && !canAccessAllRecords(effectiveRole)) {
+      result = purchases
+        .map((purchase) => {
+          const ownedHeader = isOwnedByUser(purchase.header, authUser);
+          const ownedLineItems = purchase.lineItems.filter((item) => isOwnedByUser(item, authUser));
+          if (!ownedHeader && ownedLineItems.length === 0) return null;
+          return { ...purchase, lineItems: ownedLineItems };
+        })
+        .filter(Boolean);
     }
 
-    const filtered = purchases
-      .map((purchase) => {
-        const ownedHeader = isOwnedByUser(purchase.header, authUser);
-        const ownedLineItems = purchase.lineItems.filter((item) => isOwnedByUser(item, authUser));
-        if (!ownedHeader && ownedLineItems.length === 0) {
-          return null;
-        }
-        return {
-          ...purchase,
-          lineItems: ownedLineItems,
-        };
-      })
-      .filter(Boolean);
-
-    return filtered;
+    return toPaginatedResponse(result, headerResult.lastEvaluatedKey);
   } catch (error) {
     log.error('Error getting purchases:', error);
     throw error;

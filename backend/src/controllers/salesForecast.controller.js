@@ -3,12 +3,30 @@
  */
 
 import * as SalesForecastService from '../services/salesForecast.service.js';
+import { DEFAULT_QUERY_LIMIT } from '../utils/dynamoPagination.js';
 import log from '../utils/logger.js';
+
+export const getBootstrap = async (req, res, next) => {
+  try {
+    const data = await SalesForecastService.getBootstrap(req.user, req.effectiveRole);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Sales bootstrap error:', error);
+    next(error);
+  }
+};
 
 export const listOpportunities = async (req, res, next) => {
   try {
-    const rows = await SalesForecastService.listOpportunities(req.user, req.effectiveRole);
-    res.status(200).json({ success: true, data: rows });
+    const result = await SalesForecastService.listOpportunities(req.user, req.effectiveRole, {
+      limit: req.query.limit ?? DEFAULT_QUERY_LIMIT,
+      cursor: req.query.cursor,
+    });
+    res.status(200).json({
+      success: true,
+      data: result.data,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    });
   } catch (error) {
     log.error('List opportunities error:', error);
     next(error);

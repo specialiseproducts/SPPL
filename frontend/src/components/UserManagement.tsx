@@ -3,21 +3,13 @@ import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import UserCreationTab from './UserCreationTab';
 import AccessManagementTab from './AccessManagementTab';
 import type { UserMaster } from './UserCreationTab';
-import { cn } from './ui/utils';
 
 interface UserManagementProps {
-  onUsersChange: (users: UserMaster[]) => void;
   onEmployeeCodeClick?: (employee: UserMaster) => void;
 }
 
-export default function UserManagement({ onUsersChange, onEmployeeCodeClick }: UserManagementProps) {
-  const [users, setUsers] = useState<UserMaster[]>([]);
+export default function UserManagement({ onEmployeeCodeClick }: UserManagementProps) {
   const [tab, setTab] = useState('creation');
-
-  const handleUsersChange = (updatedUsers: UserMaster[]) => {
-    setUsers(updatedUsers);
-    onUsersChange(updatedUsers);
-  };
 
   return (
     <div className="space-y-6">
@@ -33,12 +25,16 @@ export default function UserManagement({ onUsersChange, onEmployeeCodeClick }: U
         </TabsList>
       </Tabs>
 
-      <div className={cn('mt-6', tab !== 'creation' ? 'hidden' : undefined)}>
-        <UserCreationTab onUsersChange={handleUsersChange} onEmployeeCodeClick={onEmployeeCodeClick} />
-      </div>
-      <div className={cn('mt-6', tab !== 'access' ? 'hidden' : undefined)}>
-        <AccessManagementTab availableUsers={users} />
-      </div>
+      {tab === 'creation' && (
+        <div className="mt-6">
+          <UserCreationTab onEmployeeCodeClick={onEmployeeCodeClick} />
+        </div>
+      )}
+      {tab === 'access' && (
+        <div className="mt-6">
+          <AccessManagementTab />
+        </div>
+      )}
     </div>
   );
 }

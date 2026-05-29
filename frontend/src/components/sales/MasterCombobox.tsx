@@ -4,6 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Command, CommandInput, CommandItem, CommandList } from '../ui/command';
 import { Label } from '../ui/label';
 import { cn } from '../ui/utils';
+import { sanitizeSelectOptionsUnique } from '../../utils/sanitizeSelectOptions';
 
 const triggerClass = cn(
   'border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*="text-"])]:text-muted-foreground',
@@ -52,7 +53,10 @@ export function MasterCombobox({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
 
-  const deduped = useMemo(() => Array.from(new Set(options.filter(Boolean))).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })), [options]);
+  const deduped = useMemo(
+    () => sanitizeSelectOptionsUnique(options).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+    [options]
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

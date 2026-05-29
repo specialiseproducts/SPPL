@@ -9,8 +9,11 @@ import AccessFormModal from './AccessFormModal';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import type { UserRole } from '../App';
 import type { ModuleName } from './Sidebar';
-import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
+import { useEmployeesListQuery } from '../hooks/employees/useEmployeesQuery';
+import { useAccessRulesQuery, useInvalidateAccessRules } from '../hooks/access/useAccessQueries';
+import { accessRuleToApiPayload } from '../hooks/access/accessApi';
+import { isQueryColdLoading } from '../utils/queryLoading';
 
 export interface AccessRule {
   id: string;
@@ -22,105 +25,41 @@ export interface AccessRule {
   updatedByName?: string;
 }
 
-interface AccessManagementTabProps {
-  availableUsers: UserMaster[];
-}
+export default function AccessManagementTab() {
+  const employeesQuery = useEmployeesListQuery();
+  const rulesQuery = useAccessRulesQuery();
+  const invalidateAccessRules = useInvalidateAccessRules();
 
-const MODULE_LABEL_TO_KEY: Record<ModuleName, string> = {
-  'Sales Forecasting': 'salesForecasting',
-  Expenses: 'expenses',
-  Payroll: 'payroll',
-  Purchases: 'purchases',
-  CRM: 'crm',
-  'User Management': 'userManagement',
-};
+  const accessRules = rulesQuery.data ?? [];
+  const effectiveUsers = employeesQuery.data ?? [];
 
-const MODULE_KEY_TO_LABEL: Record<string, ModuleName> = {
-  salesForecasting: 'Sales Forecasting',
-  expenses: 'Expenses',
-  payroll: 'Payroll',
-  purchases: 'Purchases',
-  crm: 'CRM',
-  userManagement: 'User Management',
-};
-
-export default function AccessManagementTab({ availableUsers }: AccessManagementTabProps) {
-  const [accessRules, setAccessRules] = useState<AccessRule[]>([]);
-  const [employees, setEmployees] = useState<UserMaster[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<AccessRule | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [loading, setLoading] = useState(false);
 
-  const effectiveUsers = useMemo(
-    () => (employees.length > 0 ? employees : availableUsers),
-    [employees, availableUsers]
-  );
-
-  const mapApiRule = (item: any): AccessRule => ({
-    id: String(item?.employeeCode || ''),
-    name: String(item?.employeeName || ''),
-    employeeCode: String(item?.employeeCode || ''),
-    baseRole: (item?.globalRole || 'User') as UserRole,
-    overrides: Object.entries(item?.moduleOverrides || {}).map(([key, value]) => ({
-      pageName: MODULE_KEY_TO_LABEL[key] || 'Sales Forecasting',
-      subRole: String(value || 'User') as UserRole | 'None',
-    })),
-    lastModified: String(item?.updatedAt || item?.createdAt || ''),
-    updatedByName: String(item?.updatedByName || item?.updatedBy || ''),
-  });
-
-  const toApiPayload = (rule: AccessRule) => ({
-    employeeCode: rule.employeeCode,
-    employeeName: rule.name,
-    globalRole: rule.baseRole,
-    moduleOverrides: rule.overrides.reduce<Record<string, string>>((acc, override) => {
-      const moduleKey = MODULE_LABEL_TO_KEY[override.pageName];
-      if (moduleKey) acc[moduleKey] = String(override.subRole);
-      return acc;
-    }, {}),
-  });
-
-  const loadEmployees = async () => {
-    const data = await apiFetch('/api/employees');
-    const rows = Array.isArray(data?.data?.items) ? data.data.items : [];
-    setEmployees(
-      rows.map((row: any) => ({
-        employee_code: row.employeeCode || '',
-        employeeCode: row.employeeCode || '',
-        first_name: row.firstName || '',
-        firstName: row.firstName || '',
-        last_name: row.lastName || '',
-        lastName: row.lastName || '',
-        name: `${row.firstName || ''} ${row.lastName || ''}`.trim() || row.name || '',
-        biometric_code: row.biometricCode || '',
-        biometricCode: row.biometricCode || '',
-      }))
-    );
-  };
-
-  const loadRules = async () => {
-    setLoading(true);
-    try {
-      const data = await apiFetch('/api/access-control');
-      setAccessRules((Array.isArray(data?.data) ? data.data : []).map(mapApiRule));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const isInitialLoading = isQueryColdLoading(rulesQuery);
 
   useEffect(() => {
-    loadEmployees().catch(() => {});
-    loadRules().catch(() => {});
-  }, []);
+    if (rulesQuery.isError && rulesQuery.data === undefined) {
+      console.error('Access rules fetch error:', rulesQuery.error);
+      toast.error('Failed to load access rules');
+    }
+  }, [rulesQuery.isError, rulesQuery.error, rulesQuery.data]);
+
+  useEffect(() => {
+    if (employeesQuery.isError && employeesQuery.data === undefined) {
+      console.error('Employees fetch error:', employeesQuery.error);
+      toast.error('Failed to load employees for access management');
+    }
+  }, [employeesQuery.isError, employeesQuery.error, employeesQuery.data]);
 
   const handleCreateAccess = async (rule: AccessRule) => {
     await apiFetch('/api/access-control', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toApiPayload(rule)),
+      body: JSON.stringify(accessRuleToApiPayload(rule)),
     });
-    await loadRules();
+    void invalidateAccessRules();
     setIsModalOpen(false);
     toast.success('Role Management saved');
   };
@@ -129,24 +68,33 @@ export default function AccessManagementTab({ availableUsers }: AccessManagement
     await apiFetch(`/api/access-control/${encodeURIComponent(rule.employeeCode)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toApiPayload(rule)),
+      body: JSON.stringify(accessRuleToApiPayload(rule)),
     });
-    await loadRules();
+    void invalidateAccessRules();
     setEditingRule(null);
     toast.success('Role Management updated');
   };
 
   const handleDeleteAccess = async (employeeCode: string) => {
     const rule = accessRules.find((r) => r.employeeCode === employeeCode);
-    if (rule && confirm(`Are you sure you want to delete the access settings for ${rule.name} (${rule.employeeCode})? This action cannot be undone.`)) {
+    if (
+      rule &&
+      confirm(
+        `Are you sure you want to delete the access settings for ${rule.name} (${rule.employeeCode})? This action cannot be undone.`
+      )
+    ) {
       await apiFetch(`/api/access-control/${encodeURIComponent(employeeCode)}`, { method: 'DELETE' });
-      await loadRules();
+      void invalidateAccessRules();
       toast.success('Role Management entry deleted');
     }
   };
 
-  const filteredRules = accessRules.filter((rule) =>
-    `${rule.name} ${rule.employeeCode} ${rule.baseRole}`.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredRules = useMemo(
+    () =>
+      accessRules.filter((rule) =>
+        `${rule.name} ${rule.employeeCode} ${rule.baseRole}`.toLowerCase().includes(searchTerm.toLowerCase())
+      ),
+    [accessRules, searchTerm]
   );
 
   return (
@@ -190,25 +138,35 @@ export default function AccessManagementTab({ availableUsers }: AccessManagement
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
-                <TableRow><TableCell colSpan={8} className="text-center text-gray-500 py-6">Loading access rules...</TableCell></TableRow>
+              {isInitialLoading ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center text-gray-500 py-6">
+                    Loading access rules…
+                  </TableCell>
+                </TableRow>
               ) : filteredRules.length === 0 ? (
-                <TableRow><TableCell colSpan={8} className="text-center text-gray-500 py-6">No access records found</TableCell></TableRow>
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center text-gray-500 py-6">
+                    No access records found
+                  </TableCell>
+                </TableRow>
               ) : (
                 filteredRules.map((rule, index) => (
                   <TableRow key={rule.id} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                     <TableCell>{rule.employeeCode}</TableCell>
                     <TableCell>{rule.name || '-'}</TableCell>
                     <TableCell>
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs ${
-                        rule.baseRole === 'Developer'
-                          ? 'bg-purple-100 text-purple-800'
-                          : rule.baseRole === 'Admin'
-                            ? 'bg-blue-100 text-blue-800'
-                            : rule.baseRole === 'Super Admin'
-                              ? 'bg-indigo-100 text-indigo-900'
-                              : 'bg-gray-100 text-gray-800'
-                      }`}>
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs ${
+                          rule.baseRole === 'Developer'
+                            ? 'bg-purple-100 text-purple-800'
+                            : rule.baseRole === 'Admin'
+                              ? 'bg-blue-100 text-blue-800'
+                              : rule.baseRole === 'Super Admin'
+                                ? 'bg-indigo-100 text-indigo-900'
+                                : 'bg-gray-100 text-gray-800'
+                        }`}
+                      >
                         {rule.baseRole}
                       </span>
                     </TableCell>
@@ -227,49 +185,46 @@ export default function AccessManagementTab({ availableUsers }: AccessManagement
                         <span className="text-gray-400 text-sm">No overrides</span>
                       )}
                     </TableCell>
-                    <TableCell>{rule.lastModified ? new Date(rule.lastModified).toLocaleString() : '-'}</TableCell>
+                    <TableCell>{rule.lastModified ? new Date(rule.lastModified).toLocaleDateString('en-GB') : '-'}</TableCell>
                     <TableCell>{rule.updatedByName || '-'}</TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-3">
+                      <div className="flex gap-1">
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <button onClick={() => setEditingRule(rule)} className="text-[#1D4ED8] hover:text-[#1e40af] transition-colors">
-                              <Edit className="w-5 h-5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent><p>Edit Role Management</p></TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button onClick={() => handleDeleteAccess(rule.employeeCode)} className="text-[#EF4444] hover:text-[#dc2626] transition-colors">
-                              <Trash2 className="w-5 h-5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent><p>Delete Role Management Entry</p></TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              onClick={async () => {
-                                const res = await apiFetch('/api/auth/reset-password', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ employeeCode: rule.employeeCode }),
-                                });
-                                const pw = res?.data?.password;
-                                if (pw) {
-                                  navigator.clipboard?.writeText(pw).catch(() => {});
-                                  toast.success(`Temporary password: ${pw} (copied)`);
-                                } else {
-                                  toast.success('Password reset successfully');
-                                }
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => {
+                                setEditingRule(rule);
+                                setIsModalOpen(true);
                               }}
-                              className="text-[#007BFF] hover:text-[#0056b3] transition-colors"
                             >
-                              <KeyRound className="w-5 h-5" />
-                            </button>
+                              <Edit className="h-4 w-4" />
+                            </Button>
                           </TooltipTrigger>
-                          <TooltipContent><p>Reset Password</p></TooltipContent>
+                          <TooltipContent>Edit</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-red-600 hover:bg-red-50"
+                              onClick={() => void handleDeleteAccess(rule.employeeCode)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Delete</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
+                              <KeyRound className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Password reset (coming soon)</TooltipContent>
                         </Tooltip>
                       </div>
                     </TableCell>
@@ -283,18 +238,14 @@ export default function AccessManagementTab({ availableUsers }: AccessManagement
 
       <AccessFormModal
         isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        onSubmit={handleCreateAccess}
-        availableUsers={effectiveUsers}
-      />
-
-      <AccessFormModal
-        isOpen={!!editingRule}
-        onClose={() => setEditingRule(null)}
-        onSubmit={handleEditAccess}
+        onClose={() => {
+          setIsModalOpen(false);
+          setEditingRule(null);
+        }}
+        onSubmit={editingRule ? handleEditAccess : handleCreateAccess}
         availableUsers={effectiveUsers}
         initialData={editingRule || undefined}
-        isEdit={true}
+        isEdit={!!editingRule}
       />
     </Card>
   );

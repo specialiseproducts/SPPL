@@ -5,6 +5,7 @@
  */
 
 import * as ExpenseService from '../services/expense.service.js';
+import { DEFAULT_QUERY_LIMIT } from '../utils/dynamoPagination.js';
 import log from '../utils/logger.js';
 
 /**
@@ -53,15 +54,16 @@ export const getExpenses = async (req, res, next) => {
   try {
     const filters = req.query;
     const options = {
-      limit: parseInt(req.query.limit) || 50,
-      lastKey: req.query.lastKey,
+      limit: req.query.limit ?? DEFAULT_QUERY_LIMIT,
+      cursor: req.query.cursor,
     };
 
     const result = await ExpenseService.getExpenses(filters, options, req.user, req.effectiveRole);
 
     res.status(200).json({
       success: true,
-      data: result,
+      data: result.data,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
     });
   } catch (error) {
     log.error('Get expenses controller error:', error);

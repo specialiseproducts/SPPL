@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Plus, Download, Search, Edit, Trash2, Eye, CheckCircle2, XCircle } from 'lucide-react';
 import { Button } from './ui/button';
@@ -6,21 +6,20 @@ import { Card } from './ui/card';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
+import { Table, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
+import { VirtualizedTableBody } from './ui/VirtualizedTableBody';
 import { Badge } from './ui/badge';
 import { cn } from './ui/utils';
 import { toast } from 'sonner';
 import type { UserRole } from '../App';
-import type { UserMaster } from './UserCreationTab';
 import { apiFetch } from '../services/api';
-import { DEFAULT_EXCHANGE_RATES, emptyMastersState } from '../hooks/sales/salesApi';
+import { fetchSalesOpportunityById } from '../hooks/sales/salesApi';
+import { useSalesData } from '../hooks/sales/SalesDataContext';
 import {
   useInvalidateSalesForecasts,
   useInvalidateSalesMasters,
-  useSalesForecastsQuery,
-  useSalesMastersQuery,
-  useSalesRatesQuery,
 } from '../hooks/sales/useSalesQueries';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { canCreate, canDelete, canEdit, canExport, isAdmin, isDeveloper, isSuperAdmin } from '../utils/accessControl';
 import type { SalesOpportunity, SalesWorkflowStatus } from '../types/salesForecast';
 import { isQuotationLocked } from '../utils/salesForecastCalculations';
@@ -35,7 +34,6 @@ interface SalesForecastingTabProps {
   userRole: UserRole;
   currentUserName: string;
   currentEmployeeCode: string;
-  availableUsers: UserMaster[];
   /** `self`: own quotations (enforced client-side for admins). `team`: all quotations — admin/developer only. */
   viewScope?: SalesForecastingViewScope;
 }
@@ -93,19 +91,16 @@ export default function SalesForecastingTab({
   userRole,
   currentUserName: _currentUserName,
   currentEmployeeCode,
-  availableUsers,
   viewScope = 'self',
 }: SalesForecastingTabProps) {
   const invalidateForecasts = useInvalidateSalesForecasts();
   const invalidateMasters = useInvalidateSalesMasters();
 
-  const forecastsQuery = useSalesForecastsQuery();
-  const mastersQuery = useSalesMastersQuery();
-  const ratesQuery = useSalesRatesQuery();
-
-  const rows = forecastsQuery.data ?? [];
-  const masters = mastersQuery.data ?? emptyMastersState();
-  const rates = ratesQuery.data ?? DEFAULT_EXCHANGE_RATES;
+  const privileged = canModerateSales(userRole);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const { bootstrapQuery, forecastsQuery, opportunities: rows, masters, rates, isColdLoading } =
+    useSalesData();
+  const isInitialLoading = isColdLoading;
 
   const [formOpen, setFormOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -113,28 +108,23 @@ export default function SalesForecastingTab({
   const [detailRecord, setDetailRecord] = useState<SalesOpportunity | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [wfFilter, setWfFilter] = useState<string>('all');
+  const debouncedSearch = useDebouncedValue(searchTerm, 300);
 
-  const privileged = canModerateSales(userRole);
   const canCreateRecords = canCreate(userRole);
   const canEditRecords = canEdit(userRole);
   const canDeleteRecords = canDelete(userRole);
   const canExportRecords = canExport(userRole);
 
   useEffect(() => {
-    const loadFailed =
-      (forecastsQuery.isError || mastersQuery.isError || ratesQuery.isError) &&
-      forecastsQuery.data === undefined &&
-      mastersQuery.data === undefined;
-    if (loadFailed) {
+    if (bootstrapQuery.isError && bootstrapQuery.data === undefined) {
+      console.error('Sales bootstrap error:', bootstrapQuery.error);
       toast.error('Failed to load sales forecasting data');
     }
-  }, [
-    forecastsQuery.isError,
-    mastersQuery.isError,
-    ratesQuery.isError,
-    forecastsQuery.data,
-    mastersQuery.data,
-  ]);
+    if (forecastsQuery.isError && forecastsQuery.data === undefined) {
+      console.error('Sales forecasts error:', forecastsQuery.error);
+      toast.error('Failed to load opportunities');
+    }
+  }, [bootstrapQuery.isError, bootstrapQuery.error, bootstrapQuery.data, forecastsQuery.isError, forecastsQuery.error, forecastsQuery.data]);
 
   const scopedRows = useMemo(() => {
     if (privileged && viewScope === 'self') {
@@ -148,24 +138,22 @@ export default function SalesForecastingTab({
     if (wfFilter !== 'all') {
       list = list.filter((r) => r.workflowStatus === wfFilter);
     }
-    if (!searchTerm.trim()) return list;
-    const q = searchTerm.toLowerCase();
+    if (!debouncedSearch.trim()) return list;
+    const q = debouncedSearch.toLowerCase();
     return list.filter((r) => {
       const blob = [
         r.quotationRef,
         r.customerOrganization,
         r.principal,
-        r.modelNumber,
         r.opportunityStatus,
         r.ownerEmployeeName,
-        r.contactFullName,
-        r.contactEmail,
+        r.ownerEmployeeCode,
       ]
         .join(' ')
         .toLowerCase();
       return blob.includes(q);
     });
-  }, [scopedRows, searchTerm, wfFilter]);
+  }, [scopedRows, debouncedSearch, wfFilter]);
 
   const showTeamModerationActions = privileged && viewScope === 'team';
   const showCreateQuotation = canCreateRecords && viewScope !== 'team';
@@ -322,19 +310,31 @@ export default function SalesForecastingTab({
     setFormOpen(true);
   };
 
-  const openEdit = (r: SalesOpportunity) => {
+  const openEdit = async (r: SalesOpportunity) => {
     if (isQuotationLocked(r)) {
       toast.error('Approved quotations cannot be edited');
       return;
     }
-    setEditing(r);
-    setFormOpen(true);
-    setDetailOpen(false);
+    try {
+      const full = await fetchSalesOpportunityById(r.forecastId);
+      setEditing(full);
+      setFormOpen(true);
+      setDetailOpen(false);
+    } catch (e) {
+      console.error(e);
+      toast.error('Could not load opportunity for editing');
+    }
   };
 
-  const openDetail = (r: SalesOpportunity) => {
-    setDetailRecord(r);
-    setDetailOpen(true);
+  const openDetail = async (r: SalesOpportunity) => {
+    try {
+      const full = await fetchSalesOpportunityById(r.forecastId);
+      setDetailRecord(full);
+      setDetailOpen(true);
+    } catch (e) {
+      console.error(e);
+      toast.error('Could not load opportunity details');
+    }
   };
 
   const handleExport = () => {
@@ -425,7 +425,7 @@ export default function SalesForecastingTab({
         </div>
 
         <div className="overflow-hidden rounded-lg border">
-          <div className="overflow-x-auto">
+          <div ref={tableScrollRef} className="overflow-auto max-h-[calc(100vh-320px)]">
             <Table className="min-w-[1380px]">
               <TableHeader>
                 <TableRow className="border-b border-gray-200 bg-gray-50/90 hover:bg-gray-50/90">
@@ -455,24 +455,21 @@ export default function SalesForecastingTab({
                   </TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
-                {filtered.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={11} className="py-14 text-center text-sm text-gray-500">
-                      No opportunities match your filters.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filtered.map((r, i) => {
+              <VirtualizedTableBody
+                parentRef={tableScrollRef}
+                rows={filtered}
+                colSpan={11}
+                isLoading={isInitialLoading}
+                loadingMessage="Loading opportunities…"
+                emptyMessage="No opportunities match your filters."
+                getRowKey={(r) => r.forecastId}
+                getRowClassName={(r) =>
+                  cn('group border-b border-gray-100', getDeadlineStatus(r).rowClassName || 'hover:bg-gray-50/90')
+                }
+                renderCells={(r, i) => {
                     const deadline = getDeadlineStatus(r);
                     return (
-                    <TableRow
-                      key={r.forecastId}
-                      className={cn(
-                        'group border-b border-gray-100',
-                        deadline.rowClassName || 'hover:bg-gray-50/90',
-                      )}
-                    >
+                    <>
                       <TableCell className="px-3 py-3 text-sm text-gray-600">{i + 1}</TableCell>
                       <TableCell className="px-3 py-3">{workflowBadge(r.workflowStatus)}</TableCell>
                       <TableCell className="px-3 py-3 font-mono text-sm font-semibold text-[#007BFF]">
@@ -570,16 +567,27 @@ export default function SalesForecastingTab({
                             )}
                         </div>
                       </TableCell>
-                    </TableRow>
+                    </>
                     );
-                  })
-                )}
-              </TableBody>
+                }}
+              />
             </Table>
           </div>
-          <div className="border-t border-gray-100 bg-gray-50/50 px-4 py-3 text-sm text-gray-600">
-            Showing <span className="font-medium text-[#212529]">{filtered.length}</span> of{' '}
-            <span className="font-medium text-[#212529]">{scopedRows.length}</span> records
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 bg-gray-50/50 px-4 py-3 text-sm text-gray-600">
+            <span>
+              Showing <span className="font-medium text-[#212529]">{filtered.length}</span> loaded
+              {scopedRows.length > filtered.length ? ` (${scopedRows.length} total loaded)` : ''}
+            </span>
+            {forecastsQuery.hasNextPage && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={forecastsQuery.isFetchingNextPage}
+                onClick={() => void forecastsQuery.fetchNextPage()}
+              >
+                {forecastsQuery.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </Button>
+            )}
           </div>
         </div>
       </Card>
@@ -593,7 +601,6 @@ export default function SalesForecastingTab({
           editing={editing}
           masters={masters}
           rates={rates}
-          availableUsers={availableUsers}
           onSaveDraft={handleSaveDraft}
           onSubmitForApproval={handleSubmitForApproval}
       />

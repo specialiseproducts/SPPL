@@ -1,30 +1,19 @@
 /**
- * Error Handler Middleware
- * 
- * Centralized error handling middleware for Express.
- * Catches all errors and returns consistent error responses.
+ * Error Handler Middleware — structured logging for production observability.
  */
 
-import log from '../utils/logger.js';
+import { logErrorStructured } from '../utils/structuredLog.js';
 
-/**
- * Error handler middleware
- * @param {Error} err - The error object
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next function
- */
 export const errorHandler = (err, req, res, next) => {
-  console.log('\n🔥🔥🔥 GLOBAL ERROR HANDLER 🔥🔥🔥');
-
-  console.error('👉 ERROR OBJECT:', err);
-  console.error('👉 ERROR MESSAGE:', err.message);
-  console.error('👉 ERROR STACK:', err.stack);
-  console.error('👉 REQUEST PATH:', req.path);
-  console.error('👉 METHOD:', req.method);
-  console.error('👉 BODY:', req.body);
-
   const status = err.statusCode && Number.isInteger(err.statusCode) ? err.statusCode : 500;
+
+  logErrorStructured('api_error', err, {
+    method: req.method,
+    path: req.originalUrl?.split('?')[0] || req.path,
+    statusCode: status,
+    employeeCode: req.user?.employeeCode,
+  });
+
   const message = err.message || 'Internal server error';
 
   res.status(status).json({
@@ -35,13 +24,8 @@ export const errorHandler = (err, req, res, next) => {
   });
 };
 
-/**
- * 404 Not Found handler
- */
 export const notFoundHandler = (req, res, next) => {
   const error = new Error(`Route ${req.originalUrl} not found`);
   error.statusCode = 404;
   next(error);
 };
-
-

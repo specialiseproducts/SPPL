@@ -35,13 +35,13 @@ export const authenticateToken = async (req, res, next) => {
 
     const decoded = verifyToken(token);
     const employeeCode = decoded?.employeeCode;
-    const accessControl = employeeCode
-      ? await UserAccessControlModel.getByEmployeeCode(employeeCode)
-      : null;
 
-    const employee = employeeCode
-      ? await EmployeeModel.getEmployeeByCode(employeeCode)
-      : null;
+    const [accessControl, employee] = employeeCode
+      ? await Promise.all([
+          UserAccessControlModel.getByEmployeeCode(employeeCode),
+          EmployeeModel.getEmployeeByCode(employeeCode),
+        ])
+      : [null, null];
 
     req.user = {
       ...decoded,
@@ -84,12 +84,13 @@ export const attachUserIfPresent = async (req, res, next) => {
 
     const decoded = verifyToken(token);
     const employeeCode = decoded?.employeeCode;
-    const accessControl = employeeCode
-      ? await UserAccessControlModel.getByEmployeeCode(employeeCode)
-      : null;
-    const employee = employeeCode
-      ? await EmployeeModel.getEmployeeByCode(employeeCode)
-      : null;
+
+    const [accessControl, employee] = employeeCode
+      ? await Promise.all([
+          UserAccessControlModel.getByEmployeeCode(employeeCode),
+          EmployeeModel.getEmployeeByCode(employeeCode),
+        ])
+      : [null, null];
 
     req.user = {
       ...decoded,

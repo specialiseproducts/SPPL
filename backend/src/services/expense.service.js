@@ -18,6 +18,9 @@ import { canAccessAllExpenseRecords, isOwnedByUser } from '../utils/accessContro
 import { withApprovalDefaults } from '../utils/approval.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
+import { DEFAULT_QUERY_LIMIT, parsePaginationOptions, toPaginatedResponse } from '../utils/dynamoPagination.js';
+import { toExpenseListDto } from '../utils/listDtos.js';
+import { sortExpensesDesc } from '../utils/dynamoSort.js';
 import {
   validateExpenseBusinessRules,
   isTravelCarOrBike,
@@ -142,12 +145,33 @@ export const getExpenseById = async (expenseId, authUser = null, effectiveRole =
 export const getExpenses = async (filters = {}, options = {}, authUser = null, effectiveRole = 'User') => {
   try {
     log.info('Getting expenses with filters:', filters);
-    const rows = await ExpenseModel.getAllExpenses(filters, options);
-    const filtered =
-      !authUser || canAccessAllExpenseRecords(effectiveRole)
-        ? rows
-        : rows.filter((row) => isOwnedByUser(row, authUser));
-    return filtered.map((row) => enrichExpenseRow(row));
+    const isAll = !authUser || canAccessAllExpenseRecords(effectiveRole);
+    const pagination = parsePaginationOptions({
+      limit: options.limit ?? DEFAULT_QUERY_LIMIT,
+      cursor: options.cursor ?? options.nextCursor,
+    });
+
+    let rows;
+    let lastEvaluatedKey = null;
+
+    if (isAll) {
+      const result = await ExpenseModel.getAllExpenses(filters, pagination);
+      if (result && typeof result === 'object' && Array.isArray(result.items)) {
+        rows = result.items;
+        lastEvaluatedKey = result.lastEvaluatedKey;
+      } else {
+        rows = result;
+      }
+    } else {
+      const code = String(authUser.employeeCode || '').trim();
+      const page = await ExpenseModel.queryExpensesByEmployeeCodePage(code, pagination);
+      rows = page.items;
+      lastEvaluatedKey = page.lastEvaluatedKey;
+    }
+
+    const mapped = sortExpensesDesc(rows.map((row) => toExpenseListDto(row, enrichExpenseRow)));
+
+    return toPaginatedResponse(mapped, lastEvaluatedKey);
   } catch (error) {
     log.error('Error getting expenses:', error);
     throw error;

@@ -10,6 +10,7 @@
 
 import AWS from 'aws-sdk';
 import dotenv from 'dotenv';
+import { instrumentDocumentClient } from '../utils/dynamoInstrument.js';
 
 dotenv.config();
 
@@ -27,8 +28,9 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
   };
 }
 
-// Create and export DynamoDB client instance
-export const dynamoDB = new AWS.DynamoDB.DocumentClient(dynamoDBConfig);
+// Create and export instrumented DynamoDB client instance
+const baseClient = new AWS.DynamoDB.DocumentClient(dynamoDBConfig);
+export const dynamoDB = instrumentDocumentClient(baseClient);
 
 // Export table names from environment variables
 export const TABLES = {

@@ -1,16 +1,29 @@
-import { apiFetch } from '../../services/api';
+import { fetchPaginatedList } from '../../utils/paginatedFetch';
+import type { PaginatedResponse } from '../paginationTypes';
 import type { ExpenseRecord } from '../../types/expenses';
 import { normalizeExpenseRow } from '../../utils/expenseRowNormalize';
 import type { ExpenseTravelRateSettings } from '../../components/ExpenseRateSettingsModal';
 import { parseTravelRatesApiData } from '../../utils/expenseTravelRatesFromApi';
+import { apiFetch } from '../../services/api';
 
+export async function fetchExpensesPage(cursor?: string): Promise<PaginatedResponse<ExpenseRecord>> {
+  const page = await fetchPaginatedList<Record<string, unknown>>('/api/expenses', cursor);
+  return {
+    data: page.data.map((row) => normalizeExpenseRow(row)),
+    nextCursor: page.nextCursor,
+  };
+}
+
+/** @deprecated Use fetchExpensesPage + infinite query */
 export async function fetchExpensesList(): Promise<ExpenseRecord[]> {
-  const payload = await apiFetch('/api/expenses');
-  if (!payload.success) {
-    throw new Error('Failed to fetch expenses');
-  }
-  const rows = Array.isArray(payload.data) ? payload.data : [];
-  return rows.map((row: Record<string, unknown>) => normalizeExpenseRow(row));
+  const all: ExpenseRecord[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await fetchExpensesPage(cursor);
+    all.push(...page.data);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return all;
 }
 
 export async function fetchExpenseTravelRates(): Promise<ExpenseTravelRateSettings> {

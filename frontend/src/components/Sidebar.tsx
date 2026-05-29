@@ -1,14 +1,22 @@
-import { TrendingUp, DollarSign, Users as UsersIcon, ShoppingCart, UserCog, FileText, ChevronLeft, ChevronRight, LayoutGrid } from 'lucide-react';
+import { TrendingUp, DollarSign, Users as UsersIcon, ShoppingCart, UserCog, FileText, ChevronLeft, ChevronRight, LayoutGrid, Activity } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from './ui/button';
 
-export type ModuleName = 'Sales Forecasting' | 'Expenses' | 'Payroll' | 'Purchases' | 'CRM' | 'User Management';
+export type ModuleName =
+  | 'Sales Forecasting'
+  | 'Expenses'
+  | 'Payroll'
+  | 'Purchases'
+  | 'CRM'
+  | 'User Management'
+  | 'System Metrics';
 
 interface SidebarProps {
   activeModule: ModuleName;
   onModuleChange: (module: ModuleName) => void;
   moduleAccess: Record<string, boolean>;
   onBackToDashboard?: () => void;
+  showSystemMetrics?: boolean;
 }
 
 interface Module {
@@ -26,10 +34,23 @@ const modules: Module[] = [
   { name: 'User Management', icon: <UserCog className="w-5 h-5" />, accessKey: 'userManagement' },
 ];
 
-export default function Sidebar({ activeModule, onModuleChange, moduleAccess, onBackToDashboard }: SidebarProps) {
+export default function Sidebar({
+  activeModule,
+  onModuleChange,
+  moduleAccess,
+  onBackToDashboard,
+  showSystemMetrics,
+}: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
-  const accessibleModules = modules.filter(module => Boolean(moduleAccess[module.accessKey]));
+  const accessibleModules = modules.filter((module) => Boolean(moduleAccess[module.accessKey]));
+  if (showSystemMetrics) {
+    accessibleModules.push({
+      name: 'System Metrics',
+      icon: <Activity className="w-5 h-5" />,
+      accessKey: 'systemMetrics',
+    });
+  }
 
   return (
     <aside

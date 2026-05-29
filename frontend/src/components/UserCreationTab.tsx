@@ -12,9 +12,10 @@ import { toast } from 'sonner';
 import type { UserRole } from '../App';
 import { apiFetch } from '../services/api';
 import {
-  useEmployeesListQuery,
+  useEmployeesDirectoryRows,
   useInvalidateEmployeesList,
 } from '../hooks/employees/useEmployeesQuery';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { isQueryColdLoading } from '../utils/queryLoading';
 
 const API_BASE = '/api/employees';
@@ -25,7 +26,6 @@ import type { UserMaster } from '../types/userMaster';
 export type { UserMaster } from '../types/userMaster';
 
 interface UserCreationTabProps {
-  onUsersChange?: (users: UserMaster[]) => void;
   onEmployeeCodeClick?: (employee: UserMaster) => void;
 }
 
@@ -73,16 +73,17 @@ export function buildEmployeeFormData(user: UserMaster, files?: UserFormFiles): 
   return fd;
 }
 
-export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: UserCreationTabProps = {}) {
-  const employeesQuery = useEmployeesListQuery();
+export default function UserCreationTab({ onEmployeeCodeClick }: UserCreationTabProps = {}) {
+  const employeesQuery = useEmployeesDirectoryRows();
   const invalidateEmployeesList = useInvalidateEmployeesList();
-  const employees = employeesQuery.data ?? [];
+  const employees = employeesQuery.employees;
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserMaster | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<UserMaster | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebouncedValue(searchTerm, 300);
   const [signedUrlCache, setSignedUrlCache] = useState<Record<string, string>>({});
 
   const extractObjectKey = useCallback((value?: string): string => {
@@ -157,12 +158,6 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
       return <img src={src} alt="" className="h-8 w-8 rounded object-cover border" />;
     };
   }, [extractObjectKey, getSignedUrl]);
-
-  useEffect(() => {
-    if (employeesQuery.data) {
-      onUsersChange?.(employeesQuery.data);
-    }
-  }, [employeesQuery.data, onUsersChange]);
 
   useEffect(() => {
     if (employeesQuery.isError && employeesQuery.data === undefined) {
@@ -324,8 +319,9 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
     imported: emp.imported,
   }));
 
-  const term = searchTerm.toLowerCase();
-  const filteredUsers = formattedEmployees.filter(user => {
+  const term = debouncedSearch.toLowerCase().trim();
+  const filteredUsers = formattedEmployees.filter((user) => {
+    if (!term) return true;
     const combined = `${user.firstName || ''} ${user.lastName || ''}`.trim();
     const hay = [
       user.name,
@@ -596,6 +592,19 @@ export default function UserCreationTab({ onUsersChange, onEmployeeCodeClick }: 
           </TableBody>
         </Table>
       </div>
+
+      {employeesQuery.hasNextPage && (
+        <div className="flex justify-end mt-3">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={employeesQuery.isFetchingNextPage}
+            onClick={() => void employeesQuery.fetchNextPage()}
+          >
+            {employeesQuery.isFetchingNextPage ? 'Loading…' : 'Load more employees'}
+          </Button>
+        </div>
+      )}
 
       <UserFormModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSubmit={handleCreateUser} />
 

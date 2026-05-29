@@ -1,53 +1,56 @@
 /**
  * PurchaseLineItems Model
- * 
- * Data access layer for PurchaseLineItems DynamoDB table.
- * Handles purchase order line item operations.
  */
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
+import { GSI_NAMES } from '../config/dynamodbIndexes.js';
+import { isGsiMissingError, warnGsiFallback } from '../utils/dynamoGsi.js';
+import { queryAllPages } from '../utils/dynamoPagination.js';
 
 const TABLE_NAME = TABLES.PURCHASE_LINE_ITEMS;
 
-/**
- * Get line item by ID
- * @param {string} lineItemId - Line item ID
- * @returns {Promise<Object>} Line item record
- */
 export const getLineItemById = async (lineItemId) => {
-  const result = await dynamoDB.get({
-    TableName: TABLE_NAME,
-    Key: { purchaseLineItemId: lineItemId },
-  }).promise();
+  const result = await dynamoDB
+    .get({
+      TableName: TABLE_NAME,
+      Key: { purchaseLineItemId: lineItemId },
+    })
+    .promise();
 
   return result.Item || null;
 };
 
 /**
- * Get line items by purchase header ID
- * @param {string} purchaseHeaderId - Purchase header ID
- * @returns {Promise<Array>} Array of line items
+ * Line items for a purchase header via GSI_PurchaseHeader.
  */
 export const getLineItemsByPurchaseHeaderId = async (purchaseHeaderId) => {
-  const result = await dynamoDB.scan({
-    TableName: TABLE_NAME,
-    FilterExpression: '#purchaseHeaderId = :purchaseHeaderId',
-    ExpressionAttributeNames: {
-      '#purchaseHeaderId': 'purchaseHeaderId',
-    },
-    ExpressionAttributeValues: {
-      ':purchaseHeaderId': purchaseHeaderId,
-    },
-  }).promise();
+  const headerId = String(purchaseHeaderId ?? '').trim();
+  if (!headerId) return [];
+
+  try {
+    return await queryAllPages(dynamoDB, {
+      TableName: TABLE_NAME,
+      IndexName: GSI_NAMES.PURCHASE_HEADER,
+      KeyConditionExpression: 'purchaseHeaderId = :purchaseHeaderId',
+      ExpressionAttributeValues: { ':purchaseHeaderId': headerId },
+    });
+  } catch (err) {
+    if (!isGsiMissingError(err)) throw err;
+    warnGsiFallback('PurchaseLineItems.getLineItemsByPurchaseHeaderId', err);
+  }
+
+  const result = await dynamoDB
+    .scan({
+      TableName: TABLE_NAME,
+      FilterExpression: '#purchaseHeaderId = :purchaseHeaderId',
+      ExpressionAttributeNames: { '#purchaseHeaderId': 'purchaseHeaderId' },
+      ExpressionAttributeValues: { ':purchaseHeaderId': headerId },
+    })
+    .promise();
 
   return result.Items || [];
 };
 
-/**
- * Create new line item
- * @param {Object} lineItemData - Line item data
- * @returns {Promise<Object>} Created line item record
- */
 export const createLineItem = async (lineItemData) => {
   const timestamp = new Date().toISOString();
   const resolvedLineItemId = lineItemData.id || lineItemData.purchaseLineItemId || lineItemData.lineItemId;
@@ -83,37 +86,18 @@ export const createLineItem = async (lineItemData) => {
     },
   };
 
-  console.log('Saving to DynamoDB:', params);
-
   await dynamoDB.put(params).promise();
-
   return params.Item;
 };
 
-/**
- * Update line item
- * @param {string} lineItemId - Line item ID
- * @param {Object} updateData - Fields to update
- * @returns {Promise<Object>} Updated line item record
- */
 export const updateLineItem = async (lineItemId, updateData) => {
   // TODO: Implement DynamoDB updateItem operation
 };
 
-/**
- * Delete line item
- * @param {string} lineItemId - Line item ID
- * @returns {Promise<Object>} Deletion result
- */
 export const deleteLineItem = async (lineItemId) => {
   // TODO: Implement DynamoDB deleteItem operation
 };
 
-/**
- * Batch create line items
- * @param {Array} lineItems - Array of line item data
- * @returns {Promise<Object>} Batch write result
- */
 export const batchCreateLineItems = async (lineItems) => {
   if (!Array.isArray(lineItems) || lineItems.length === 0) {
     return [];
@@ -121,47 +105,11 @@ export const batchCreateLineItems = async (lineItems) => {
 
   const createdItems = [];
   for (const lineItem of lineItems) {
-    const timestamp = new Date().toISOString();
-    const resolvedLineItemId = lineItem.id || lineItem.purchaseLineItemId || lineItem.lineItemId;
-    if (!resolvedLineItemId) {
-      throw new Error('Missing item id');
-    }
-    const normalized = {
-      ...lineItem,
-      id: lineItem.id || resolvedLineItemId,
-      lineItemId: lineItem.lineItemId || resolvedLineItemId,
-      purchaseLineItemId: resolvedLineItemId,
-      purchaseHeaderId: lineItem.purchaseHeaderId || lineItem.po_number || resolvedLineItemId,
-      itemDetails: lineItem.itemDetails || '',
-      partNumber: lineItem.partNumber || '',
-      unitPrice: Number(lineItem.unitPrice || 0),
-      quantity: Number(lineItem.quantity || 0),
-      freightCharges: Number(lineItem.freightCharges || 0),
-      gst: Number(lineItem.gst || 0),
-      totalLandedPrice: Number(lineItem.totalLandedPrice || 0),
-      priceToSPPL: Number(lineItem.priceToSPPL || 0),
-      gmPercentage: Number(lineItem.gmPercentage || 0),
-      margin: Number(lineItem.margin || 0),
-      createdAt: lineItem.createdAt || timestamp,
-      updatedAt: timestamp,
-    };
-    const params = {
-      TableName: TABLES.PURCHASE_LINE_ITEMS,
-      Item: {
-        purchaseLineItemId: String(normalized.id),
-        purchaseHeaderId: String(normalized.purchaseHeaderId || normalized.po_number || normalized.id),
-        ...normalized,
-      },
-    };
-
-    console.log('Saving to DynamoDB:', params);
-    await dynamoDB.put(params).promise();
-    createdItems.push(params.Item);
+    const created = await createLineItem(lineItem);
+    createdItems.push(created);
   }
 
   return createdItems;
 };
 
 export const createLineItems = batchCreateLineItems;
-
-

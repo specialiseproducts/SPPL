@@ -193,13 +193,11 @@ export const getAllEmployees = async (filters = {}, options = {}, authUser = nul
   try {
     log.info('Getting all employees');
     const result = await EmployeeModel.getAllEmployees(options);
-    if (!authUser || canAccessAllRecords(effectiveRole)) {
-      return result;
+    let items = result.data || [];
+    if (authUser && !canAccessAllRecords(effectiveRole)) {
+      items = items.filter((item) => isOwnedByUser(item, authUser));
     }
-    return {
-      ...result,
-      items: (result.items || []).filter((item) => isOwnedByUser(item, authUser)),
-    };
+    return { data: items, nextCursor: result.nextCursor ?? null };
   } catch (error) {
     log.error('Error getting employees:', error);
     throw error;

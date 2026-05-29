@@ -4,14 +4,11 @@
  */
 import ExpensesTab from '../ExpensesTab';
 import type { UserRole } from '../../App';
-import type { UserMaster } from '../UserCreationTab';
-
 export type MyExpensesTabProps = {
   userRole: UserRole;
   scopeSelfOnly?: boolean;
   currentUserName: string;
   currentEmployeeCode: string;
-  availableUsers: UserMaster[];
 };
 
 export default function MyExpensesTab(props: MyExpensesTabProps) {

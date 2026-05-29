@@ -5,6 +5,7 @@
  */
 
 import * as EmployeeService from '../services/employee.service.js';
+import { DEFAULT_QUERY_LIMIT } from '../utils/dynamoPagination.js';
 import log from '../utils/logger.js';
 
 function sanitizeEmployee(row) {
@@ -55,19 +56,17 @@ export const getAllEmployees = async (req, res, next) => {
   try {
     const filters = req.query;
     const options = {
-      limit: parseInt(req.query.limit, 10) || 50,
-      lastKey: req.query.lastKey,
+      limit: req.query.limit ?? DEFAULT_QUERY_LIMIT,
+      cursor: req.query.cursor ?? req.query.lastKey,
     };
 
     const result = await EmployeeService.getAllEmployees(filters, options, req.user, req.effectiveRole);
-    const sanitizedItems = (result?.items || []).map(sanitizeEmployee);
+    const sanitizedItems = (result?.data || []).map(sanitizeEmployee);
 
     res.status(200).json({
       success: true,
-      data: {
-        ...result,
-        items: sanitizedItems,
-      },
+      data: sanitizedItems,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
     });
   } catch (error) {
     log.error('Get all employees controller error:', error);

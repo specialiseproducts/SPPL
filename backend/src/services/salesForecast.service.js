@@ -10,6 +10,22 @@ import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
 import { buildQuotationRef, indianFinancialYearLabel } from '../utils/salesQuotationRef.js';
 import log from '../utils/logger.js';
+import { ensureSalesMasterReady } from '../utils/salesMasterInit.js';
+import { parsePaginationOptions, toPaginatedResponse } from '../utils/dynamoPagination.js';
+import { toSalesOpportunityListDto } from '../utils/listDtos.js';
+import { sortSalesForecastsDesc } from '../utils/dynamoSort.js';
+
+const BOOTSTRAP_MASTER_CATEGORIES = [
+  'STATUS',
+  'PRINCIPAL',
+  'CURRENCY',
+  'PROBABILITY_OPTION',
+  'CUSTOMER_SEGMENT',
+  'ENQUIRY_TYPE',
+  'DELIVERY_DAYS',
+  'WARRANTY',
+  'CONTACT_TITLE',
+];
 
 function parseProbabilityPercent(label) {
   const m = String(label || '').trim().match(/^(\d+(?:\.\d+)?)\s*%/);
@@ -31,9 +47,60 @@ function computeTotals(unitPrice, quantity, currency, rateMap) {
 }
 
 async function loadRateMap() {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
+  await ensureSalesMasterReady();
   return SalesMasterDataModel.getExchangeRates();
 }
+
+async function fetchAllMastersForBootstrap() {
+  const pairs = await Promise.all(
+    BOOTSTRAP_MASTER_CATEGORIES.map(async (cat) => {
+      const values = await SalesMasterDataModel.listMasterValues(cat, { activeOnly: true });
+      return [cat, values];
+    })
+  );
+  return Object.fromEntries(pairs);
+}
+
+async function listOpportunitiesInternal(authUser, effectiveRole, pagination = {}) {
+  const isAll = !authUser || canAccessAllRecords(effectiveRole);
+  const ownerCode = String(authUser?.employeeCode || '').trim();
+
+  let rows;
+  let lastEvaluatedKey = null;
+
+  if (pagination.paginated) {
+    const page = isAll
+      ? await SalesForecastsModel.queryAllSalesForecastsPage(pagination)
+      : await SalesForecastsModel.querySalesForecastsByOwnerPage(ownerCode, pagination);
+    rows = page.items;
+    lastEvaluatedKey = page.lastEvaluatedKey;
+  } else {
+    rows = isAll
+      ? await SalesForecastsModel.queryAllSalesForecasts()
+      : await SalesForecastsModel.querySalesForecastsByOwner(ownerCode);
+  }
+
+  const sortedRows = sortSalesForecastsDesc(rows);
+  const normalized = sortedRows
+    .map((r) => toSalesOpportunityListDto(r, normalizeLegacyWorkflow))
+    .filter(Boolean);
+
+  if (pagination.paginated) {
+    return toPaginatedResponse(normalized, lastEvaluatedKey);
+  }
+  return normalized;
+}
+
+export const getBootstrap = async (_authUser, _effectiveRole) => {
+  await ensureSalesMasterReady();
+
+  const [masters, rates] = await Promise.all([
+    fetchAllMastersForBootstrap(),
+    SalesMasterDataModel.getExchangeRates(),
+  ]);
+
+  return { masters, rates };
+};
 
 function normalizeLegacyWorkflow(item) {
   if (!item) return item;
@@ -140,22 +207,20 @@ async function getExistingOrThrow(forecastId) {
   return normalizeLegacyWorkflow(existing);
 }
 
-export const listOpportunities = async (authUser, effectiveRole) => {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
-  const isAll = !authUser || canAccessAllRecords(effectiveRole);
-  const rows = isAll
-    ? await SalesForecastsModel.scanSalesForecasts(null)
-    : await SalesForecastsModel.scanSalesForecasts(String(authUser?.employeeCode || '').trim());
-
-  const normalized = rows.map((r) => toPublicOpportunity(r));
-  normalized.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-  return normalized;
+export const listOpportunities = async (authUser, effectiveRole, options = {}) => {
+  await ensureSalesMasterReady();
+  const pagination = parsePaginationOptions({
+    limit: options.limit ?? options.Limit,
+    cursor: options.cursor ?? options.nextCursor,
+  });
+  if (!pagination.limit) {
+    pagination.limit = 50;
+    pagination.paginated = true;
+  }
+  return listOpportunitiesInternal(authUser, effectiveRole, pagination);
 };
 
 export const getOpportunity = async (forecastId, authUser, effectiveRole) => {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
   const row = await getExistingOrThrow(forecastId);
   if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(row, authUser)) {
     const err = new Error('Forbidden');
@@ -213,8 +278,7 @@ function workflowToApprovalStatus(ws) {
 }
 
 export const createOpportunity = async (body, authUser, effectiveRole) => {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const rateMap = await loadRateMap();
 
   const mode = String(body.mode || 'draft').toLowerCase() === 'submit' ? 'submit' : 'draft';
@@ -321,8 +385,7 @@ export const createOpportunity = async (body, authUser, effectiveRole) => {
 };
 
 export const updateOpportunity = async (forecastId, body, authUser, effectiveRole) => {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const existing = await getExistingOrThrow(forecastId);
   if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
     const err = new Error('Forbidden');
@@ -383,8 +446,7 @@ export const updateOpportunity = async (forecastId, body, authUser, effectiveRol
 };
 
 export const submitOpportunity = async (forecastId, authUser, effectiveRole) => {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const existing = await getExistingOrThrow(forecastId);
   if (authUser && !isOwnedByUser(existing, authUser)) {
     const err = new Error('Forbidden');
@@ -434,8 +496,7 @@ export const submitOpportunity = async (forecastId, authUser, effectiveRole) => 
 
 export const approveOpportunity = async (forecastId, authUser, effectiveRole) => {
   assertCanModerate(effectiveRole);
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const existing = await getExistingOrThrow(forecastId);
   if ((existing.workflowStatus || '') !== 'pending_approval') {
     const err = new Error('Only pending quotations can be approved');
@@ -560,8 +621,7 @@ export const deleteOpportunity = async (forecastId, authUser, effectiveRole) => 
 };
 
 export const listMasterCategory = async (category) => {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const cat = String(category || '').trim().toUpperCase();
   if (cat === 'EXCHANGE_RATE' || cat === 'RATES') {
     return SalesMasterDataModel.getExchangeRates();
@@ -571,8 +631,7 @@ export const listMasterCategory = async (category) => {
 
 export const ensureMasterCategoryValue = async (category, value, effectiveRole) => {
   assertCanModerate(effectiveRole);
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const cat = String(category || '').trim().toUpperCase();
   const v = await SalesMasterDataModel.ensureMasterValue(cat, value);
   return { value: v };
@@ -580,8 +639,7 @@ export const ensureMasterCategoryValue = async (category, value, effectiveRole) 
 
 export const listMasterAdminCategory = async (category, effectiveRole) => {
   assertCanModerate(effectiveRole);
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const cat = String(category || '').trim().toUpperCase();
   if (cat === 'PRINCIPAL_MAP' || cat === 'PRINCIPALS') {
     return { principals: await SalesMasterDataModel.listPrincipalMapAdmin() };
@@ -591,34 +649,31 @@ export const listMasterAdminCategory = async (category, effectiveRole) => {
 
 export const adminAddMasterListItem = async (category, value, effectiveRole) => {
   assertCanModerate(effectiveRole);
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   const cat = String(category || '').trim().toUpperCase();
   return SalesMasterDataModel.upsertSimpleMasterItem(cat, value, { isActive: true });
 };
 
 export const adminUpdateMasterListItem = async (category, sk, body, effectiveRole) => {
   assertCanModerate(effectiveRole);
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
+  await ensureSalesMasterReady();
   const cat = String(category || '').trim().toUpperCase();
   return SalesMasterDataModel.updateSimpleMasterItem(cat, sk, body || {});
 };
 
 export const adminUpsertPrincipalMap = async (body, effectiveRole) => {
   assertCanModerate(effectiveRole);
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
+  await ensureSalesMasterReady();
   return SalesMasterDataModel.upsertPrincipalMapEntry(body || {});
 };
 
 export const getExchangeRatesForSales = async () => {
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   return SalesMasterDataModel.getExchangeRates();
 };
 
 export const saveExchangeRatesForSales = async (rates, effectiveRole) => {
   assertCanModerate(effectiveRole);
-  await SalesMasterDataModel.seedSalesMasterDataIfEmpty();
-  await SalesMasterDataModel.ensureSalesMasterOptionalCategories();
+  await ensureSalesMasterReady();
   return SalesMasterDataModel.putExchangeRates(rates);
 };

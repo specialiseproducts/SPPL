@@ -6,6 +6,15 @@
  */
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
+import { ENTITY_TYPE_EXPENSE, GSI_NAMES } from '../config/dynamodbIndexes.js';
+import { isGsiMissingError, warnGsiFallback } from '../utils/dynamoGsi.js';
+import {
+  runQueryPage,
+  queryAllPages,
+  parsePaginationOptions,
+  paginateSortedSlice,
+} from '../utils/dynamoPagination.js';
+import { sortExpensesDesc } from '../utils/dynamoSort.js';
 import { v4 as uuidv4 } from 'uuid';
 import log from '../utils/logger.js';
 
@@ -60,33 +69,95 @@ export const getExpenseById = async (expenseId) => {
  * @param {Object} options - Query options (date range, status, etc.)
  * @returns {Promise<Array>} Array of expenses
  */
-export const getExpensesByEmployeeId = async (employeeId, options = {}) => {
-  const result = await dynamoDB.scan({
-    TableName: TABLE_NAME,
-    FilterExpression: '#employeeName = :employeeName',
-    ExpressionAttributeNames: {
-      '#employeeName': 'employeeName',
-    },
-    ExpressionAttributeValues: {
-      ':employeeName': employeeId,
-    },
-  }).promise();
+const notDeletedFilter = (row) => !row?.is_deleted;
 
-  return (result.Items || []).filter((row) => !row?.is_deleted);
+/** Ensures GSI key attributes for create (full item) or update (partial). */
+export function applyExpenseGsiKeys(item, { partial = false } = {}) {
+  const out = { ...item, entityType: ENTITY_TYPE_EXPENSE };
+
+  if (!partial) {
+    out.createdAt = item.createdAt || item.created_at || new Date().toISOString();
+    const code = String(item.created_by_employee_code || '').trim();
+    if (code) out.created_by_employee_code = code;
+  }
+
+  return out;
+}
+
+function employeeExpenseQuery(employeeCode) {
+  return {
+    TableName: TABLE_NAME,
+    IndexName: GSI_NAMES.EXPENSE_EMPLOYEE_UPDATED,
+    KeyConditionExpression: 'created_by_employee_code = :code',
+    ExpressionAttributeValues: { ':code': String(employeeCode).trim() },
+    ScanIndexForward: false,
+  };
+}
+
+async function scanExpensesFallback(employeeCode = null) {
+  const params = { TableName: TABLE_NAME };
+  if (employeeCode) {
+    params.FilterExpression = 'created_by_employee_code = :code';
+    params.ExpressionAttributeValues = { ':code': String(employeeCode).trim() };
+  }
+
+  let items = [];
+  let startKey;
+  do {
+    const result = await dynamoDB.scan({ ...params, ExclusiveStartKey: startKey }).promise();
+    items = items.concat(result.Items || []);
+    startKey = result.LastEvaluatedKey;
+  } while (startKey);
+
+  return sortExpensesDesc(items.filter(notDeletedFilter));
+}
+
+export const queryExpensesByEmployeeCode = async (employeeCode, options = {}) => {
+  const code = String(employeeCode ?? '').trim();
+  if (!code) return [];
+
+  const pagination = parsePaginationOptions(options);
+  if (pagination.paginated) {
+    const page = await queryExpensesByEmployeeCodePage(code, pagination);
+    return page.items;
+  }
+
+  try {
+    return await queryAllPages(dynamoDB, employeeExpenseQuery(code), notDeletedFilter);
+  } catch (err) {
+    if (!isGsiMissingError(err)) throw err;
+    warnGsiFallback('Expenses.queryExpensesByEmployeeCode', err);
+    return scanExpensesFallback(code);
+  }
 };
 
+export const queryExpensesByEmployeeCodePage = async (employeeCode, pagination = {}) => {
+  const code = String(employeeCode ?? '').trim();
+  if (!code) return { items: [], lastEvaluatedKey: null };
+
+  try {
+    return runQueryPage(dynamoDB, employeeExpenseQuery(code), pagination, notDeletedFilter);
+  } catch (err) {
+    if (!isGsiMissingError(err)) throw err;
+    warnGsiFallback('Expenses.queryExpensesByEmployeeCodePage', err);
+    const sorted = await scanExpensesFallback(code);
+    return paginateSortedSlice(sorted, parsePaginationOptions(pagination));
+  }
+};
+
+/** @deprecated Prefer queryExpensesByEmployeeCode */
+export const getExpensesByEmployeeId = queryExpensesByEmployeeCode;
+
 /**
- * Get all expenses with filters
- * @param {Object} filters - Filter criteria
- * @param {Object} options - Pagination options
- * @returns {Promise<Object>} List of expenses with pagination info
+ * Admin / full-table list (scan — sort in memory before pagination).
  */
 export const getAllExpenses = async (filters = {}, options = {}) => {
-  const result = await dynamoDB.scan({
-    TableName: TABLE_NAME,
-  }).promise();
-
-  return (result.Items || []).filter((row) => !row?.is_deleted);
+  const pagination = parsePaginationOptions(options);
+  const sorted = await scanExpensesFallback(null);
+  if (pagination.paginated) {
+    return paginateSortedSlice(sorted, pagination);
+  }
+  return sorted;
 };
 
 /**
@@ -117,7 +188,7 @@ export const createExpense = async (expenseData) => {
       ? String(expenseData.subCategory).trim()
       : undefined;
 
-  const item = {
+  const item = applyExpenseGsiKeys({
     expenseId: `EXP#${uuidv4()}`,
     expenseHead: expenseData.expenseHead,
     ...(subCategoryTrimmed ? { subCategory: subCategoryTrimmed } : {}),
@@ -153,7 +224,7 @@ export const createExpense = async (expenseData) => {
     rejected_by: expenseData.rejected_by || '',
     rejected_at: expenseData.rejected_at || '',
     approval_comments: expenseData.approval_comments || '',
-  };
+  });
 
   if (expenseData.fromLocation) {
     item.fromLocation = expenseData.fromLocation;
@@ -215,6 +286,8 @@ export const updateExpense = async (expenseId, updateData) => {
   const cleanPayload = Object.fromEntries(
     Object.entries(payload).filter(([, value]) => value !== undefined)
   );
+
+  cleanPayload.entityType = ENTITY_TYPE_EXPENSE;
 
   let updateExpression = 'set ';
   const ExpressionAttributeNames = {};

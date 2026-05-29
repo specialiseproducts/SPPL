@@ -10,6 +10,8 @@ const router = express.Router();
 
 router.use(authenticateToken, authorize('salesForecasting'));
 
+router.get('/bootstrap', SalesForecastController.getBootstrap);
+
 router.get('/rates', SalesForecastController.getRates);
 router.put('/rates', SalesForecastController.putRates);
 

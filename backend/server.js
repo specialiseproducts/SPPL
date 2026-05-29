@@ -7,9 +7,11 @@
 
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import dotenv from 'dotenv';
 import log from './src/utils/logger.js';
 import { errorHandler, notFoundHandler } from './src/middleware/errorHandler.js';
+import { requestMetricsMiddleware } from './src/middleware/requestMetrics.middleware.js';
 
 // Import routes
 import authRoutes from './src/routes/auth.routes.js';
@@ -19,6 +21,8 @@ import purchaseRoutes from './src/routes/purchase.routes.js';
 import salesForecastRoutes from './src/routes/salesForecast.routes.js';
 import userRoutes from './src/routes/user.routes.js';
 import accessControlRoutes from './src/routes/accessControl.routes.js';
+import metricsRoutes from './src/routes/metrics.routes.js';
+import { initSalesMasterOnStartup } from './src/utils/salesMasterInit.js';
 
 // Load environment variables
 dotenv.config();
@@ -47,14 +51,10 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json()); // Parse JSON request bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
-
-// Request logging middleware
-app.use((req, res, next) => {
-  log.info(`${req.method} ${req.path}`);
-  next();
-});
+app.use(compression({ threshold: 1024 }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(requestMetricsMiddleware);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -73,6 +73,7 @@ app.use('/api/expenses', expenseRoutes);
 app.use('/api/purchases', purchaseRoutes);
 app.use('/api/sales-forecasts', salesForecastRoutes);
 app.use('/api/access-control', accessControlRoutes);
+app.use('/api/metrics', metricsRoutes);
 
 // 404 handler (must be after all routes)
 app.use(notFoundHandler);
@@ -85,6 +86,7 @@ app.listen(PORT, () => {
   log.info(`Server is running on port ${PORT}`);
   log.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
   log.info(`Health check: http://localhost:${PORT}/health`);
+  initSalesMasterOnStartup();
 });
 
 // Graceful shutdown

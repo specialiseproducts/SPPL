@@ -1,5 +1,7 @@
 import { getToken, removeToken } from './authService';
 import { getApiBaseUrl } from '../config/apiBase';
+import { recordPerformance } from '../lib/observability/performance';
+import { reportError } from '../lib/observability/errorReporter';
 
 /**
  * Callers use paths like `/api/expenses`. Base URL already ends with `/api`,
@@ -30,10 +32,19 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
   }
 
   const url = `${getApiBaseUrl()}${resolveApiPath(path)}`;
+  const fetchStart = performance.now();
 
   const response = await fetch(url, {
     ...rest,
     headers: finalHeaders,
+  });
+
+  const durationMs = Math.round(performance.now() - fetchStart);
+  recordPerformance({
+    type: 'query_fetch',
+    name: `${rest.method || 'GET'} ${path}`,
+    durationMs,
+    meta: { status: response.status },
   });
 
   const contentType = response.headers.get('content-type') || '';
@@ -71,8 +82,13 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
       fromText ||
       `Request failed (${response.status})`;
     const error = new Error(message);
-    (error as any).status = response.status;
-    (error as any).payload = payload;
+    (error as { status?: number; payload?: unknown }).status = response.status;
+    (error as { status?: number; payload?: unknown }).payload = payload;
+    reportError(error, {
+      source: 'api',
+      path,
+      status: response.status,
+    });
     throw error;
   }
 

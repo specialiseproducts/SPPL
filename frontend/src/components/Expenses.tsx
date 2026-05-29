@@ -3,12 +3,10 @@ import MyExpensesTab from './expenses/MyExpensesTab';
 import AuditExpensesTab from './expenses/AuditExpensesTab';
 import ExpensesAdminDashboardTab from './expenses/ExpensesAdminDashboardTab';
 import type { User, UserRole } from '../App';
-import type { UserMaster } from './UserCreationTab';
 import { isDeveloper, isAdmin, isSuperAdmin } from '../utils/accessControl';
 
 interface ExpensesProps {
   user: User;
-  availableUsers: UserMaster[];
   /** Effective role for the Expenses module (may differ from global user.role). */
   moduleRole: UserRole;
 }
@@ -35,12 +33,11 @@ function ExpensesIntro({ moduleRole }: { moduleRole: UserRole }) {
   );
 }
 
-export default function Expenses({ user, availableUsers, moduleRole }: ExpensesProps) {
+export default function Expenses({ user, moduleRole }: ExpensesProps) {
   const sharedTabProps = {
     userRole: moduleRole,
     currentUserName: user.name,
     currentEmployeeCode: user.employeeCode || user.id,
-    availableUsers,
   } as const;
 
   if (isSuperAdmin(moduleRole)) {

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Download, Upload, Search, Edit, Trash2, ChevronDown, ChevronRight, List, FolderOpen, X, Eye } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
@@ -16,6 +17,11 @@ import EditLineItemModal from './EditLineItemModal';
 import type { UserRole } from '../App';
 import { apiFetch } from '../services/api';
 import { canCreate, canDelete, canEdit, canExport } from '../utils/accessControl';
+import { usePurchasesListQuery, useInvalidatePurchasesList } from '../hooks/purchases/usePurchasesQueries';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { purchasesQueryKeys } from '../hooks/purchases/purchasesQueryKeys';
+import { isQueryColdLoading } from '../utils/queryLoading';
+import { sanitizeSelectOptionsUnique } from '../utils/sanitizeSelectOptions';
 
 // EXACT 45 FIELDS IN EXCEL ORDER
 export interface PurchaseRecord {
@@ -169,7 +175,6 @@ interface PurchasesTabProps {
   userRole: UserRole;
   currentUserName: string;
   currentEmployeeCode: string;
-  availableUsers: UserMaster[];
 }
 
 const RECORD_TYPE_OPTIONS = [
@@ -230,118 +235,30 @@ export const calculatePurchaseFields = (record: Partial<PurchaseRecord>): Partia
   return computed;
 };
 
-const initialPurchases: PurchaseRecord[] = [
-  {
-    id: '1',
-    record_type: 'Import – SPPL Paid',
-    po_number: 'PO-2024-001',
-    date: '2024-01-15',
-    principal: 'ABC Corporation',
-    invoice_number: 'INV-2024-001',
-    invoice_date: '2024-01-16',
-    boe_number: 'BOE-2024-001',
-    boe_date: '2024-01-17',
-    hs_code: '8471.30.00',
-    item_details: 'Computer Parts - Motherboard',
-    part_number: 'MB-XYZ-123',
-    unit_price: 500,
-    qty: 100,
-    freight_charges_international: 3000,
-    gst_on_freight_charges: 540,
-    total_price_in_fe_inr: 50000,
-    exchange_rate_as_per_boe: 83.5,
-    equivalent_inr_as_per_boe: 4175000,
-    actual_bank_transfer_amount: 4175000,
-    bank_charges: 500,
-    gst_on_bank_charges: 90,
-    basic_custom_duty: 41750,
-    surcharge: 4175,
-    gst_on_import_cgst_sgst_igst_local: 75150,
-    interest_or_fine_on_custom_duty: 0,
-    custom_clearance_charges: 5000,
-    igst_gst_on_custom_clearance: 900,
-    total_custom_clearance_charges: 5900,
-    total_landed_price: 4306105,
-    landed_unit_price: 43061.05,
-    customer: 'Tech Solutions Ltd',
-    customer_po: 'CUST-PO-001',
-    po_date: '2024-01-10',
-    po_price: 850,
-    quantity: 100,
-    total_po_price: 85000,
-    igst_gst_percentage: 18,
-    gst_igst_amount: 15300,
-    price_to_customer: 100300,
-    customer_invoice_number: 'CINV-001',
-    customer_invoice_date: '2024-01-25',
-    shipping_charges_to_customer: 2000,
-    cgst_sgst: 3654,
-    price_to_sppl: 94646,
-    gm_percentage: -97.79,
-    margin: -4211459,
-    created_by: 'admin',
-    created_at: '2024-01-15T10:00:00Z',
-    updated_at: '2024-01-15T10:00:00Z',
-  },
-  {
-    id: '2',
-    record_type: 'Local Manufacturing',
-    po_number: 'PO-2024-002',
-    date: '2024-02-10',
-    principal: 'XYZ Industries',
-    invoice_number: 'INV-2024-002',
-    invoice_date: '2024-02-11',
-    boe_number: '',
-    boe_date: '',
-    hs_code: '8517.62.90',
-    item_details: 'Network Equipment - Router',
-    part_number: 'RT-ABC-456',
-    unit_price: 750,
-    qty: 150,
-    freight_charges_international: 0,
-    gst_on_freight_charges: 0,
-    total_price_in_fe_inr: 112500,
-    exchange_rate_as_per_boe: 1,
-    equivalent_inr_as_per_boe: 112500,
-    actual_bank_transfer_amount: 112500,
-    bank_charges: 0,
-    gst_on_bank_charges: 0,
-    basic_custom_duty: 0,
-    surcharge: 0,
-    gst_on_import_cgst_sgst_igst_local: 20250,
-    interest_or_fine_on_custom_duty: 0,
-    custom_clearance_charges: 0,
-    igst_gst_on_custom_clearance: 0,
-    total_custom_clearance_charges: 0,
-    total_landed_price: 132750,
-    landed_unit_price: 885,
-    customer: 'Network Systems Inc',
-    customer_po: 'CUST-PO-002',
-    po_date: '2024-02-05',
-    po_price: 1250,
-    quantity: 150,
-    total_po_price: 187500,
-    igst_gst_percentage: 18,
-    gst_igst_amount: 33750,
-    price_to_customer: 221250,
-    customer_invoice_number: 'CINV-002',
-    customer_invoice_date: '2024-02-20',
-    shipping_charges_to_customer: 3000,
-    cgst_sgst: 5400,
-    price_to_sppl: 212850,
-    gm_percentage: 60.35,
-    margin: 80100,
-    created_by: 'admin',
-    created_at: '2024-02-10T10:00:00Z',
-    updated_at: '2024-02-10T10:00:00Z',
-  },
-];
+export default function PurchasesTab({ userRole, currentUserName, currentEmployeeCode }: PurchasesTabProps) {
+  const queryClient = useQueryClient();
+  const purchasesQuery = usePurchasesListQuery();
+  const invalidatePurchasesList = useInvalidatePurchasesList();
+  const purchases = purchasesQuery.data ?? [];
 
-export default function PurchasesTab({ userRole, currentUserName, currentEmployeeCode, availableUsers }: PurchasesTabProps) {
-  const [purchases, setPurchases] = useState<PurchaseRecord[]>(initialPurchases);
   const [isHeaderModalOpen, setIsHeaderModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebouncedValue(searchTerm, 300);
+
+  const patchPurchases = (updater: (prev: PurchaseRecord[]) => PurchaseRecord[]) => {
+    queryClient.setQueryData(purchasesQueryKeys.listInfinite(), (old) => {
+      if (!old?.pages?.length) return old;
+      const combined = old.pages.flatMap((p) => p.data);
+      const updated = updater(combined);
+      return {
+        ...old,
+        pages: old.pages.map((page, idx) =>
+          idx === 0 ? { ...page, data: updated } : { ...page, data: [] },
+        ),
+      };
+    });
+  };
   
   // Multi-line PO flow
   const [currentPOHeader, setCurrentPOHeader] = useState<PurchaseHeader | null>(null);
@@ -366,82 +283,14 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
   const canDeleteRecords = canDelete(userRole);
   const canExportRecords = canExport(userRole);
 
-  const mapBackendLineItemToRecord = (header: any, item: any): PurchaseRecord => ({
-    id: item.lineItemId,
-    record_type: header.recordType || '',
-    po_number: header.poNumber || '',
-    date: header.date || '',
-    principal: header.principal || '',
-    invoice_number: header.invoiceNumber || '',
-    invoice_date: header.invoiceDate || '',
-    boe_number: header.boeNumber || '',
-    boe_date: header.boeDate || '',
-    hs_code: '',
-    item_details: item.itemDetails || '',
-    part_number: item.partNumber || '',
-    unit_price: Number(item.unitPrice || 0),
-    qty: Number(item.quantity || 0),
-    freight_charges_international: Number(item.freightCharges || 0),
-    gst_on_freight_charges: 0,
-    total_price_in_fe_inr: 0,
-    exchange_rate_as_per_boe: 0,
-    equivalent_inr_as_per_boe: 0,
-    actual_bank_transfer_amount: 0,
-    bank_charges: 0,
-    gst_on_bank_charges: 0,
-    basic_custom_duty: 0,
-    surcharge: 0,
-    gst_on_import_cgst_sgst_igst_local: Number(item.gst || 0),
-    interest_or_fine_on_custom_duty: 0,
-    custom_clearance_charges: 0,
-    igst_gst_on_custom_clearance: 0,
-    total_custom_clearance_charges: 0,
-    total_landed_price: Number(item.totalLandedPrice || 0),
-    landed_unit_price: 0,
-    customer: '',
-    customer_po: '',
-    po_date: '',
-    po_price: 0,
-    quantity: Number(item.quantity || 0),
-    total_po_price: 0,
-    igst_gst_percentage: 0,
-    gst_igst_amount: 0,
-    price_to_customer: 0,
-    customer_invoice_number: '',
-    customer_invoice_date: '',
-    shipping_charges_to_customer: 0,
-    cgst_sgst: 0,
-    price_to_sppl: Number(item.priceToSPPL || 0),
-    gm_percentage: Number(item.gmPercentage || 0),
-    margin: Number(item.margin || 0),
-    created_by: '',
-    created_at: item.createdAt || '',
-    updated_at: item.updatedAt || '',
-  });
-
-  const fetchPurchases = async () => {
-    const payload = await apiFetch('/api/purchases');
-    if (!payload.success || !Array.isArray(payload.data)) {
-      throw new Error('Failed to fetch purchases');
-    }
-
-    const flattened = payload.data.flatMap((purchase: any) => {
-      const header = purchase.header || {};
-      const lineItems = Array.isArray(purchase.lineItems) ? purchase.lineItems : [];
-      return lineItems.map((item: any) => mapBackendLineItemToRecord(header, item));
-    });
-
-    if (flattened.length > 0) {
-      setPurchases(flattened);
-    }
-  };
-
   useEffect(() => {
-    fetchPurchases().catch((error) => {
-      console.error('Purchases fetch error:', error);
-      toast.error('Failed to load purchases from backend. Using local data.');
-    });
-  }, []);
+    if (purchasesQuery.isError && purchasesQuery.data === undefined) {
+      console.error('Purchases fetch error:', purchasesQuery.error);
+      toast.error('Failed to load purchases');
+    }
+  }, [purchasesQuery.isError, purchasesQuery.error, purchasesQuery.data]);
+
+  const isInitialLoading = isQueryColdLoading(purchasesQuery);
 
   // Step 1: Save PO Header and move to line items
   const handleSaveHeader = (header: PurchaseHeader) => {
@@ -472,8 +321,7 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
         throw new Error(payload.message || 'Failed to save purchase');
       }
 
-      // Keep existing local-state behavior after successful API save
-      setPurchases([...purchases, ...lineItems]);
+      void invalidatePurchasesList();
       setShowLineItemsScreen(false);
       setCurrentPOHeader(null);
       toast.success(`PO ${header.po_number} finalized with ${lineItems.length} line item(s)`);
@@ -535,15 +383,24 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
       const computed = calculatePurchaseFields(p);
       return { ...p, ...computed } as PurchaseRecord;
     });
-    setPurchases([...purchases, ...withComputedFields]);
+    patchPurchases((prev) => [...prev, ...withComputedFields]);
     setIsImportModalOpen(false);
     toast.success(`${importedPurchases.length} Purchase Records Imported Successfully`);
   };
 
   // Get unique values for filters
-  const uniquePrincipals = Array.from(new Set(purchases.map(p => p.principal))).filter(Boolean).sort();
-  const uniqueCustomers = Array.from(new Set(purchases.map(p => p.customer))).filter(Boolean).sort();
-  const uniquePONumbers = Array.from(new Set(purchases.map(p => p.po_number))).filter(Boolean).sort();
+  const uniquePrincipals = useMemo(
+    () => sanitizeSelectOptionsUnique(purchases.map((p) => p.principal)).sort(),
+    [purchases]
+  );
+  const uniqueCustomers = useMemo(
+    () => sanitizeSelectOptionsUnique(purchases.map((p) => p.customer)).sort(),
+    [purchases]
+  );
+  const uniquePONumbers = useMemo(
+    () => sanitizeSelectOptionsUnique(purchases.map((p) => p.po_number)).sort(),
+    [purchases]
+  );
 
   // Filter purchases
   let filteredPurchases = purchases;
@@ -564,8 +421,8 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
     filteredPurchases = filteredPurchases.filter(p => p.po_number === selectedPONumber);
   }
 
-  if (searchTerm) {
-    const term = searchTerm.toLowerCase();
+  if (debouncedSearch) {
+    const term = debouncedSearch.toLowerCase();
     filteredPurchases = filteredPurchases.filter(
       (p) =>
         p.po_number.toLowerCase().includes(term) ||
@@ -694,23 +551,21 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
 
   const handleDeletePO = (poNumber: string, itemCount: number) => {
     if (window.confirm(`Delete PO ${poNumber} and all its ${itemCount} line item(s)? This cannot be undone.`)) {
-      setPurchases(purchases.filter(p => p.po_number !== poNumber));
+      patchPurchases((prev) => prev.filter((p) => p.po_number !== poNumber));
       toast.success(`PO ${poNumber} Deleted Successfully`);
     }
   };
 
   // Update line item handler
   const handleUpdateLineItem = (updatedLineItem: PurchaseRecord) => {
-    setPurchases(purchases.map(p => 
-      p.id === updatedLineItem.id ? updatedLineItem : p
-    ));
+    patchPurchases((prev) => prev.map((p) => (p.id === updatedLineItem.id ? updatedLineItem : p)));
     setIsEditModalOpen(false);
     setEditingLineItem(null);
     toast.success(`Line item updated successfully for PO ${updatedLineItem.po_number}`);
   };
 
   const handleDeleteLineItem = (itemId: string) => {
-    setPurchases(purchases.filter(p => p.id !== itemId));
+    patchPurchases((prev) => prev.filter((p) => p.id !== itemId));
     toast.success(`Line Item Deleted Successfully`);
   };
 
@@ -844,7 +699,10 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
           </div>
 
           {/* Table Views - Conditional Based on View Mode */}
-          {viewMode === 'flat' && (
+          {isInitialLoading ? (
+            <div className="py-12 text-center text-sm text-gray-500">Loading purchase records…</div>
+          ) : null}
+          {!isInitialLoading && viewMode === 'flat' && (
             <FlatView
               viewMode={viewMode}
               filteredPurchases={filteredPurchases}
@@ -871,7 +729,20 @@ export default function PurchasesTab({ userRole, currentUserName, currentEmploye
             />
           )}
 
-          {viewMode === 'compact' && (
+          {purchasesQuery.hasNextPage && (
+            <div className="flex justify-end border-t px-4 py-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={purchasesQuery.isFetchingNextPage}
+                onClick={() => void purchasesQuery.fetchNextPage()}
+              >
+                {purchasesQuery.isFetchingNextPage ? 'Loading…' : 'Load more purchases'}
+              </Button>
+            </div>
+          )}
+
+          {!isInitialLoading && viewMode === 'compact' && (
             <CompactView
               viewMode={viewMode}
               filteredPurchases={filteredPurchases}

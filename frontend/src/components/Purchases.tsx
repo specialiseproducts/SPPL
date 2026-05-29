@@ -1,14 +1,12 @@
 import PurchasesTab from './PurchasesTab';
 import type { User } from '../App';
-import type { UserMaster } from './UserCreationTab';
 
 interface PurchasesProps {
   user: User;
-  availableUsers: UserMaster[];
   moduleRole: User['role'];
 }
 
-export default function Purchases({ user, availableUsers, moduleRole }: PurchasesProps) {
+export default function Purchases({ user, moduleRole }: PurchasesProps) {
   return (
     <div className="space-y-6">
       <div>
@@ -22,7 +20,6 @@ export default function Purchases({ user, availableUsers, moduleRole }: Purchase
         userRole={moduleRole}
         currentUserName={user.name}
         currentEmployeeCode={user.employeeCode || user.id}
-        availableUsers={availableUsers}
       />
     </div>
   );
