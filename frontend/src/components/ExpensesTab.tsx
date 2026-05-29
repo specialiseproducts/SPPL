@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Download, Upload, Search, Edit, Trash2, Settings } from 'lucide-react';
+import { Plus, Download, Search, Edit, Trash2, Settings } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Input } from './ui/input';
@@ -536,16 +536,6 @@ export default function ExpensesTab({
               title="Expense rate settings"
             >
               <Settings className="w-4 h-4" />
-            </Button>
-          )}
-          {canCreateRecords && (
-            <Button
-              onClick={() => setIsImportModalOpen(true)}
-              variant="outline"
-              className="gap-2"
-            >
-              <Upload className="w-4 h-4" />
-              Import from Excel
             </Button>
           )}
           {canCreateRecords && (

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { UserPlus, Edit, Trash2, Upload, Download, Search } from 'lucide-react';
+import { UserPlus, Edit, Trash2, Download, Search } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
@@ -395,10 +395,6 @@ export default function UserCreationTab({ onEmployeeCodeClick }: UserCreationTab
           <Button variant="outline" onClick={exportEmployeesExcel} className="gap-2">
             <Download className="w-4 h-4" />
             Export Data
-          </Button>
-          <Button variant="outline" onClick={() => setIsImportModalOpen(true)} className="gap-2">
-            <Upload className="w-4 h-4" />
-            Import from Excel
           </Button>
           <Button onClick={() => setIsModalOpen(true)} className="bg-[#007BFF] hover:bg-[#0056b3] gap-2 text-center">
             <UserPlus className="w-4 h-4" />
