@@ -83,6 +83,18 @@ function formatDateCell(iso: string | undefined): string {
   return d.toLocaleDateString('en-GB');
 }
 
+/** Ascending sort key for export only; invalid/missing dates sort last. */
+function expenseDateSortKey(iso: string | undefined): number {
+  if (!iso || String(iso).trim() === '') return Number.POSITIVE_INFINITY;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+}
+
+/** Copy + ascending date order for CSV export (UI list order unchanged). */
+function sortExpensesForExport(rows: ExpenseRecord[]): ExpenseRecord[] {
+  return [...rows].sort((a, b) => expenseDateSortKey(a.date) - expenseDateSortKey(b.date));
+}
+
 function escapeCsvCell(value: string): string {
   const s = String(value ?? '');
   if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
@@ -421,7 +433,7 @@ export default function ExpensesTab({
   );
 
   const handleExportData = () => {
-    const rows = filteredExpenses;
+    const rows = sortExpensesForExport(filteredExpenses);
     if (rows.length === 0) {
       toast.info('No expense rows to export for the current filters.');
       return;
