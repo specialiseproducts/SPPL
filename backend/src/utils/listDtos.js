@@ -2,13 +2,35 @@
  * Lightweight list DTOs — exclude documents, audit blobs, and heavy nested fields.
  */
 
+function pickPrimaryDocument(documents) {
+  if (!Array.isArray(documents) || documents.length === 0) return null;
+  const doc = documents.find((d) => d && String(d.fileUrl || '').trim() !== '');
+  if (!doc) return null;
+  return {
+    fileName: String(doc.fileName || 'document').trim(),
+    fileUrl: String(doc.fileUrl).trim(),
+  };
+}
+
 export function toExpenseListDto(row, enrichFn) {
   if (!row || typeof row !== 'object') return row;
-  const { documents, supportingDocument, ...rest } = row;
-  const hasDocuments =
-    (Array.isArray(documents) && documents.length > 0) ||
-    (typeof supportingDocument === 'string' && supportingDocument.trim() !== '');
-  const base = { ...rest, hasDocuments };
+  const { documents, supportingDocument: sdRaw, ...rest } = row;
+  const primaryDoc = pickPrimaryDocument(documents);
+  const hasDocArray = primaryDoc != null;
+  const sd = typeof sdRaw === 'string' ? sdRaw.trim() : '';
+  let supportingDocument = 'No';
+  if (sd === 'Yes' || sd === 'No') {
+    supportingDocument = sd;
+  } else if (hasDocArray) {
+    supportingDocument = 'Yes';
+  }
+  const hasDocuments = supportingDocument === 'Yes' || hasDocArray;
+  const base = {
+    ...rest,
+    supportingDocument,
+    hasDocuments,
+    ...(primaryDoc ? { documents: [primaryDoc] } : {}),
+  };
   return typeof enrichFn === 'function' ? enrichFn(base) : base;
 }
 

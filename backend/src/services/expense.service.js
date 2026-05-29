@@ -73,6 +73,45 @@ function enrichExpenseRow(row) {
   return { ...row, location, purpose };
 }
 
+function rowHasInlineDocumentUrl(row) {
+  return (
+    Array.isArray(row?.documents) &&
+    row.documents.some((d) => d && String(d.fileUrl || '').trim() !== '')
+  );
+}
+
+/** Legacy rows may store files only on ExpenseDocuments; hydrate inline for list DTO. */
+async function attachDocumentsForListRows(rows) {
+  return Promise.all(
+    (rows || []).map(async (row) => {
+      if (!row || rowHasInlineDocumentUrl(row)) {
+        return row;
+      }
+      const sd = String(row.supportingDocument || '').trim().toLowerCase();
+      if (sd !== 'yes') {
+        return row;
+      }
+      try {
+        const docs = await ExpenseDocumentsModel.getDocumentsByExpenseId(row.expenseId);
+        const first = (docs || []).find((d) => d && String(d.fileUrl || '').trim() !== '');
+        if (!first) {
+          return row;
+        }
+        return {
+          ...row,
+          documents: [{ fileName: first.fileName || 'document', fileUrl: first.fileUrl }],
+        };
+      } catch (err) {
+        log.warn('attachDocumentsForListRows failed', {
+          expenseId: row.expenseId,
+          message: err?.message || err,
+        });
+        return row;
+      }
+    })
+  );
+}
+
 function validateMergedSubCategoryOnUpdate(merged, updateData) {
   if (!isCanonicalExpenseHead(merged.expenseHead)) {
     return;
@@ -169,7 +208,10 @@ export const getExpenses = async (filters = {}, options = {}, authUser = null, e
       lastEvaluatedKey = page.lastEvaluatedKey;
     }
 
-    const mapped = sortExpensesDesc(rows.map((row) => toExpenseListDto(row, enrichExpenseRow)));
+    const withDocuments = await attachDocumentsForListRows(rows);
+    const mapped = sortExpensesDesc(
+      withDocuments.map((row) => toExpenseListDto(row, enrichExpenseRow))
+    );
 
     return toPaginatedResponse(mapped, lastEvaluatedKey);
   } catch (error) {

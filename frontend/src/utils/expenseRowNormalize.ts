@@ -44,8 +44,26 @@ export function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord
     supportingDocument:
       raw.supportingDocument === 'Yes' || raw.supportingDocument === 'No'
         ? raw.supportingDocument
-        : undefined,
+        : raw.hasDocuments === true
+          ? 'Yes'
+          : raw.hasDocuments === false
+            ? 'No'
+            : undefined,
     fuelType: raw.fuelType != null ? String(raw.fuelType).trim() : undefined,
-    documents: Array.isArray(raw.documents) ? (raw.documents as ExpenseDocument[]) : undefined,
+    documents: (() => {
+      if (Array.isArray(raw.documents) && raw.documents.length > 0) {
+        return raw.documents as ExpenseDocument[];
+      }
+      const url = String(raw.documentUrl ?? '').trim();
+      if (url) {
+        return [
+          {
+            fileName: String(raw.documentName ?? 'document').trim(),
+            fileUrl: url,
+          },
+        ];
+      }
+      return undefined;
+    })(),
   };
 }
