@@ -1,5 +1,10 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ExchangeRatesMap, SalesMasterAdminItem, SalesPrincipalAdminRow } from '../../types/salesForecast';
+import type {
+  ExchangeRatesMap,
+  SalesMasterAdminItem,
+  SalesPrincipalAdminRow,
+  SalesPrincipalModelRow,
+} from '../../types/salesForecast';
 import { apiFetch } from '../../services/api';
 import {
   fetchSalesBootstrap,
@@ -108,6 +113,21 @@ export async function fetchMasterAdminPrincipals(): Promise<SalesPrincipalAdminR
   return res?.data?.principals ?? [];
 }
 
+export async function fetchMasterAdminModels(principalId: string): Promise<SalesPrincipalModelRow[]> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/master-admin/models?principalId=${encodeURIComponent(principalId)}`,
+  )) as { data?: { models?: SalesPrincipalModelRow[] } };
+  return res?.data?.models ?? [];
+}
+
+/** Active models for a principal (quotation dropdowns). */
+export async function fetchModelsByPrincipal(principalId: string): Promise<SalesPrincipalModelRow[]> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/models?principalId=${encodeURIComponent(principalId)}`,
+  )) as { data?: { models?: SalesPrincipalModelRow[] } };
+  return res?.data?.models ?? [];
+}
+
 export function useMasterAdminListQuery(category: string, enabled: boolean) {
   return useQuery({
     queryKey: salesQueryKeys.masterAdminList(category),
@@ -122,6 +142,25 @@ export function useMasterAdminPrincipalsQuery(enabled = true) {
     queryKey: salesQueryKeys.masterAdminPrincipals(),
     queryFn: fetchMasterAdminPrincipals,
     enabled,
+    ...queryDefaults.reference,
+  });
+}
+
+export function useMasterAdminModelsQuery(principalId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: salesQueryKeys.masterAdminModels(principalId),
+    queryFn: () => fetchMasterAdminModels(principalId),
+    enabled: enabled && !!principalId.trim(),
+    ...queryDefaults.reference,
+  });
+}
+
+/** Active models for quotation form (scoped by principal map id). */
+export function useModelsByPrincipalQuery(principalId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: salesQueryKeys.modelsByPrincipal(principalId, true),
+    queryFn: () => fetchModelsByPrincipal(principalId),
+    enabled: enabled && !!principalId.trim(),
     ...queryDefaults.reference,
   });
 }

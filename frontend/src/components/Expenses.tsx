@@ -16,7 +16,7 @@ function ExpensesIntro({ moduleRole }: { moduleRole: UserRole }) {
   const superLayout = isSuperAdmin(moduleRole);
   const dev = isDeveloper(moduleRole);
 
-  let blurb = 'Submit and track your expense records';
+  let blurb: string | null = null;
   if (dev) {
     blurb = 'Manage and track employee expenses (full access)';
   } else if (auditLayout) {
@@ -28,7 +28,7 @@ function ExpensesIntro({ moduleRole }: { moduleRole: UserRole }) {
   return (
     <div>
       <h1 className="text-[#212529] mb-2">Expenses</h1>
-      <p className="text-gray-600">{blurb}</p>
+      {blurb ? <p className="text-gray-600">{blurb}</p> : null}
     </div>
   );
 }

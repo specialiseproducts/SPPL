@@ -181,6 +181,39 @@ export const adminUpsertPrincipal = async (req, res, next) => {
   }
 };
 
+export const listModels = async (req, res, next) => {
+  try {
+    const principalId = req.query.principalId;
+    const activeOnly = req.query.activeOnly !== 'false';
+    const data = await SalesForecastService.listPrincipalModels(principalId, { activeOnly });
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List principal models error:', error);
+    next(error);
+  }
+};
+
+export const listModelsAdmin = async (req, res, next) => {
+  try {
+    const principalId = req.query.principalId;
+    const data = await SalesForecastService.listPrincipalModelsAdmin(principalId, req.effectiveRole);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List principal models admin error:', error);
+    next(error);
+  }
+};
+
+export const adminUpsertModel = async (req, res, next) => {
+  try {
+    const data = await SalesForecastService.adminUpsertPrincipalModel(req.body || {}, req.effectiveRole);
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Admin upsert model error:', error);
+    next(error);
+  }
+};
+
 export const getRates = async (req, res, next) => {
   try {
     const data = await SalesForecastService.getExchangeRatesForSales();

@@ -16,6 +16,9 @@ import type { ExchangeRatesMap } from '../../types/salesForecast';
 import type { UserMaster } from '../UserCreationTab';
 import { MasterCombobox } from './MasterCombobox';
 import { computeInrValue, computeTotalValue } from '../../utils/salesForecastCalculations';
+import { principalNameToId } from '../../utils/principalId';
+import { useModelsByPrincipalQuery } from '../../hooks/sales/useSalesQueries';
+import type { SalesPrincipalModelRow } from '../../types/salesForecast';
 
 export interface MastersState {
   STATUS: string[];
@@ -139,7 +142,7 @@ interface SalesForecastingOpportunityFormModalProps {
   editing: SalesOpportunity | null;
   masters: MastersState;
   rates: ExchangeRatesMap;
-  availableUsers: UserMaster[];
+  availableUsers?: UserMaster[];
   onSaveDraft: (payload: ReturnType<typeof formToPayload>) => Promise<void>;
   onSubmitForApproval: (payload: ReturnType<typeof formToPayload>) => Promise<void>;
 }
@@ -160,11 +163,47 @@ export default function SalesForecastingOpportunityFormModal({
   const [f, setF] = useState<Record<string, string>>(emptyForm());
   const [busy, setBusy] = useState(false);
 
+  const principalId = useMemo(() => principalNameToId(f.principal), [f.principal]);
+  const modelsQuery = useModelsByPrincipalQuery(principalId, isOpen);
+  const principalModels = modelsQuery.data ?? [];
+
+  const modelOptions = useMemo(
+    () => principalModels.map((m) => m.modelNumber).filter(Boolean),
+    [principalModels],
+  );
+
+  const modelsByNumber = useMemo(() => {
+    const map = new Map<string, SalesPrincipalModelRow>();
+    for (const row of principalModels) {
+      const key = row.modelNumber.trim();
+      if (key) map.set(key, row);
+    }
+    return map;
+  }, [principalModels]);
+
   useEffect(() => {
     if (isOpen) {
       setF(opportunityToForm(editing));
     }
   }, [isOpen, editing]);
+
+  const handlePrincipalChange = (principal: string) => {
+    setF((prev) => ({
+      ...prev,
+      principal,
+      modelNumber: '',
+      productDescription: '',
+    }));
+  };
+
+  const handleModelChange = (modelNumber: string) => {
+    const master = modelsByNumber.get(modelNumber.trim());
+    setF((prev) => ({
+      ...prev,
+      modelNumber,
+      productDescription: master?.productDescription ?? '',
+    }));
+  };
 
   const totalValue = useMemo(
     () => computeTotalValue(f.unitPrice === '' ? null : Number(f.unitPrice), f.quantity === '' ? null : Number(f.quantity)),
@@ -309,14 +348,18 @@ export default function SalesForecastingOpportunityFormModal({
             <MasterCombobox
               label="Principal"
               value={f.principal}
-              onChange={(v) => setField('principal', v)}
+              onChange={handlePrincipalChange}
               options={masters.PRINCIPAL}
               placeholder="Select principal"
             />
-            <div className="space-y-2">
-              <Label htmlFor="sf-model">Model Number</Label>
-              <Input id="sf-model" value={f.modelNumber} onChange={(e) => setField('modelNumber', e.target.value)} />
-            </div>
+            <MasterCombobox
+              label="Model Number"
+              value={f.modelNumber}
+              onChange={handleModelChange}
+              options={modelOptions}
+              placeholder={principalId ? 'Select model' : 'Select Principal First'}
+              disabled={!principalId}
+            />
           </div>
 
           <div className="space-y-2">

@@ -1,14 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../services/api';
-import type { ExchangeRatesMap, SalesMasterAdminItem, SalesPrincipalAdminRow } from '../../types/salesForecast';
+import type {
+  ExchangeRatesMap,
+  SalesMasterAdminItem,
+  SalesPrincipalAdminRow,
+  SalesPrincipalModelRow,
+} from '../../types/salesForecast';
 import { DEFAULT_EXCHANGE_RATES } from '../../hooks/sales/salesApi';
 import { salesQueryKeys } from '../../hooks/sales/salesQueryKeys';
 import {
   useInvalidateSalesMasters,
   useInvalidateSalesRates,
   useMasterAdminListQuery,
+  useMasterAdminModelsQuery,
   useMasterAdminPrincipalsQuery,
   useSalesRatesQuery,
 } from '../../hooks/sales/useSalesQueries';
@@ -60,12 +66,33 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
   const [pActive, setPActive] = useState(true);
   const [pPrevSk, setPPrevSk] = useState<string | null>(null);
 
+  const [selectedPrincipalId, setSelectedPrincipalId] = useState('');
+  const [mNumber, setMNumber] = useState('');
+  const [mDesc, setMDesc] = useState('');
+  const [mActive, setMActive] = useState(true);
+  const [mEditModelId, setMEditModelId] = useState<string | null>(null);
+
   const ratesQuery = useSalesRatesQuery();
   const listQuery = useMasterAdminListQuery(listCat, sectionTab === 'lists');
   const principalsQuery = useMasterAdminPrincipalsQuery(true);
+  const modelsQuery = useMasterAdminModelsQuery(
+    selectedPrincipalId,
+    sectionTab === 'models' && !!selectedPrincipalId,
+  );
 
   const items = listQuery.data ?? [];
   const principals = principalsQuery.data ?? [];
+  const models = modelsQuery.data ?? [];
+
+  const activePrincipals = useMemo(
+    () =>
+      principals
+        .filter((p) => p.isActive)
+        .sort((a, b) =>
+          a.principalName.localeCompare(b.principalName, undefined, { sensitivity: 'base' }),
+        ),
+    [principals],
+  );
 
   useEffect(() => {
     if (ratesQuery.data) {
@@ -102,6 +129,16 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
 
   const invalidatePrincipals = () => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.masterAdminPrincipals() });
+  };
+
+  const invalidateModels = () => {
+    if (!selectedPrincipalId) return;
+    void queryClient.invalidateQueries({
+      queryKey: salesQueryKeys.masterAdminModels(selectedPrincipalId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: salesQueryKeys.modelsByPrincipal(selectedPrincipalId, true),
+    });
   };
 
   const toggleItemMutation = useMutation({
@@ -160,6 +197,59 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
       await notifyMastersChanged();
     },
     onError: () => toast.error('Save failed'),
+  });
+
+  const saveModelMutation = useMutation({
+    mutationFn: async (body: {
+      principalId: string;
+      principalName: string;
+      modelNumber: string;
+      productDescription: string;
+      isActive: boolean;
+      modelId?: string;
+    }) => {
+      await apiFetch('/api/sales-forecasts/master-admin/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    },
+    onSuccess: async () => {
+      toast.success('Model saved');
+      setMNumber('');
+      setMDesc('');
+      setMActive(true);
+      setMEditModelId(null);
+      invalidateModels();
+      await notifyMastersChanged();
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : 'Save failed';
+      toast.error(msg);
+    },
+  });
+
+  const toggleModelMutation = useMutation({
+    mutationFn: async (row: SalesPrincipalModelRow) => {
+      await apiFetch('/api/sales-forecasts/master-admin/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          principalId: row.principalId,
+          principalName: row.principalName,
+          modelNumber: row.modelNumber,
+          productDescription: row.productDescription,
+          isActive: !row.isActive,
+          modelId: row.modelId,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      toast.success('Updated');
+      invalidateModels();
+      await notifyMastersChanged();
+    },
+    onError: () => toast.error('Update failed'),
   });
 
   const togglePrincipalMutation = useMutation({
@@ -256,6 +346,60 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
     }
   };
 
+  const resetModelForm = () => {
+    setMNumber('');
+    setMDesc('');
+    setMActive(true);
+    setMEditModelId(null);
+  };
+
+  const saveModel = async () => {
+    if (!selectedPrincipalId) {
+      toast.error('Select a principal first');
+      return;
+    }
+    const num = mNumber.trim();
+    const desc = mDesc.trim();
+    if (!num || !desc) {
+      toast.error('Model number and product description are required');
+      return;
+    }
+    const principal = principals.find((p) => p.sk === selectedPrincipalId);
+    if (!principal) {
+      toast.error('Principal not found');
+      return;
+    }
+    setBusy(true);
+    try {
+      await saveModelMutation.mutateAsync({
+        principalId: selectedPrincipalId,
+        principalName: principal.principalName,
+        modelNumber: num,
+        productDescription: desc,
+        isActive: mActive,
+        modelId: mEditModelId || undefined,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editModel = (row: SalesPrincipalModelRow) => {
+    setMNumber(row.modelNumber);
+    setMDesc(row.productDescription);
+    setMActive(row.isActive);
+    setMEditModelId(row.modelId);
+  };
+
+  const toggleModel = async (row: SalesPrincipalModelRow) => {
+    setBusy(true);
+    try {
+      await toggleModelMutation.mutateAsync(row);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const validateRates = () => {
     const e: Record<string, string> = {};
     for (const { key } of RATE_FIELDS) {
@@ -278,24 +422,21 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-6 pb-8">
-      <div>
-        <h2 className="text-xl font-semibold text-[#212529]">Sales master data</h2>
-        <p className="mt-1 text-gray-600">
-          Manage dropdown values, principal codes, and currency conversion rates used across sales forecasting.
-        </p>
-      </div>
-
       <Card className="overflow-hidden border-gray-200 shadow-sm">
-        <Tabs value={sectionTab} onValueChange={setSectionTab} className="w-full">
+        <Tabs value={sectionTab} onValueChange={setSectionTab} className="flex w-full flex-col">
           <div className="border-b border-gray-100 bg-white px-4 py-3 sm:px-6">
-            <TabsList className="grid w-full max-w-xl grid-cols-3">
+            <TabsList className="!grid h-9 w-full max-w-xl grid-cols-4 sm:max-w-2xl">
               <TabsTrigger value="lists">Lists</TabsTrigger>
               <TabsTrigger value="principals">Principals</TabsTrigger>
+              <TabsTrigger value="models">Models</TabsTrigger>
               <TabsTrigger value="rates">FX rates</TabsTrigger>
             </TabsList>
           </div>
 
-          <TabsContent value="lists" className="mt-0 space-y-6 p-4 sm:p-6">
+          <TabsContent
+            value="lists"
+            className="mt-0 space-y-6 p-4 outline-none data-[state=inactive]:hidden sm:p-6"
+          >
             <div className="flex flex-wrap items-end gap-4">
               <div className="space-y-2">
                 <Label>Category</Label>
@@ -361,7 +502,10 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
             </div>
           </TabsContent>
 
-          <TabsContent value="principals" className="mt-0 space-y-6 p-4 sm:p-6">
+          <TabsContent
+            value="principals"
+            className="mt-0 space-y-6 p-4 outline-none data-[state=inactive]:hidden sm:p-6"
+          >
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
               <div className="space-y-2 md:col-span-2">
                 <Label>Principal name</Label>
@@ -436,7 +580,126 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
             </div>
           </TabsContent>
 
-          <TabsContent value="rates" className="mt-0 p-4 sm:p-6">
+          <TabsContent
+            value="models"
+            className="mt-0 space-y-6 p-4 outline-none data-[state=inactive]:hidden sm:p-6"
+          >
+            <div className="max-w-md space-y-2">
+              <Label htmlFor="models-principal">Principal</Label>
+              <select
+                id="models-principal"
+                className="border-input bg-background h-10 w-full rounded-md border px-3 text-sm"
+                value={selectedPrincipalId}
+                onChange={(e) => {
+                  setSelectedPrincipalId(e.target.value);
+                  resetModelForm();
+                }}
+              >
+                <option value="">Select principal…</option>
+                {activePrincipals.map((p) => (
+                  <option key={p.sk} value={p.sk}>
+                    {p.principalName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedPrincipalId ? (
+              <>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-2 md:col-span-1">
+                    <Label htmlFor="model-number">Model number</Label>
+                    <Input
+                      id="model-number"
+                      value={mNumber}
+                      onChange={(e) => setMNumber(e.target.value)}
+                      placeholder="e.g. AHI-100"
+                      className="font-mono uppercase"
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="model-desc">Product description</Label>
+                    <Input
+                      id="model-desc"
+                      value={mDesc}
+                      onChange={(e) => setMDesc(e.target.value)}
+                      placeholder="e.g. Precision Measuring Instrument"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="flex items-center gap-2 pb-2">
+                      <Switch checked={mActive} onCheckedChange={setMActive} id="m-act" />
+                      <Label htmlFor="m-act" className="font-normal">
+                        Active
+                      </Label>
+                    </div>
+                    <Button type="button" onClick={() => void saveModel()} disabled={busy}>
+                      {mEditModelId ? 'Update' : 'Add'}
+                    </Button>
+                    {mEditModelId ? (
+                      <Button type="button" variant="outline" onClick={resetModelForm}>
+                        Cancel edit
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-gray-50/90 hover:bg-gray-50/90">
+                        <TableHead>Model number</TableHead>
+                        <TableHead>Product description</TableHead>
+                        <TableHead className="w-[120px] text-center">Active</TableHead>
+                        <TableHead className="w-[140px] text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {modelsQuery.isPending ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-muted-foreground py-10 text-center">
+                            Loading models…
+                          </TableCell>
+                        </TableRow>
+                      ) : models.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-muted-foreground py-10 text-center">
+                            No models for this principal yet.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        models.map((row: SalesPrincipalModelRow) => (
+                          <TableRow key={row.modelId}>
+                            <TableCell className="font-mono text-sm">{row.modelNumber}</TableCell>
+                            <TableCell>{row.productDescription}</TableCell>
+                            <TableCell className="text-center">
+                              <Switch
+                                checked={row.isActive}
+                                disabled={busy}
+                                onCheckedChange={() => void toggleModel(row)}
+                              />
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button type="button" variant="outline" size="sm" onClick={() => editModel(row)}>
+                                Edit
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">Select a principal to manage models.</p>
+            )}
+          </TabsContent>
+
+          <TabsContent
+            value="rates"
+            className="mt-0 p-4 outline-none data-[state=inactive]:hidden sm:p-6"
+          >
             <form
               className="mx-auto max-w-md space-y-5"
               onSubmit={(e) => {

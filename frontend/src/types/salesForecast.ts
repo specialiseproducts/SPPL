@@ -79,3 +79,14 @@ export interface SalesPrincipalAdminRow {
   isActive: boolean;
   sk: string;
 }
+
+export interface SalesPrincipalModelRow {
+  modelId: string;
+  principalId: string;
+  principalName: string;
+  modelNumber: string;
+  productDescription: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}

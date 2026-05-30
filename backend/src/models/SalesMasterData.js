@@ -7,6 +7,7 @@
  * List items support optional isActive (default true when missing — backward compatible).
  */
 
+import { v4 as uuidv4 } from 'uuid';
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
 import { normalizeToken } from '../utils/salesQuotationRef.js';
 
@@ -235,6 +236,151 @@ export const getPrincipalShortCode = async (principalName) => {
   const got = await dynamoDB.get({ TableName: TABLE_NAME, Key: { pk, sk } }).promise();
   if (!got.Item || !isRowActive(got.Item)) return '';
   return String(got.Item.shortCode || '').trim();
+};
+
+/** Principal-scoped product models — pk MASTER#MODEL#<principalId>, sk modelId (uuid). */
+const MODEL_PK = (principalId) => `MASTER#MODEL#${String(principalId || '').trim().toLowerCase()}`;
+
+function toPrincipalModelDto(row) {
+  return {
+    modelId: String(row.modelId || row.sk || ''),
+    principalId: String(row.principalId || '').trim().toLowerCase(),
+    principalName: String(row.principalName || '').trim(),
+    modelNumber: String(row.modelNumber || '').trim(),
+    productDescription: String(row.productDescription || '').trim(),
+    isActive: isRowActive(row),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function queryPrincipalModelRows(principalId) {
+  const pk = MODEL_PK(principalId);
+  const result = await dynamoDB
+    .query({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': pk },
+    })
+    .promise();
+  return result.Items || [];
+}
+
+async function getPrincipalMapRowOrThrow(principalId) {
+  const pk = MASTER_PK('PRINCIPAL_MAP');
+  const sk = String(principalId || '').trim().toLowerCase();
+  if (!sk) {
+    const err = new Error('principalId is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const got = await dynamoDB.get({ TableName: TABLE_NAME, Key: { pk, sk } }).promise();
+  if (!got.Item) {
+    const err = new Error('Principal not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return got.Item;
+}
+
+async function findDuplicateModelNumber(principalId, modelNumber, excludeModelId) {
+  const norm = normalizeToken(modelNumber);
+  if (!norm) return null;
+  const rows = await queryPrincipalModelRows(principalId);
+  for (const row of rows) {
+    const id = String(row.modelId || row.sk || '');
+    if (excludeModelId && id === excludeModelId) continue;
+    if (normalizeToken(row.modelNumber) === norm) return row;
+  }
+  return null;
+}
+
+/**
+ * @param {string} principalId — principal map sk (normalized principal name key)
+ * @param {{ activeOnly?: boolean }} [opts]
+ */
+export const listPrincipalModels = async (principalId, opts = {}) => {
+  const activeOnly = opts.activeOnly !== false;
+  const principalRow = await getPrincipalMapRowOrThrow(principalId);
+  const pid = String(principalId).trim().toLowerCase();
+  let rows = await queryPrincipalModelRows(pid);
+  if (activeOnly) rows = rows.filter(isRowActive);
+  return rows
+    .map((row) =>
+      toPrincipalModelDto({
+        ...row,
+        principalId: pid,
+        principalName: row.principalName || principalRow.principalName,
+      })
+    )
+    .sort((a, b) =>
+      a.modelNumber.localeCompare(b.modelNumber, undefined, { sensitivity: 'base' })
+    );
+};
+
+export const upsertPrincipalModel = async ({
+  principalId,
+  principalName,
+  modelNumber,
+  productDescription,
+  isActive = true,
+  modelId,
+} = {}) => {
+  const principalRow = await getPrincipalMapRowOrThrow(principalId);
+  const pid = String(principalId).trim().toLowerCase();
+  const pName = String(principalName || principalRow.principalName || principalRow.value || '').trim();
+  const mNum = String(modelNumber || '').trim();
+  const desc = String(productDescription || '').trim();
+  if (!mNum || !desc) {
+    const err = new Error('Model number and product description are required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const pk = MODEL_PK(pid);
+  const now = new Date().toISOString();
+  let sk = modelId ? String(modelId).trim() : '';
+  let createdAt = now;
+
+  if (sk) {
+    const existing = await dynamoDB.get({ TableName: TABLE_NAME, Key: { pk, sk } }).promise();
+    if (!existing.Item) {
+      const err = new Error('Model not found');
+      err.statusCode = 404;
+      throw err;
+    }
+    createdAt = existing.Item.createdAt || now;
+    const dup = await findDuplicateModelNumber(pid, mNum, sk);
+    if (dup) {
+      const err = new Error('Model number already exists for this principal');
+      err.statusCode = 409;
+      throw err;
+    }
+  } else {
+    const dup = await findDuplicateModelNumber(pid, mNum, null);
+    if (dup) {
+      const err = new Error('Model number already exists for this principal');
+      err.statusCode = 409;
+      throw err;
+    }
+    sk = uuidv4();
+  }
+
+  const item = {
+    pk,
+    sk,
+    modelId: sk,
+    principalId: pid,
+    principalName: pName,
+    modelNumber: mNum,
+    productDescription: desc,
+    isActive: !!isActive,
+    createdAt,
+    updatedAt: now,
+  };
+
+  await dynamoDB.put({ TableName: TABLE_NAME, Item: item }).promise();
+  return toPrincipalModelDto(item);
 };
 
 /**

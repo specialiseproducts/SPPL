@@ -15,10 +15,14 @@ router.get('/bootstrap', SalesForecastController.getBootstrap);
 router.get('/rates', SalesForecastController.getRates);
 router.put('/rates', SalesForecastController.putRates);
 
+router.get('/models', SalesForecastController.listModels);
+router.get('/master-admin/models', SalesForecastController.listModelsAdmin);
+router.post('/master-admin/models', SalesForecastController.adminUpsertModel);
+router.post('/master-admin/principal-map', SalesForecastController.adminUpsertPrincipal);
+
 router.get('/master-admin/:category', SalesForecastController.listMasterAdmin);
 router.post('/master-admin/:category', SalesForecastController.adminAddMaster);
 router.put('/master-admin/:category', SalesForecastController.adminUpdateMaster);
-router.post('/master-admin/principal-map', SalesForecastController.adminUpsertPrincipal);
 
 router.get('/master/:category', SalesForecastController.listMaster);
 router.post('/master/:category/ensure', SalesForecastController.ensureMaster);

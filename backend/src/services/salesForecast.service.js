@@ -667,6 +667,36 @@ export const adminUpsertPrincipalMap = async (body, effectiveRole) => {
   return SalesMasterDataModel.upsertPrincipalMapEntry(body || {});
 };
 
+export const listPrincipalModels = async (principalId, opts = {}) => {
+  if (!String(principalId || '').trim()) {
+    const err = new Error('principalId query parameter is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  await ensureSalesMasterReady();
+  const models = await SalesMasterDataModel.listPrincipalModels(principalId, opts);
+  return { models };
+};
+
+export const listPrincipalModelsAdmin = async (principalId, effectiveRole) => {
+  assertCanModerate(effectiveRole);
+  if (!String(principalId || '').trim()) {
+    const err = new Error('principalId query parameter is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  await ensureSalesMasterReady();
+  const models = await SalesMasterDataModel.listPrincipalModels(principalId, { activeOnly: false });
+  return { models };
+};
+
+export const adminUpsertPrincipalModel = async (body, effectiveRole) => {
+  assertCanModerate(effectiveRole);
+  await ensureSalesMasterReady();
+  const row = await SalesMasterDataModel.upsertPrincipalModel(body || {});
+  return row;
+};
+
 export const getExchangeRatesForSales = async () => {
   await ensureSalesMasterReady();
   return SalesMasterDataModel.getExchangeRates();

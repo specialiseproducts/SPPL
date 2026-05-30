@@ -16,4 +16,8 @@ export const salesQueryKeys = {
   masterAdminList: (category: string) =>
     [...salesQueryKeys.all, 'master-admin', 'list', category] as const,
   masterAdminPrincipals: () => [...salesQueryKeys.all, 'master-admin', 'principals'] as const,
+  masterAdminModels: (principalId: string) =>
+    [...salesQueryKeys.all, 'master-admin', 'models', principalId] as const,
+  modelsByPrincipal: (principalId: string, activeOnly: boolean) =>
+    [...salesQueryKeys.all, 'models', principalId, activeOnly] as const,
 };

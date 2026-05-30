@@ -36,6 +36,7 @@ interface MasterComboboxProps {
   category?: string;
   placeholder?: string;
   inputClassName?: string;
+  disabled?: boolean;
 }
 
 export function MasterCombobox({
@@ -46,6 +47,7 @@ export function MasterCombobox({
   category: _category,
   placeholder,
   inputClassName: _inputClassName,
+  disabled = false,
 }: MasterComboboxProps) {
   const reactId = useId();
   const triggerId = `mcb-tr-${reactId.replace(/:/g, '')}`;
@@ -77,8 +79,9 @@ export function MasterCombobox({
     <div className="space-y-2">
       <Label htmlFor={triggerId}>{label}</Label>
       <Popover
-        open={open}
+        open={disabled ? false : open}
         onOpenChange={(next) => {
+          if (disabled) return;
           if (next) {
             setQuery('');
             setOpen(true);
@@ -95,7 +98,8 @@ export function MasterCombobox({
             role="combobox"
             aria-expanded={open}
             aria-controls={`${triggerId}-list`}
-            className={triggerClass}
+            disabled={disabled}
+            className={cn(triggerClass, disabled && 'cursor-not-allowed opacity-60')}
           >
             <span className={cn('min-w-0 flex-1 truncate text-left', !value && 'text-muted-foreground')}>
               {value || placeholder || 'Select…'}

@@ -99,11 +99,7 @@ export default function AccessManagementTab() {
 
   return (
     <Card className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-[#212529]">Access Management Setup</h2>
-          <p className="text-sm text-gray-600 mt-1">Configure role-based access controls and page-level overrides</p>
-        </div>
+      <div className="flex items-center justify-end mb-6">
         <Button onClick={() => setIsModalOpen(true)} className="bg-[#007BFF] hover:bg-[#0056b3] gap-2">
           <Plus className="w-4 h-4" />
           Create New Role Management

@@ -15,7 +15,6 @@ export default function UserManagement({ onEmployeeCodeClick }: UserManagementPr
     <div className="space-y-6">
       <div>
         <h1 className="text-[#212529] mb-2">User Management</h1>
-        <p className="text-gray-600">Manage users and access controls for your organization</p>
       </div>
 
       <Tabs value={tab} onValueChange={setTab} className="w-full">
