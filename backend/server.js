@@ -23,6 +23,7 @@ import userRoutes from './src/routes/user.routes.js';
 import accessControlRoutes from './src/routes/accessControl.routes.js';
 import metricsRoutes from './src/routes/metrics.routes.js';
 import { initSalesMasterOnStartup } from './src/utils/salesMasterInit.js';
+import { initSalesQuotationScheduler } from './src/scheduler/salesQuotationScheduler.js';
 
 // Load environment variables
 dotenv.config();
@@ -87,6 +88,7 @@ app.listen(PORT, () => {
   log.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
   log.info(`Health check: http://localhost:${PORT}/health`);
   initSalesMasterOnStartup();
+  initSalesQuotationScheduler();
 });
 
 // Graceful shutdown

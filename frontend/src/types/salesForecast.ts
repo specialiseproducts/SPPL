@@ -42,7 +42,6 @@ export interface SalesOpportunity {
   technicalChallenges: string;
   keyDecisionCriteria: string;
   followUpActionsRequired: string;
-  nextActionDate: string;
   remarks: string;
   ownerEmployeeCode: string;
   ownerEmployeeName: string;

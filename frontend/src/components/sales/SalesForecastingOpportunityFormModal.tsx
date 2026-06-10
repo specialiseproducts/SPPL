@@ -59,7 +59,6 @@ const emptyForm = (): Record<string, string> => ({
   technicalChallenges: '',
   keyDecisionCriteria: '',
   followUpActionsRequired: '',
-  nextActionDate: '',
   remarks: '',
 });
 
@@ -96,7 +95,6 @@ function opportunityToForm(o: SalesOpportunity | null): Record<string, string> {
     technicalChallenges: o.technicalChallenges || '',
     keyDecisionCriteria: o.keyDecisionCriteria || '',
     followUpActionsRequired: o.followUpActionsRequired || '',
-    nextActionDate: o.nextActionDate || '',
     remarks: o.remarks || '',
   };
 }
@@ -131,7 +129,6 @@ export function formToPayload(f: Record<string, string>) {
     technicalChallenges: f.technicalChallenges,
     keyDecisionCriteria: f.keyDecisionCriteria,
     followUpActionsRequired: f.followUpActionsRequired,
-    nextActionDate: f.nextActionDate,
     remarks: f.remarks,
   };
 }
@@ -454,15 +451,9 @@ export default function SalesForecastingOpportunityFormModal({
             <Textarea id="sf-fu" className={taCompact} rows={2} value={f.followUpActionsRequired} onChange={(e) => setField('followUpActionsRequired', e.target.value)} />
           </div>
 
-          <div className={grid2}>
-            <div className="space-y-2">
-              <Label htmlFor="sf-nad">Next Action Date</Label>
-              <Input id="sf-nad" type="date" value={f.nextActionDate} onChange={(e) => setField('nextActionDate', e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="sf-rem">Remarks</Label>
-              <Textarea id="sf-rem" className={taCompact} rows={2} value={f.remarks} onChange={(e) => setField('remarks', e.target.value)} />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="sf-rem">Remarks</Label>
+            <Textarea id="sf-rem" className={taCompact} rows={2} value={f.remarks} onChange={(e) => setField('remarks', e.target.value)} />
           </div>
 
           <DialogFooter>

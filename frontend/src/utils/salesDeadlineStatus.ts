@@ -17,10 +17,7 @@ export interface DeadlineStatusResult {
   showWarningIcon: boolean;
 }
 
-type DeadlineQuotation = Pick<
-  SalesOpportunity,
-  'workflowStatus' | 'quotationRef' | 'decisionExpectedBy' | 'nextActionDate'
->;
+type DeadlineQuotation = Pick<SalesOpportunity, 'workflowStatus' | 'quotationRef' | 'decisionExpectedBy'>;
 
 const BADGE_BASE = 'inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium';
 
@@ -79,7 +76,7 @@ function isTrackingDisabled(quotation: DeadlineQuotation): boolean {
 
 /**
  * Computes deadline tracking for open quotations.
- * Active deadline: nextActionDate if set, otherwise decisionExpectedBy.
+ * Active deadline: decisionExpectedBy.
  */
 export function getDeadlineStatus(
   quotation: DeadlineQuotation,
@@ -99,13 +96,9 @@ export function getDeadlineStatus(
     };
   }
 
-  const nextAction = parseDateOnly(quotation.nextActionDate);
   const decisionExpected = parseDateOnly(quotation.decisionExpectedBy);
-  const activeDate = nextAction ?? decisionExpected;
-  const activeDeadline =
-    (nextAction ? String(quotation.nextActionDate || '').trim() : '') ||
-    (decisionExpected ? String(quotation.decisionExpectedBy || '').trim() : '') ||
-    null;
+  const activeDate = decisionExpected;
+  const activeDeadline = decisionExpected ? String(quotation.decisionExpectedBy || '').trim() : null;
 
   if (!activeDate || !activeDeadline) {
     return { ...EMPTY_RESULT };

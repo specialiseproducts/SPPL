@@ -311,7 +311,8 @@ export default function SalesForecastingTab({
   };
 
   const openEdit = async (r: SalesOpportunity) => {
-    if (isQuotationLocked(r)) {
+    const teamApprovedEdit = showTeamModerationActions && r.workflowStatus === 'approved';
+    if (isQuotationLocked(r) && !teamApprovedEdit) {
       toast.error('Approved quotations cannot be edited');
       return;
     }
@@ -543,7 +544,9 @@ export default function SalesForecastingTab({
                               </Tooltip>
                             </>
                           )}
-                          {showEditAction && canEditRecords && canEditRow(r, userRole, currentEmployeeCode) && (
+                          {canEditRecords &&
+                            ((showEditAction && canEditRow(r, userRole, currentEmployeeCode)) ||
+                              (showTeamModerationActions && r.workflowStatus === 'approved')) && (
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button variant="ghost" size="icon" className="h-9 w-9 text-gray-600 hover:text-[#007BFF]" onClick={() => openEdit(r)}>
@@ -612,24 +615,17 @@ export default function SalesForecastingTab({
             setDetailRecord(null);
           }}
           record={detailRecord}
-          canModerate={privileged}
+          viewScope={viewScope}
           canEdit={
-            showEditAction &&
             !!detailRecord &&
             canEditRecords &&
-            canEditRow(detailRecord, userRole, currentEmployeeCode)
+            (viewScope === 'self'
+              ? isOwnQuotation(detailRecord, currentEmployeeCode) &&
+                (detailRecord.workflowStatus === 'draft' ||
+                  detailRecord.workflowStatus === 'pending_approval' ||
+                  detailRecord.workflowStatus === 'rejected')
+              : false)
           }
-          onApprove={async () => {
-            if (!detailRecord) return;
-            await approveMutation.mutateAsync(detailRecord.forecastId);
-          }}
-          onReject={async (remarks) => {
-            if (!detailRecord) return;
-            await rejectMutation.mutateAsync({
-              forecastId: detailRecord.forecastId,
-              remarks,
-            });
-          }}
           onEdit={() => {
             if (detailRecord) openEdit(detailRecord);
           }}

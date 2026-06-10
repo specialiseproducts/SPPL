@@ -1,5 +1,4 @@
-import { useState, type ReactNode } from 'react';
-import { CheckCircle2, XCircle } from 'lucide-react';
+import { type ReactNode } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -13,8 +12,8 @@ import { Badge } from '../ui/badge';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
-import { Separator } from '../ui/separator';
 import type { SalesOpportunity, SalesWorkflowStatus } from '../../types/salesForecast';
+import type { SalesForecastingViewScope } from '../SalesForecastingTab';
 
 const taRead = 'min-h-[72px] max-h-[100px] resize-none';
 
@@ -69,10 +68,8 @@ interface SalesForecastingDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   record: SalesOpportunity | null;
-  canModerate: boolean;
+  viewScope: SalesForecastingViewScope;
   canEdit: boolean;
-  onApprove: () => Promise<void>;
-  onReject: (remarks: string) => Promise<void>;
   onEdit: () => void;
 }
 
@@ -80,28 +77,17 @@ export default function SalesForecastingDetailModal({
   isOpen,
   onClose,
   record,
-  canModerate,
+  viewScope,
   canEdit,
-  onApprove,
-  onReject,
   onEdit,
 }: SalesForecastingDetailModalProps) {
-  const [rejectNotes, setRejectNotes] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const run = async (fn: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await fn();
-      onClose();
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (!record) return null;
 
-  const showModeration = canModerate && record.workflowStatus === 'pending_approval';
+  const isTeamView = viewScope === 'team';
+  const isOwnerPendingOrRejected =
+    !isTeamView &&
+    (record.workflowStatus === 'pending_approval' || record.workflowStatus === 'rejected');
+  const showEditInFooter = !isTeamView && canEdit && (isOwnerPendingOrRejected || record.workflowStatus === 'draft');
   const grid2 = 'grid grid-cols-1 gap-4 md:grid-cols-2';
 
   return (
@@ -137,7 +123,6 @@ export default function SalesForecastingDetailModal({
                 <ReadField label="Probability %" value={record.probabilityLabel || record.probabilityPercent} />
                 <ReadField label="Quotation Date" value={record.quotationDate} />
                 <ReadField label="Decision Expected By" value={record.decisionExpectedBy} />
-                <ReadField label="Next Action Date" value={record.nextActionDate} />
               </div>
             </div>
 
@@ -207,54 +192,15 @@ export default function SalesForecastingDetailModal({
           </div>
         </div>
 
-        <div className="shrink-0 space-y-3 border-t bg-background px-6 py-4">
-          {showModeration ? (
-            <div className="rounded-md border border-amber-200/80 bg-amber-50/80 p-3">
-              <p className="text-xs font-medium text-amber-900 sm:text-sm">Pending your decision</p>
-              <p className="mt-1 text-xs text-amber-900/80">Approve to finalize the quotation reference, or reject to return it to the owner.</p>
-              <Separator className="my-3 bg-amber-200/60" />
-              <div className="space-y-2">
-                <Label htmlFor="reject-remarks" className="text-xs">
-                  Rejection remarks <span className="font-normal text-muted-foreground">(optional)</span>
-                </Label>
-                <Textarea
-                  id="reject-remarks"
-                  rows={2}
-                  className="min-h-[72px] resize-y bg-white text-sm"
-                  value={rejectNotes}
-                  onChange={(e) => setRejectNotes(e.target.value)}
-                  placeholder="Reason for rejection…"
-                />
-              </div>
-            </div>
-          ) : null}
-
+        <div className="shrink-0 border-t bg-background px-6 py-4">
           <DialogFooter className="gap-2 sm:justify-end">
-            <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
+            <Button type="button" variant="outline" onClick={onClose}>
               Close
             </Button>
-            {canEdit ? (
-              <Button type="button" variant="outline" onClick={onEdit} disabled={busy}>
+            {showEditInFooter ? (
+              <Button type="button" variant="outline" onClick={onEdit}>
                 Edit
               </Button>
-            ) : null}
-            {showModeration ? (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="border-red-200 text-red-700 hover:bg-red-50"
-                  disabled={busy}
-                  onClick={() => run(() => onReject(rejectNotes))}
-                >
-                  <XCircle className="mr-2 h-4 w-4" />
-                  Reject
-                </Button>
-                <Button type="button" className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy} onClick={() => run(onApprove)}>
-                  <CheckCircle2 className="mr-2 h-4 w-4" />
-                  Approve
-                </Button>
-              </>
             ) : null}
           </DialogFooter>
         </div>

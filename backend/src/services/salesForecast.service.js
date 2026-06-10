@@ -11,6 +11,7 @@ import { logActivity } from '../utils/activityLogger.js';
 import { buildQuotationRef, indianFinancialYearLabel } from '../utils/salesQuotationRef.js';
 import log from '../utils/logger.js';
 import { ensureSalesMasterReady } from '../utils/salesMasterInit.js';
+import { sendRejectionNotification } from './salesQuotationNotificationService.js';
 import { parsePaginationOptions, toPaginatedResponse } from '../utils/dynamoPagination.js';
 import { toSalesOpportunityListDto } from '../utils/listDtos.js';
 import { sortSalesForecastsDesc } from '../utils/dynamoSort.js';
@@ -172,7 +173,6 @@ export function toPublicOpportunity(item) {
     technicalChallenges: row.technicalChallenges || '',
     keyDecisionCriteria: row.keyDecisionCriteria || '',
     followUpActionsRequired: row.followUpActionsRequired || '',
-    nextActionDate: row.nextActionDate || '',
     remarks: row.remarks || '',
     ownerEmployeeCode: row.ownerEmployeeCode || row.created_by_employee_code || '',
     ownerEmployeeName: row.ownerEmployeeName || row.employeeName || row.created_by_name || '',
@@ -233,6 +233,7 @@ export const getOpportunity = async (forecastId, authUser, effectiveRole) => {
 const BODY_BLOCKLIST = new Set([
   'mode',
   'forecastId',
+  'nextActionDate',
   'workflowStatus',
   'quotationRef',
   'quotationFy',
@@ -339,7 +340,6 @@ export const createOpportunity = async (body, authUser, effectiveRole) => {
     technicalChallenges: body.technicalChallenges ?? '',
     keyDecisionCriteria: body.keyDecisionCriteria ?? '',
     followUpActionsRequired: body.followUpActionsRequired ?? '',
-    nextActionDate: body.nextActionDate ?? '',
     remarks: body.remarks ?? '',
     approval_status: 'Pending',
     approved_by: '',
@@ -572,6 +572,10 @@ export const rejectOpportunity = async (forecastId, body, authUser, effectiveRol
   };
 
   const updated = await SalesForecastsModel.updateSalesForecast(forecastId, patch);
+
+  sendRejectionNotification(updated, patch.approval_comments).catch((err) => {
+    log.error('Rejection email failed', { forecastId, error: err?.message || err });
+  });
 
   await logActivity({
     actorEmployeeCode: authUser?.employeeCode || '',
