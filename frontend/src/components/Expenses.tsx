@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import MyExpensesTab from './expenses/MyExpensesTab';
 import AuditExpensesTab from './expenses/AuditExpensesTab';
 import ExpensesAdminDashboardTab from './expenses/ExpensesAdminDashboardTab';
 import type { User, UserRole } from '../App';
 import { isDeveloper, isAdmin, isSuperAdmin } from '../utils/accessControl';
+import { peekAuditExpenseViewState } from '../utils/auditExpenseNavigation';
 
 interface ExpensesProps {
   user: User;
@@ -20,7 +22,7 @@ function ExpensesIntro({ moduleRole }: { moduleRole: UserRole }) {
   if (dev) {
     blurb = 'Manage and track employee expenses (full access)';
   } else if (auditLayout) {
-    blurb = 'My Expenses: your own records. Audit Expenses: organization-wide review (UI preview).';
+    blurb = null;
   } else if (superLayout) {
     blurb = 'My Expenses: your own records. Admin Dashboard: analytics placeholders (APIs coming).';
   }
@@ -34,6 +36,10 @@ function ExpensesIntro({ moduleRole }: { moduleRole: UserRole }) {
 }
 
 export default function Expenses({ user, moduleRole }: ExpensesProps) {
+  const [adminActiveTab, setAdminActiveTab] = useState<'my-expenses' | 'audit'>(() =>
+    peekAuditExpenseViewState()?.activeTab === 'audit' ? 'audit' : 'my-expenses',
+  );
+
   const sharedTabProps = {
     userRole: moduleRole,
     currentUserName: user.name,
@@ -64,7 +70,7 @@ export default function Expenses({ user, moduleRole }: ExpensesProps) {
     return (
       <div className="space-y-6">
         <ExpensesIntro moduleRole={moduleRole} />
-        <Tabs defaultValue="my-expenses" className="w-full">
+        <Tabs value={adminActiveTab} onValueChange={setAdminActiveTab} className="w-full">
           <TabsList className="grid w-full max-w-lg grid-cols-2">
             <TabsTrigger value="my-expenses">My Expenses</TabsTrigger>
             <TabsTrigger value="audit">Audit Expenses</TabsTrigger>

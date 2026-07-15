@@ -7,7 +7,12 @@ import { getSignedFileUrl } from '../utils/s3SignedUrl.js';
 import { authenticateToken } from '../middleware/auth.middleware.js';
 import * as EmployeeModel from '../models/EmployeeMaster.js';
 import * as ExpenseDocumentsModel from '../models/ExpenseDocuments.js';
-import { canAccessAllRecords } from '../utils/accessControl.js';
+import {
+  canAccessAllRecords,
+  getEffectiveRole,
+  isAdmin,
+  isDeveloper,
+} from '../utils/accessControl.js';
 import { logActivity } from '../utils/activityLogger.js';
 
 const router = express.Router();
@@ -24,7 +29,11 @@ router.get('/file-url', (req, res, next) => {
       return res.status(400).json({ success: false, message: 'key is required' });
     }
     const role = req.user?.role || 'User';
-    if (!canAccessAllRecords(role)) {
+    const expensesRole = getEffectiveRole(req.user?.accessControl, 'expenses');
+    const canAccessExpenseFiles =
+      canAccessAllRecords(role) || isAdmin(expensesRole) || isDeveloper(expensesRole);
+
+    if (!canAccessExpenseFiles) {
       let authorized = false;
       const code = req.user?.employeeCode || '';
       if (String(key).startsWith('user-management/')) {
@@ -37,7 +46,12 @@ router.get('/file-url', (req, res, next) => {
         authorized = allowedUrls.some((url) => String(url).includes(String(key)));
       } else if (String(key).startsWith('expenses/')) {
         const docs = await ExpenseDocumentsModel.getDocumentsByExpenseId(String(req.query.expenseId || ''));
-        authorized = docs.some((doc) => doc?.fileUrl && String(doc.fileUrl).includes(String(key)) && doc?.created_by_employee_code === code);
+        authorized = docs.some(
+          (doc) =>
+            doc?.fileUrl &&
+            String(doc.fileUrl).includes(String(key)) &&
+            doc?.created_by_employee_code === code
+        );
       }
       if (!authorized) {
         return res.status(403).json({ success: false, message: 'Forbidden' });

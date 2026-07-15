@@ -28,6 +28,25 @@ function decodeExpenseRouteId(rawId) {
 }
 
 /**
+ * Full expense + documents for Audit Eye view.
+ * GET /api/expenses/:id/full
+ */
+export const getExpenseFullDetails = async (req, res, next) => {
+  try {
+    const id = decodeExpenseRouteId(req.params.id);
+    const data = await ExpenseService.getExpenseFullDetails(id, req.user, req.effectiveRole);
+
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    log.error('Get expense full details controller error:', error);
+    next(error);
+  }
+};
+
+/**
  * Get expense by ID
  * GET /api/expenses/:id
  */
@@ -42,6 +61,70 @@ export const getExpenseById = async (req, res, next) => {
     });
   } catch (error) {
     log.error('Get expense controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Organization-wide expense list for Audit Expenses tab.
+ * GET /api/expenses/audit
+ */
+export const getExpensesForAudit = async (req, res, next) => {
+  try {
+    const filters = {
+      employeeId: req.query.employeeId || req.query.employeeCode || '',
+      month: req.query.month || '',
+      year: req.query.year || '',
+    };
+    const options = {
+      limit: req.query.limit ?? DEFAULT_QUERY_LIMIT,
+      cursor: req.query.cursor,
+    };
+
+    const result = await ExpenseService.getExpensesForAudit(
+      filters,
+      options,
+      req.user,
+      req.effectiveRole
+    );
+
+    res.status(200).json({
+      success: true,
+      data: result.data,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    });
+  } catch (error) {
+    log.error('Get audit expenses controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Approve expense (audit)
+ * POST /api/expenses/:id/approve
+ */
+export const approveExpense = async (req, res, next) => {
+  try {
+    const id = decodeExpenseRouteId(req.params.id);
+    const updated = await ExpenseService.approveExpense(id, req.user, req.effectiveRole);
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    log.error('Approve expense controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Reject expense (audit)
+ * POST /api/expenses/:id/reject
+ */
+export const rejectExpense = async (req, res, next) => {
+  try {
+    const id = decodeExpenseRouteId(req.params.id);
+    const updated = await ExpenseService.rejectExpense(id, req.body, req.user, req.effectiveRole);
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    log.error('Reject expense controller error:', error);
     next(error);
   }
 };

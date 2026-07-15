@@ -29,6 +29,24 @@ export function parseDateKey(value) {
   return parsed;
 }
 
+/** Normalize any date input to YYYY-MM-DD for comparisons. */
+export function normalizeDateKey(value) {
+  const parsed = parseDateKey(value);
+  if (parsed) return dateKeyFromDate(parsed);
+
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+
+  const asDate = new Date(raw);
+  if (!Number.isNaN(asDate.getTime())) {
+    return dateKeyFromDate(
+      new Date(Date.UTC(asDate.getUTCFullYear(), asDate.getUTCMonth(), asDate.getUTCDate()))
+    );
+  }
+
+  return raw.length >= 10 ? raw.slice(0, 10) : raw;
+}
+
 export function dateKeyFromDate(date) {
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, '0');

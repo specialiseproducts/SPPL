@@ -14,7 +14,12 @@ import {
   EXPENSE_SUBCATEGORY_MAP,
 } from '../constants/expenseSubCategories.js';
 import { buildAuditFields } from '../utils/audit.js';
-import { canAccessAllExpenseRecords, isOwnedByUser } from '../utils/accessControl.js';
+import {
+  canAccessAllExpenseRecords,
+  isAdmin,
+  isDeveloper,
+  isOwnedByUser,
+} from '../utils/accessControl.js';
 import { withApprovalDefaults } from '../utils/approval.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
@@ -63,6 +68,11 @@ function normalizeSupportingDocumentLabel(value, hasFile) {
   if (t === 'no') return 'No';
   if (hasFile) return 'Yes';
   return 'No';
+}
+
+/** Admin/Developer audit roles may view any expense for detail/document preview. */
+function canViewExpenseForAudit(effectiveRole) {
+  return isAdmin(effectiveRole) || isDeveloper(effectiveRole);
 }
 
 function enrichExpenseRow(row) {
@@ -156,7 +166,12 @@ export const getExpenseById = async (expenseId, authUser = null, effectiveRole =
 
     const canonicalExpenseId = expense.expenseId;
 
-    if (authUser && !canAccessAllExpenseRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
+    if (
+      authUser &&
+      !canAccessAllExpenseRecords(effectiveRole) &&
+      !canViewExpenseForAudit(effectiveRole) &&
+      !isOwnedByUser(expense, authUser)
+    ) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;
@@ -173,6 +188,52 @@ export const getExpenseById = async (expenseId, authUser = null, effectiveRole =
     log.error('Error getting expense:', error);
     throw error;
   }
+};
+
+/**
+ * Full expense + documents for Audit Eye view (read-only).
+ * @returns {Promise<{ expense: Object, documents: Array }>}
+ */
+export const getExpenseFullDetails = async (expenseId, authUser = null, effectiveRole = 'User') => {
+  if (!expenseId) {
+    throw new Error('expenseId is required');
+  }
+
+  const expense = await ExpenseModel.getExpenseById(expenseId);
+  if (!expense) {
+    const err = new Error('Expense not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const canonicalExpenseId = expense.expenseId;
+
+  if (
+    authUser &&
+    !canAccessAllExpenseRecords(effectiveRole) &&
+    !canViewExpenseForAudit(effectiveRole) &&
+    !isOwnedByUser(expense, authUser)
+  ) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const documentsFromTable = await ExpenseDocumentsModel.getDocumentsByExpenseId(canonicalExpenseId);
+  const inlineDocuments = Array.isArray(expense.documents) ? expense.documents : [];
+  const documentSource = inlineDocuments.length > 0 ? inlineDocuments : documentsFromTable;
+  const documents = (documentSource || [])
+    .filter((row) => row && String(row.fileUrl || '').trim() !== '')
+    .map((row) => ({
+      documentId: row.documentId || '',
+      fileName: row.fileName || 'document',
+      fileUrl: String(row.fileUrl).trim(),
+    }));
+
+  return {
+    expense: enrichExpenseRow({ ...expense }),
+    documents,
+  };
 };
 
 /**
@@ -208,7 +269,9 @@ export const getExpenses = async (filters = {}, options = {}, authUser = null, e
       lastEvaluatedKey = page.lastEvaluatedKey;
     }
 
-    const withDocuments = await attachDocumentsForListRows(rows);
+    const withDocuments = options.skipDocumentHydration
+      ? rows
+      : await attachDocumentsForListRows(rows);
     const mapped = sortExpensesDesc(
       withDocuments.map((row) => toExpenseListDto(row, enrichExpenseRow))
     );
@@ -489,6 +552,22 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       ...updateData,
     };
 
+    const existingAuditStatus = String(
+      existing.auditStatus ?? existing.approval_status ?? 'Pending'
+    ).trim();
+    if (existingAuditStatus === 'Rejected') {
+      updatePayload.approval_status = 'Pending';
+      updatePayload.auditStatus = 'Pending';
+      updatePayload.approved_by = '';
+      updatePayload.approved_at = '';
+      updatePayload.rejected_by = '';
+      updatePayload.rejected_at = '';
+      updatePayload.auditReason = '';
+      updatePayload.approval_comments = '';
+      updatePayload.auditedBy = '';
+      updatePayload.auditedAt = '';
+    }
+
     delete updatePayload.employeeName;
     delete updatePayload.employeeId;
     delete updatePayload.employeeEmail;
@@ -559,7 +638,11 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
 
     if (trimText(updatePayload.supportingDocument).toLowerCase() === 'yes') {
       const hasNewDocs = Array.isArray(updatePayload.documents) && updatePayload.documents.length > 0;
-      const hasOldDocs = Array.isArray(existing.documents) && existing.documents.length > 0;
+      let hasOldDocs = Array.isArray(existing.documents) && existing.documents.length > 0;
+      if (!hasOldDocs) {
+        const tableDocs = await ExpenseDocumentsModel.getDocumentsByExpenseId(canonicalExpenseId);
+        hasOldDocs = (tableDocs || []).some((d) => d && String(d.fileUrl || '').trim() !== '');
+      }
       if (!hasNewDocs && !hasOldDocs) {
         throw new Error('Supporting document file is required when Supporting Document is Yes');
       }
@@ -646,6 +729,117 @@ export const deleteExpense = async (expenseId, userId, authUser = null, effectiv
   }
 };
 
+function assertCanModerateExpenseAudit(effectiveRole) {
+  if (!isAdmin(effectiveRole) && !isDeveloper(effectiveRole)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+/**
+ * Organization-wide expense list for Audit Expenses (Admin / Developer).
+ * Filters are applied in DynamoDB (employeeId, month, year).
+ */
+export const getExpensesForAudit = async (
+  filters = {},
+  options = {},
+  authUser = null,
+  effectiveRole = 'User'
+) => {
+  assertCanModerateExpenseAudit(effectiveRole);
+  const pagination = parsePaginationOptions({
+    limit: options.limit ?? DEFAULT_QUERY_LIMIT,
+    cursor: options.cursor ?? options.nextCursor,
+  });
+  const page = await ExpenseModel.queryExpensesForAuditPage(filters, pagination);
+  const mapped = sortExpensesDesc(
+    page.items.map((row) => toExpenseListDto(row, enrichExpenseRow))
+  );
+  return toPaginatedResponse(mapped, page.lastEvaluatedKey);
+};
+
+export const approveExpense = async (expenseId, authUser, effectiveRole) => {
+  assertCanModerateExpenseAudit(effectiveRole);
+  const existing = await ExpenseModel.getExpenseById(expenseId);
+  if (!existing) {
+    const err = new Error('Expense not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  const auditor = authUser?.fullName || authUser?.employeeCode || '';
+  const patch = {
+    approval_status: 'Approved',
+    auditStatus: 'Approved',
+    approved_by: auditor,
+    approved_at: now,
+    auditedBy: auditor,
+    auditedAt: now,
+    auditReason: '',
+    approval_comments: '',
+    rejected_by: '',
+    rejected_at: '',
+    updatedAt: now,
+    updated_at: now,
+  };
+
+  const updated = await ExpenseModel.updateExpense(existing.expenseId, patch);
+  await logActivity({
+    actorEmployeeCode: authUser?.employeeCode || '',
+    actorName: authUser?.fullName || '',
+    actorRole: authUser?.role || '',
+    module: 'expenses',
+    actionType: 'UPDATE',
+    targetEntity: 'expense',
+    targetId: existing.expenseId,
+    metadata: { action: 'audit_approve' },
+  });
+  return enrichExpenseRow(updated);
+};
+
+export const rejectExpense = async (expenseId, body, authUser, effectiveRole) => {
+  assertCanModerateExpenseAudit(effectiveRole);
+  const existing = await ExpenseModel.getExpenseById(expenseId);
+  if (!existing) {
+    const err = new Error('Expense not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const reason = String(body?.reason || body?.remarks || '').trim();
+  const now = new Date().toISOString();
+  const auditor = authUser?.fullName || authUser?.employeeCode || '';
+  const patch = {
+    approval_status: 'Rejected',
+    auditStatus: 'Rejected',
+    rejected_by: auditor,
+    rejected_at: now,
+    auditedBy: auditor,
+    auditedAt: now,
+    auditReason: reason,
+    approval_comments: reason,
+    approved_by: '',
+    approved_at: '',
+    updatedAt: now,
+    updated_at: now,
+  };
+
+  const updated = await ExpenseModel.updateExpense(existing.expenseId, patch);
+  await logActivity({
+    actorEmployeeCode: authUser?.employeeCode || '',
+    actorName: authUser?.fullName || '',
+    actorRole: authUser?.role || '',
+    module: 'expenses',
+    actionType: 'UPDATE',
+    targetEntity: 'expense',
+    targetId: existing.expenseId,
+    metadata: { action: 'audit_reject', reason },
+  });
+  return enrichExpenseRow(updated);
+};
+
 export const getExpenseDocuments = async (expenseId, authUser = null, effectiveRole = 'User') => {
   try {
     if (!expenseId) {
@@ -657,7 +851,12 @@ export const getExpenseDocuments = async (expenseId, authUser = null, effectiveR
       throw new Error('Expense not found');
     }
     const canonicalExpenseId = expense.expenseId;
-    if (authUser && !canAccessAllExpenseRecords(effectiveRole) && !isOwnedByUser(expense, authUser)) {
+    if (
+      authUser &&
+      !canAccessAllExpenseRecords(effectiveRole) &&
+      !canViewExpenseForAudit(effectiveRole) &&
+      !isOwnedByUser(expense, authUser)
+    ) {
       const err = new Error('Forbidden');
       err.statusCode = 403;
       throw err;

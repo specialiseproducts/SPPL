@@ -55,6 +55,10 @@ router.put(
 
 // Expense CRUD operations
 router.get('/', ExpenseController.getExpenses);
+router.get('/audit', ExpenseController.getExpensesForAudit);
+router.post('/:id/approve', ExpenseController.approveExpense);
+router.post('/:id/reject', ExpenseController.rejectExpense);
+router.get('/:id/full', ExpenseController.getExpenseFullDetails);
 router.get('/:id/documents', ExpenseController.getExpenseDocuments);
 router.get('/:id', ExpenseController.getExpenseById);
 router.post('/', uploadExpenseFile, ExpenseController.createExpense);

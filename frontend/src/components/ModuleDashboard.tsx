@@ -1,4 +1,4 @@
-import { BarChart3, DollarSign, Users, ShoppingCart, Building2, UserCog, ArrowRight, Activity } from 'lucide-react';
+import { BarChart3, DollarSign, Users, ShoppingCart, Building2, UserCog, ArrowRight, Activity, CalendarCheck2 } from 'lucide-react';
 import { Card } from './ui/card';
 
 interface ModuleDashboardProps {
@@ -13,6 +13,7 @@ interface ModuleCard {
   icon: typeof BarChart3;
   description: string;
   color: string;
+  iconBackground?: string;
   accessKey: string;
 }
 
@@ -58,6 +59,15 @@ const ALL_MODULES: ModuleCard[] = [
     accessKey: 'crm',
   },
   {
+    id: 'daily-planner',
+    name: 'Daily Planner',
+    icon: CalendarCheck2,
+    description: 'Plan daily tasks and track team progress',
+    color: '',
+    iconBackground: '#14B8A6',
+    accessKey: 'dailyPlanner',
+  },
+  {
     id: 'user-management',
     name: 'User Management',
     icon: UserCog,
@@ -85,8 +95,8 @@ export default function ModuleDashboard({
   if (showSystemMetrics) availableModules.push(SYSTEM_METRICS_CARD);
 
   return (
-    <div className="w-full">
-      <div className="grid grid-cols-1 gap-6 pb-20 md:grid-cols-2 lg:grid-cols-3">
+    <div className="w-full" style={{ paddingBottom: '7rem' }}>
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
         {availableModules.map((module) => {
           const Icon = module.icon;
           return (
@@ -98,6 +108,7 @@ export default function ModuleDashboard({
               <div className="p-8">
                 <div
                   className={`mb-6 flex h-16 w-16 items-center justify-center rounded-2xl ${module.color} transition-transform duration-300 group-hover:scale-110`}
+                  style={module.iconBackground ? { backgroundColor: module.iconBackground } : undefined}
                 >
                   <Icon className="h-8 w-8 text-white" />
                 </div>

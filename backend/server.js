@@ -22,8 +22,18 @@ import salesForecastRoutes from './src/routes/salesForecast.routes.js';
 import userRoutes from './src/routes/user.routes.js';
 import accessControlRoutes from './src/routes/accessControl.routes.js';
 import metricsRoutes from './src/routes/metrics.routes.js';
+import dailyPlannerRoutes from './src/routes/dailyPlanner.routes.js';
 import { initSalesMasterOnStartup } from './src/utils/salesMasterInit.js';
-import { initSalesQuotationScheduler } from './src/scheduler/salesQuotationScheduler.js';
+import { initDailyPlannerStorageOnStartup } from './src/utils/dailyPlannerStorageInit.js';
+import {
+  initSalesQuotationScheduler,
+  stopSalesQuotationScheduler,
+} from './src/scheduler/salesQuotationScheduler.js';
+import {
+  initPlanningRecognitionScheduler,
+  stopPlanningRecognitionScheduler,
+} from './src/scheduler/planningRecognitionScheduler.js';
+import { initEmailService } from './src/services/emailService.js';
 
 // Load environment variables
 dotenv.config();
@@ -75,6 +85,7 @@ app.use('/api/purchases', purchaseRoutes);
 app.use('/api/sales-forecasts', salesForecastRoutes);
 app.use('/api/access-control', accessControlRoutes);
 app.use('/api/metrics', metricsRoutes);
+app.use('/api/daily-planner', dailyPlannerRoutes);
 
 // 404 handler (must be after all routes)
 app.use(notFoundHandler);
@@ -88,17 +99,29 @@ app.listen(PORT, () => {
   log.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
   log.info(`Health check: http://localhost:${PORT}/health`);
   initSalesMasterOnStartup();
-  initSalesQuotationScheduler();
+  initDailyPlannerStorageOnStartup();
+  initEmailService()
+    .catch((err) => {
+      log.error('Email service startup verification error', err?.message || err);
+    })
+    .finally(() => {
+      initSalesQuotationScheduler();
+      initPlanningRecognitionScheduler();
+    });
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   log.info('SIGTERM signal received: closing HTTP server');
+  stopSalesQuotationScheduler();
+  stopPlanningRecognitionScheduler();
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   log.info('SIGINT signal received: closing HTTP server');
+  stopSalesQuotationScheduler();
+  stopPlanningRecognitionScheduler();
   process.exit(0);
 });
 

@@ -160,6 +160,124 @@ export const getAllExpenses = async (filters = {}, options = {}) => {
   return sorted;
 };
 
+function normalizeAuditMonth(month) {
+  if (month == null || String(month).trim() === '' || String(month).trim().toLowerCase() === 'all') {
+    return null;
+  }
+  return String(month).padStart(2, '0');
+}
+
+function normalizeAuditYear(year) {
+  if (year == null || String(year).trim() === '' || String(year).trim().toLowerCase() === 'all') {
+    return null;
+  }
+  return String(year).trim();
+}
+
+/** Build DynamoDB monthYear filter from audit month/year query params (stored as MM-YYYY). */
+export function buildAuditMonthYearFilter(month, year) {
+  const m = normalizeAuditMonth(month);
+  const y = normalizeAuditYear(year);
+  if (m && y) {
+    return { type: 'eq', value: `${m}-${y}` };
+  }
+  if (m) {
+    return { type: 'prefix', value: `${m}-` };
+  }
+  if (y) {
+    return { type: 'suffix', value: `-${y}` };
+  }
+  return null;
+}
+
+function appendFilterExpression(params, clause, values = {}) {
+  const next = { ...params };
+  next.FilterExpression = next.FilterExpression ? `${next.FilterExpression} AND ${clause}` : clause;
+  next.ExpressionAttributeValues = {
+    ...(next.ExpressionAttributeValues || {}),
+    ...values,
+  };
+  return next;
+}
+
+function applyAuditMonthYearFilter(params, monthYearFilter) {
+  if (!monthYearFilter) return params;
+  if (monthYearFilter.type === 'eq') {
+    return appendFilterExpression(params, 'monthYear = :auditMonthYear', {
+      ':auditMonthYear': monthYearFilter.value,
+    });
+  }
+  if (monthYearFilter.type === 'prefix') {
+    return appendFilterExpression(params, 'begins_with(monthYear, :auditMonthPrefix)', {
+      ':auditMonthPrefix': monthYearFilter.value,
+    });
+  }
+  return appendFilterExpression(params, 'contains(monthYear, :auditMonthSuffix)', {
+    ':auditMonthSuffix': monthYearFilter.value,
+  });
+}
+
+function applyNotDeletedFilter(params) {
+  return appendFilterExpression(
+    params,
+    '(attribute_not_exists(is_deleted) OR is_deleted = :notDeleted)',
+    { ':notDeleted': false }
+  );
+}
+
+async function scanExpensesAuditPage(filters = {}, pagination = {}) {
+  const paginationOpts = parsePaginationOptions(pagination);
+  const limit = paginationOpts.limit ?? 100;
+
+  let params = applyNotDeletedFilter({ TableName: TABLE_NAME, Limit: limit });
+  const employeeCode = String(filters.employeeId || filters.employeeCode || '').trim();
+  if (employeeCode) {
+    params = appendFilterExpression(
+      params,
+      '(created_by_employee_code = :auditEmp OR employeeId = :auditEmp)',
+      { ':auditEmp': employeeCode }
+    );
+  }
+  params = applyAuditMonthYearFilter(params, buildAuditMonthYearFilter(filters.month, filters.year));
+
+  if (paginationOpts.exclusiveStartKey) {
+    params.ExclusiveStartKey = paginationOpts.exclusiveStartKey;
+  }
+
+  const result = await dynamoDB.scan(params).promise();
+  const items = sortExpensesDesc((result.Items || []).filter(notDeletedFilter));
+  return {
+    items,
+    lastEvaluatedKey: result.LastEvaluatedKey || null,
+  };
+}
+
+/**
+ * Audit Expenses — server-side filtered, paginated list (no document hydration).
+ */
+export const queryExpensesForAuditPage = async (filters = {}, options = {}) => {
+  const pagination = parsePaginationOptions(options);
+  const employeeCode = String(filters.employeeId || filters.employeeCode || '').trim();
+  const monthYearFilter = buildAuditMonthYearFilter(filters.month, filters.year);
+
+  if (employeeCode) {
+    try {
+      let params = applyNotDeletedFilter(employeeExpenseQuery(employeeCode));
+      params = applyAuditMonthYearFilter(params, monthYearFilter);
+      const page = await runQueryPage(dynamoDB, params, pagination, notDeletedFilter);
+      return {
+        items: sortExpensesDesc(page.items),
+        lastEvaluatedKey: page.lastEvaluatedKey,
+      };
+    } catch (err) {
+      if (!isGsiMissingError(err)) throw err;
+      warnGsiFallback('Expenses.queryExpensesForAuditPage', err);
+    }
+  }
+
+  return scanExpensesAuditPage(filters, pagination);
+};
+
 /**
  * Create new expense
  * @param {Object} expenseData - Expense data
@@ -303,10 +421,12 @@ export const updateExpense = async (expenseId, updateData) => {
     ExpressionAttributeValues[`:${key}`] = cleanPayload[key];
   });
 
-  // always update timestamp
-  updateExpression += `${keys.length > 0 ? ', ' : ''}#updatedAt = :updatedAt`;
-  ExpressionAttributeNames['#updatedAt'] = 'updatedAt';
-  ExpressionAttributeValues[':updatedAt'] = new Date().toISOString();
+  // always update timestamp (skip if caller already included updatedAt in payload)
+  if (!Object.prototype.hasOwnProperty.call(cleanPayload, 'updatedAt')) {
+    updateExpression += `${keys.length > 0 ? ', ' : ''}#updatedAt = :updatedAt`;
+    ExpressionAttributeNames['#updatedAt'] = 'updatedAt';
+    ExpressionAttributeValues[':updatedAt'] = new Date().toISOString();
+  }
 
   const result = await dynamoDB.update({
     TableName: TABLES.EXPENSES,

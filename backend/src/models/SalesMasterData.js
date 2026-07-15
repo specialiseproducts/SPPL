@@ -87,7 +87,7 @@ export const listMasterValues = async (category, opts = {}) => {
  */
 export const listSimpleMasterAdmin = async (category) => {
   const cat = String(category || '').trim().toUpperCase();
-  if (cat === 'PRINCIPAL' || cat === 'PRINCIPAL_MAP' || cat === 'EXCHANGE_RATE') {
+  if (cat === 'PRINCIPAL' || cat === 'PRINCIPAL_MAP' || cat === 'ORGANIZATION_MAP' || cat === 'EXCHANGE_RATE') {
     return [];
   }
   const rows = sortByValue(await querySimpleMasterRows(cat));
@@ -381,6 +381,223 @@ export const upsertPrincipalModel = async ({
 
   await dynamoDB.put({ TableName: TABLE_NAME, Item: item }).promise();
   return toPrincipalModelDto(item);
+};
+
+/** Customer organizations — pk MASTER#ORGANIZATION_MAP, sk normalize(organizationName). */
+async function queryOrganizationMapRows({ activeOnly = true } = {}) {
+  const pk = MASTER_PK('ORGANIZATION_MAP');
+  const result = await dynamoDB
+    .query({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': pk },
+    })
+    .promise();
+  let rows = result.Items || [];
+  if (activeOnly) rows = rows.filter(isRowActive);
+  return sortByValue(rows);
+}
+
+export const listOrganizationMap = async (opts = {}) => {
+  const rows = await queryOrganizationMapRows({ activeOnly: opts.activeOnly !== false });
+  return rows.map((row) => ({
+    organizationName: String(row.organizationName || row.value || '').trim(),
+    address: String(row.address || '').trim(),
+    isActive: isRowActive(row),
+    sk: String(row.sk || ''),
+  }));
+};
+
+export const listOrganizationMapAdmin = async () => listOrganizationMap({ activeOnly: false });
+
+export const upsertOrganizationMapEntry = async ({
+  organizationName,
+  address,
+  isActive = true,
+  previousSk,
+} = {}) => {
+  const name = String(organizationName || '').trim();
+  const addr = String(address || '').trim();
+  if (!name || !addr) {
+    const err = new Error('Customer organization and address are required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const pk = MASTER_PK('ORGANIZATION_MAP');
+  const skNew = normalizeToken(name);
+  const now = new Date().toISOString();
+
+  if (previousSk && String(previousSk).trim().toLowerCase() !== skNew) {
+    await dynamoDB
+      .delete({ TableName: TABLE_NAME, Key: { pk, sk: String(previousSk).trim().toLowerCase() } })
+      .promise();
+  }
+
+  await dynamoDB
+    .put({
+      TableName: TABLE_NAME,
+      Item: {
+        pk,
+        sk: skNew,
+        organizationName: name,
+        address: addr,
+        value: name,
+        isActive: !!isActive,
+        updatedAt: now,
+        createdAt: now,
+      },
+    })
+    .promise();
+
+  return { organizationName: name, address: addr, isActive: !!isActive, sk: skNew };
+};
+
+/** Organization-scoped part numbers — pk MASTER#PART#<organizationId>, sk partId (uuid). */
+const PART_PK = (organizationId) =>
+  `MASTER#PART#${String(organizationId || '').trim().toLowerCase()}`;
+
+function toOrganizationPartDto(row) {
+  return {
+    partId: String(row.partId || row.sk || ''),
+    organizationId: String(row.organizationId || '').trim().toLowerCase(),
+    organizationName: String(row.organizationName || '').trim(),
+    partNumber: String(row.partNumber || '').trim(),
+    itemDescription: String(row.itemDescription || '').trim(),
+    isActive: isRowActive(row),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function queryOrganizationPartRows(organizationId) {
+  const pk = PART_PK(organizationId);
+  const result = await dynamoDB
+    .query({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': pk },
+    })
+    .promise();
+  return result.Items || [];
+}
+
+async function getOrganizationMapRowOrThrow(organizationId) {
+  const pk = MASTER_PK('ORGANIZATION_MAP');
+  const sk = String(organizationId || '').trim().toLowerCase();
+  if (!sk) {
+    const err = new Error('organizationId is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const got = await dynamoDB.get({ TableName: TABLE_NAME, Key: { pk, sk } }).promise();
+  if (!got.Item) {
+    const err = new Error('Customer organization not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return got.Item;
+}
+
+async function findDuplicatePartNumber(organizationId, partNumber, excludePartId) {
+  const norm = normalizeToken(partNumber);
+  if (!norm) return null;
+  const rows = await queryOrganizationPartRows(organizationId);
+  for (const row of rows) {
+    const id = String(row.partId || row.sk || '');
+    if (excludePartId && id === excludePartId) continue;
+    if (normalizeToken(row.partNumber) === norm) return row;
+  }
+  return null;
+}
+
+/**
+ * @param {string} organizationId — organization map sk (normalized organization name key)
+ * @param {{ activeOnly?: boolean }} [opts]
+ */
+export const listOrganizationParts = async (organizationId, opts = {}) => {
+  const activeOnly = opts.activeOnly !== false;
+  const orgRow = await getOrganizationMapRowOrThrow(organizationId);
+  const oid = String(organizationId).trim().toLowerCase();
+  let rows = await queryOrganizationPartRows(oid);
+  if (activeOnly) rows = rows.filter(isRowActive);
+  return rows
+    .map((row) =>
+      toOrganizationPartDto({
+        ...row,
+        organizationId: oid,
+        organizationName: row.organizationName || orgRow.organizationName,
+      })
+    )
+    .sort((a, b) =>
+      a.partNumber.localeCompare(b.partNumber, undefined, { sensitivity: 'base' })
+    );
+};
+
+export const upsertOrganizationPart = async ({
+  organizationId,
+  organizationName,
+  partNumber,
+  itemDescription,
+  isActive = true,
+  partId,
+} = {}) => {
+  const orgRow = await getOrganizationMapRowOrThrow(organizationId);
+  const oid = String(organizationId).trim().toLowerCase();
+  const oName = String(
+    organizationName || orgRow.organizationName || orgRow.value || ''
+  ).trim();
+  const pNum = String(partNumber || '').trim();
+  const desc = String(itemDescription || '').trim();
+  if (!pNum || !desc) {
+    const err = new Error('Part number and item description are required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const pk = PART_PK(oid);
+  const now = new Date().toISOString();
+  let sk = partId ? String(partId).trim() : '';
+  let createdAt = now;
+
+  if (sk) {
+    const existing = await dynamoDB.get({ TableName: TABLE_NAME, Key: { pk, sk } }).promise();
+    if (!existing.Item) {
+      const err = new Error('Part number record not found');
+      err.statusCode = 404;
+      throw err;
+    }
+    createdAt = existing.Item.createdAt || now;
+    const dup = await findDuplicatePartNumber(oid, pNum, sk);
+    if (dup) {
+      const err = new Error('Part number already exists for this customer organization');
+      err.statusCode = 409;
+      throw err;
+    }
+  } else {
+    const dup = await findDuplicatePartNumber(oid, pNum, null);
+    if (dup) {
+      const err = new Error('Part number already exists for this customer organization');
+      err.statusCode = 409;
+      throw err;
+    }
+    sk = uuidv4();
+  }
+
+  const item = {
+    pk,
+    sk,
+    partId: sk,
+    organizationId: oid,
+    organizationName: oName,
+    partNumber: pNum,
+    itemDescription: desc,
+    isActive: !!isActive,
+    createdAt,
+    updatedAt: now,
+  };
+
+  await dynamoDB.put({ TableName: TABLE_NAME, Item: item }).promise();
+  return toOrganizationPartDto(item);
 };
 
 /**

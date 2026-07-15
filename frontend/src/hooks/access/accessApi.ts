@@ -10,6 +10,7 @@ const MODULE_KEY_TO_LABEL: Record<string, ModuleName> = {
   purchases: 'Purchases',
   crm: 'CRM',
   userManagement: 'User Management',
+  dailyPlanner: 'Daily Planner',
 };
 
 const MODULE_LABEL_TO_KEY: Record<ModuleName, string> = {
@@ -19,6 +20,7 @@ const MODULE_LABEL_TO_KEY: Record<ModuleName, string> = {
   Purchases: 'purchases',
   CRM: 'crm',
   'User Management': 'userManagement',
+  'Daily Planner': 'dailyPlanner',
 };
 
 export function accessRuleToApiPayload(rule: AccessRule) {

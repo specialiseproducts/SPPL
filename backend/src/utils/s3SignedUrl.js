@@ -15,9 +15,10 @@ export function getSignedFileUrl(key) {
     throw new Error('key is required');
   }
 
-  const bucket =
-    process.env.AWS_S3_USER_MANAGEMENT_BUCKET_NAME ||
-    process.env.AWS_S3_BUCKET_NAME;
+  const bucket = cleanedKey.startsWith('expenses/')
+    ? process.env.AWS_S3_BUCKET_NAME
+    : process.env.AWS_S3_USER_MANAGEMENT_BUCKET_NAME ||
+      process.env.AWS_S3_BUCKET_NAME;
 
   if (!bucket) {
     throw new Error('S3 bucket is not configured');

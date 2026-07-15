@@ -4,6 +4,8 @@ import type {
   SalesMasterAdminItem,
   SalesPrincipalAdminRow,
   SalesPrincipalModelRow,
+  SalesOrganizationAdminRow,
+  SalesOrganizationPartRow,
 } from '../../types/salesForecast';
 import { apiFetch } from '../../services/api';
 import {
@@ -113,11 +115,25 @@ export async function fetchMasterAdminPrincipals(): Promise<SalesPrincipalAdminR
   return res?.data?.principals ?? [];
 }
 
+export async function fetchMasterAdminOrganizations(): Promise<SalesOrganizationAdminRow[]> {
+  const res = (await apiFetch('/api/sales-forecasts/master-admin/ORGANIZATION_MAP')) as {
+    data?: { organizations?: SalesOrganizationAdminRow[] };
+  };
+  return res?.data?.organizations ?? [];
+}
+
 export async function fetchMasterAdminModels(principalId: string): Promise<SalesPrincipalModelRow[]> {
   const res = (await apiFetch(
     `/api/sales-forecasts/master-admin/models?principalId=${encodeURIComponent(principalId)}`,
   )) as { data?: { models?: SalesPrincipalModelRow[] } };
   return res?.data?.models ?? [];
+}
+
+export async function fetchMasterAdminParts(organizationId: string): Promise<SalesOrganizationPartRow[]> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/master-admin/parts?organizationId=${encodeURIComponent(organizationId)}`,
+  )) as { data?: { parts?: SalesOrganizationPartRow[] } };
+  return res?.data?.parts ?? [];
 }
 
 /** Active models for a principal (quotation dropdowns). */
@@ -146,11 +162,29 @@ export function useMasterAdminPrincipalsQuery(enabled = true) {
   });
 }
 
+export function useMasterAdminOrganizationsQuery(enabled = true) {
+  return useQuery({
+    queryKey: salesQueryKeys.masterAdminOrganizations(),
+    queryFn: fetchMasterAdminOrganizations,
+    enabled,
+    ...queryDefaults.reference,
+  });
+}
+
 export function useMasterAdminModelsQuery(principalId: string, enabled: boolean) {
   return useQuery({
     queryKey: salesQueryKeys.masterAdminModels(principalId),
     queryFn: () => fetchMasterAdminModels(principalId),
     enabled: enabled && !!principalId.trim(),
+    ...queryDefaults.reference,
+  });
+}
+
+export function useMasterAdminPartsQuery(organizationId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: salesQueryKeys.masterAdminParts(organizationId),
+    queryFn: () => fetchMasterAdminParts(organizationId),
+    enabled: enabled && !!organizationId.trim(),
     ...queryDefaults.reference,
   });
 }
@@ -169,6 +203,7 @@ function invalidateBootstrapAndSlices(queryClient: ReturnType<typeof useQueryCli
   void queryClient.invalidateQueries({ queryKey: salesQueryKeys.bootstrap() });
   void queryClient.invalidateQueries({ queryKey: salesQueryKeys.masters() });
   void queryClient.invalidateQueries({ queryKey: salesQueryKeys.rates() });
+  void queryClient.invalidateQueries({ queryKey: salesQueryKeys.plannerOrganizations() });
 }
 
 /** Invalidate quotation dropdown masters after master-data admin changes. */

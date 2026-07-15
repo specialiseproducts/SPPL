@@ -3,6 +3,7 @@
  */
 
 import { formatDisplayDate } from '../utils/salesQuotationDates.js';
+import { sanitizeRejectionReason } from '../utils/salesQuotationEmailUtils.js';
 
 function productName(quotation) {
   return (
@@ -43,7 +44,7 @@ export function buildFollowUpReminderEmail(quotation, ownerDisplayName) {
   const principal = principalName(quotation);
   const greeting = ownerDisplayName || ownerName(quotation);
 
-  const subject = `Quotation 15 Day Follow-up Reminder: ${product} - ${customer}`;
+  const subject = `Quotation 15 Day Follow-up Reminder: ${principal} - ${customer}`;
   const text = [
     `Hello ${greeting},`,
     '',
@@ -51,9 +52,9 @@ export function buildFollowUpReminderEmail(quotation, ownerDisplayName) {
     '',
     'Quotation Details',
     '',
-    product,
-    customer,
-    principal,
+    `Product Name: ${product}`,
+    `Customer Name: ${customer}`,
+    `Principal Name: ${principal}`,
     '',
     'No updates have been recorded during the current follow-up period.',
     '',
@@ -69,15 +70,15 @@ export function buildDeadlineOwnerEmail(quotation, ownerDisplayName) {
   const principal = principalName(quotation);
   const greeting = ownerDisplayName || ownerName(quotation);
 
-  const subject = `Quotation Deadline Reminder: ${product} - ${customer}`;
+  const subject = `Quotation Deadline Reminder: ${principal} - ${customer}`;
   const text = [
     `Hello ${greeting},`,
     '',
     'This is a reminder that the quotation:',
     '',
-    product,
-    customer,
-    principal,
+    `Product Name: ${product}`,
+    `Customer Name: ${customer}`,
+    `Principal Name: ${principal}`,
     '',
     'has a Decision Expected By date of today.',
     '',
@@ -94,7 +95,7 @@ export function buildDeadlineAdminEmail(quotation) {
   const owner = ownerName(quotation);
   const deadlineDate = formatDisplayDate(quotation.decisionExpectedBy);
 
-  const subject = `[REMINDER] Quotation Deadline Today - ${product} - ${customer}`;
+  const subject = `[REMINDER] Quotation Deadline Today - ${principal} - ${customer}`;
   const text = [
     'Hello Admin,',
     '',
@@ -102,37 +103,39 @@ export function buildDeadlineAdminEmail(quotation) {
     '',
     'Quotation Details',
     '',
-    product,
-    customer,
-    principal,
-    owner,
+    `Product Name: ${product}`,
+    `Customer Name: ${customer}`,
+    `Principal Name: ${principal}`,
+    `Owner Name: ${owner}`,
     '',
     'Deadline Type:',
-    'Decision Expected By',
-    deadlineDate,
+    `Decision Expected By: ${deadlineDate}`,
     '',
     'Action Required:',
-    'Please ensure that the quotation owner follows up and updates the quotation status accordingly.',
+    'Please ensure that the quotation owner follows up and updates the quotation status accordingly.',  
   ].join('\n');
 
   return { subject, text };
 }
 
-export function buildOverdueOwnerEmail(quotation, overdueDays) {
+export function buildOverdueOwnerEmail(quotation, overdueDays, ownerDisplayName) {
   const product = productName(quotation);
   const customer = customerName(quotation);
   const principal = principalName(quotation);
+  const greeting = ownerDisplayName || ownerName(quotation);
   const deadlineDate = formatDisplayDate(quotation.decisionExpectedBy);
   const status = workflowLabel(quotation.workflowStatus || 'draft');
   const overdueLabel = overdueDays === 1 ? '1 day' : `${overdueDays} days`;
 
-  const subject = `URGENT: ${product} - ${customer}`;
+  const subject = `URGENT: ${principal} - ${customer}`;
   const text = [
-    product,
-    customer,
-    principal,
-    deadlineDate,
-    status,
+    `Hello ${greeting},`,
+    '',
+    `Product Name: ${product}`,
+    `Customer Name: ${customer}`,
+    `Principal Name: ${principal}`,
+    `Decision Expected By: ${deadlineDate}`,
+    `Status: ${status}`,
     `Overdue by ${overdueLabel}`,
     '',
     'Please update the quotation immediately.',
@@ -150,7 +153,7 @@ export function buildOverdueAdminEmail(quotation, overdueDays) {
   const status = workflowLabel(quotation.workflowStatus || 'draft');
   const overdueLabel = overdueDays === 1 ? '1 day' : `${overdueDays} days`;
 
-  const subject = `[URGENT] Quotation Overdue - ${product} - ${customer}`;
+  const subject = `[URGENT] Quotation Overdue - ${principal} - ${customer}`;
   const text = [
     'Hello Admin,',
     '',
@@ -158,16 +161,14 @@ export function buildOverdueAdminEmail(quotation, overdueDays) {
     '',
     'Quotation Details',
     '',
-    product,
-    customer,
-    principal,
-    owner,
+    `Product Name: ${product}`,
+    `Customer Name: ${customer}`,
+    `Principal Name: ${principal}`,
+    `Owner Name: ${owner}`,
     '',
     'Deadline Type',
-    'Decision Expected By',
-    deadlineDate,
-    'Current Status',
-    status,
+    `Decision Expected By: ${deadlineDate}`,
+    `Current Status: ${status}`,
     `Overdue by ${overdueLabel}`,
     '',
     'Action Required',
@@ -182,9 +183,9 @@ export function buildRejectionEmail(quotation, rejectionReason, ownerDisplayName
   const customer = customerName(quotation);
   const principal = principalName(quotation);
   const greeting = ownerDisplayName || ownerName(quotation);
-  const reason = String(rejectionReason || '').trim() || '—';
+  const reason = sanitizeRejectionReason(rejectionReason) || '—';
 
-  const subject = `Quotation Rejected: ${product} - ${customer}`;
+  const subject = `Quotation Rejected: ${principal} - ${customer}`;
   const text = [
     `Hello ${greeting},`,
     '',
@@ -192,9 +193,9 @@ export function buildRejectionEmail(quotation, rejectionReason, ownerDisplayName
     '',
     'Quotation Details',
     '',
-    product,
-    customer,
-    principal,
+    `Product Name: ${product}`,
+    `Customer Name: ${customer}`,
+    `Principal Name: ${principal}`,
     '',
     'Reason for Rejection:',
     reason,

@@ -8,7 +8,9 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "dynamodb:ensure-gsis": "node scripts/ensure-dynamodb-gsis.js",
-    "dynamodb:backfill-sales-gsi": "node scripts/backfill-sales-entity-type.js"
+    "dynamodb:ensure-daily-planner-tables": "node scripts/ensure-daily-planner-tables.js",
+    "dynamodb:backfill-sales-gsi": "node scripts/backfill-sales-entity-type.js",
+    "dynamodb:repair-planner-next-visit-status": "node scripts/repair-planner-next-visit-status.js"
   },
   "keywords": [
     "express",

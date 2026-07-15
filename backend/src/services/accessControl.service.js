@@ -3,7 +3,7 @@ import { logActivity } from '../utils/activityLogger.js';
 
 const GLOBAL_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User']);
 const OVERRIDE_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User', 'None']);
-const MODULES = new Set(['salesForecasting', 'expenses', 'payroll', 'purchases', 'crm', 'userManagement']);
+const MODULES = new Set(['salesForecasting', 'expenses', 'payroll', 'purchases', 'crm', 'userManagement', 'dailyPlanner']);
 
 function validatePayload(payload = {}) {
   if (!GLOBAL_ROLES.has(payload.globalRole)) {

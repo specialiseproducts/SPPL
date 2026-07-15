@@ -74,3 +74,9 @@ export function canExport(role: string) {
   return normalizeRole(role) !== 'None';
 }
 
+/** Daily Planner — team tabs (Team Daily Planner, Team Performance, Team Management). */
+export function canManageDailyPlannerTeam(role: string) {
+  const r = normalizeRole(role);
+  return isSuperAdmin(r) || isAdmin(r) || isDeveloper(r);
+}
+

@@ -46,9 +46,19 @@ export const TABLES = {
   PURCHASE_LINE_ITEMS: process.env.DYNAMODB_TABLE_PURCHASE_LINE_ITEMS || 'PurchaseLineItems',
   SALES_FORECASTS: process.env.DYNAMODB_TABLE_SALES_FORECASTS || 'SalesForecasts',
   SALES_MASTER_DATA: process.env.DYNAMODB_TABLE_SALES_MASTER_DATA || 'SalesMasterData',
+  SALES_PLANNER_EVENTS:
+    process.env.DYNAMODB_TABLE_SALES_PLANNER_EVENTS ||
+    process.env.DYNAMODB_TABLE_PLANNER_EVENTS ||
+    'planner_events',
   CURRENCY_RATES: process.env.DYNAMODB_TABLE_CURRENCY_RATES || 'CurrencyRates',
   EXPENSE_TRAVEL_RATE_SETTINGS:
     process.env.DYNAMODB_TABLE_EXPENSE_TRAVEL_RATE_SETTINGS || 'ExpenseTravelRateSettings',
+  DAILY_PLANNER_TASKS:
+    process.env.DYNAMODB_TABLE_DAILY_PLANNER_TASKS || 'DailyPlannerTasks',
+  DAILY_PLANNER_TEAM_MAPPINGS:
+    process.env.DYNAMODB_TABLE_DAILY_PLANNER_TEAM_MAPPINGS || 'DailyPlannerTeamMappings',
+  DAILY_PLANNER_PLANNING:
+    process.env.DYNAMODB_TABLE_DAILY_PLANNER_PLANNING || 'DailyPlannerPlanning',
   AUDIT_LOGS: process.env.DYNAMODB_TABLE_AUDIT_LOGS || 'AuditLogs',
 };
 

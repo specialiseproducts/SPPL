@@ -8,13 +8,19 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/t
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { toast } from 'sonner';
 import ExpenseFormModal from './ExpenseFormModal';
+import {
+  navigateToMyExpenseCreateReview,
+  navigateToMyExpenseEdit,
+  peekMyExpenseViewState,
+  saveMyExpenseViewState,
+  setMyExpenseCreateDraft,
+} from '../utils/myExpenseNavigation';
 import ExpenseImportModal from './ExpenseImportModal';
 import ExpenseRateSettingsModal, {
   type ExpenseTravelRateSettings,
 } from './ExpenseRateSettingsModal';
 import type { UserRole } from '../App';
 import { apiFetch } from '../services/api';
-import { isTravelCarOrBike } from '../utils/expenseAmountCalculation';
 import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
 import { fetchExpenseTravelRates } from '../hooks/expenses/expensesApi';
 import {
@@ -38,6 +44,11 @@ import {
 } from '../utils/accessControl';
 
 import type { ExpenseRecord } from '../types/expenses';
+import { ExpenseAuditStatusBadge } from './expenses/expenseAuditStatusBadge';
+import {
+  buildExpenseExportContext,
+  exportExpensesToExcel,
+} from '../utils/expenseExcelExport';
 
 export type { ExpenseRecord } from '../types/expenses';
 
@@ -90,18 +101,42 @@ function expenseDateSortKey(iso: string | undefined): number {
   return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
 }
 
-/** Copy + ascending date order for CSV export (UI list order unchanged). */
+/** Copy + ascending date order for export; same-date rows reversed within each group. */
 function sortExpensesForExport(rows: ExpenseRecord[]): ExpenseRecord[] {
-  return [...rows].sort((a, b) => expenseDateSortKey(a.date) - expenseDateSortKey(b.date));
+  const indexed = rows.map((row, index) => ({ row, index }));
+  indexed.sort((a, b) => {
+    const dateDiff = expenseDateSortKey(a.row.date) - expenseDateSortKey(b.row.date);
+    if (dateDiff !== 0) return dateDiff;
+    return b.index - a.index;
+  });
+  return indexed.map((item) => item.row);
 }
 
-function escapeCsvCell(value: string): string {
-  const s = String(value ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
+const myExpensesApprovedBadgeStyle = {
+  background: '#ECFDF3',
+  color: '#027A48',
+  borderRadius: '9999px',
+  padding: '4px 12px',
+  fontWeight: 500,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 'fit-content',
+  whiteSpace: 'nowrap',
+} as const;
+
+const myExpensesRejectedBadgeStyle = {
+  background: '#FEF3F2',
+  color: '#B42318',
+  borderRadius: '9999px',
+  padding: '4px 12px',
+  fontWeight: 500,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 'fit-content',
+  whiteSpace: 'nowrap',
+} as const;
 
 export default function ExpensesTab({
   userRole,
@@ -121,11 +156,16 @@ export default function ExpensesTab({
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isRateSettingsOpen, setIsRateSettingsOpen] = useState(false);
-  const [editingExpense, setEditingExpense] = useState<ExpenseRecord | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedEmployee, setSelectedEmployee] = useState<string>('all');
-  const [selectedMonth, setSelectedMonth] = useState<string>('all');
-  const [selectedYear, setSelectedYear] = useState<string>('all');
+  const [searchTerm, setSearchTerm] = useState(() => peekMyExpenseViewState()?.searchTerm ?? '');
+  const [selectedEmployee, setSelectedEmployee] = useState<string>(
+    () => peekMyExpenseViewState()?.selectedEmployee ?? 'all',
+  );
+  const [selectedMonth, setSelectedMonth] = useState<string>(
+    () => peekMyExpenseViewState()?.selectedMonth ?? 'all',
+  );
+  const [selectedYear, setSelectedYear] = useState<string>(
+    () => peekMyExpenseViewState()?.selectedYear ?? 'all',
+  );
 
   const debouncedSearch = useDebouncedValue(searchTerm, 300);
 
@@ -139,6 +179,15 @@ export default function ExpensesTab({
     const names = (employeesQuery.data ?? []).map((user) => user.name);
     return sanitizeSelectOptionsUnique(names);
   }, [employeesQuery.data]);
+
+  useEffect(() => {
+    const saved = peekMyExpenseViewState();
+    if (saved?.scrollY != null) {
+      requestAnimationFrame(() => {
+        window.scrollTo(0, saved.scrollY ?? 0);
+      });
+    }
+  }, []);
 
   useEffect(() => {
     if (expensesQuery.isError && expensesQuery.data === undefined) {
@@ -178,155 +227,30 @@ export default function ExpensesTab({
     }
   };
 
-  const handleCreateExpense = async (expense: ExpenseRecord) => {
-    try {
-      const travelCarBike = isTravelCarOrBike(expense.expenseHead, expense.subCategory ?? '');
-      const formData = new FormData();
-      formData.append('expenseHead', expense.expenseHead);
-      if (expense.subCategory) {
-        formData.append('subCategory', expense.subCategory);
-      }
-      formData.append('location', expense.location);
-      formData.append('purpose', expense.purpose);
-      if (!travelCarBike) {
-        formData.append('serviceProvider', expense.serviceProvider);
-        formData.append('billNumber', expense.billNumber);
-      }
-      formData.append('date', expense.date);
-      formData.append('amount', String(expense.amount));
-      formData.append('monthYear', expense.monthYear);
-      if (expense.fromLocation) {
-        formData.append('fromLocation', expense.fromLocation);
-      }
-      if (expense.toLocation) {
-        formData.append('toLocation', expense.toLocation);
-      }
-      if (expense.returnType) {
-        formData.append('returnType', expense.returnType);
-      }
-      if (expense.kilometers !== undefined && expense.kilometers !== null) {
-        formData.append('kilometers', String(expense.kilometers));
-      }
-      if (expense.stayDateFrom) {
-        formData.append('stayDateFrom', expense.stayDateFrom);
-      }
-      if (expense.stayDateTo) {
-        formData.append('stayDateTo', expense.stayDateTo);
-      }
-      if (expense.supportingDocument && !travelCarBike) {
-        formData.append('supportingDocument', expense.supportingDocument);
-      }
-      if (expense.fuelType) {
-        formData.append('fuelType', expense.fuelType);
-      }
-
-      if (expense.selectedFile) {
-        formData.append('file', expense.selectedFile);
-      }
-
-      const payload = await apiFetch('/api/expenses', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!payload.success) {
-        throw new Error('Create failed');
-      }
-
-      void invalidateExpensesList();
-      setIsFormModalOpen(false);
-      toast.success('Expense Record Created Successfully');
-    } catch (error) {
-      console.error('Create expense error:', error);
-      toast.error(getErrorMessage(error));
-    }
+  const handleReviewCreateExpense = (expense: ExpenseRecord) => {
+    saveMyExpenseViewState({
+      searchTerm,
+      selectedEmployee,
+      selectedMonth,
+      selectedYear,
+      scopeSelfOnly: Boolean(scopeSelfOnly),
+      scrollY: window.scrollY,
+    });
+    setMyExpenseCreateDraft(expense);
+    setIsFormModalOpen(false);
+    navigateToMyExpenseCreateReview();
   };
 
-  const handleEditExpense = async (expense: ExpenseRecord) => {
-    try {
-      const id = editingExpense?.expenseId;
-      if (!id) {
-        throw new Error('Missing expenseId');
-      }
-
-      const {
-        expenseHead,
-        subCategory,
-        location,
-        purpose,
-        serviceProvider,
-        billNumber,
-        amount,
-        date,
-        monthYear,
-        selectedFile,
-        fromLocation,
-        toLocation,
-        returnType,
-        kilometers,
-        stayDateFrom,
-        stayDateTo,
-      } = expense;
-
-      const travelCarBike = isTravelCarOrBike(expenseHead, subCategory ?? '');
-
-      const formData = new FormData();
-      formData.append('expenseHead', expenseHead);
-      if (subCategory) {
-        formData.append('subCategory', subCategory);
-      }
-      formData.append('location', location);
-      formData.append('purpose', purpose);
-      if (!travelCarBike) {
-        formData.append('serviceProvider', serviceProvider);
-        formData.append('billNumber', billNumber);
-      }
-      formData.append('amount', String(amount));
-      formData.append('date', date);
-      formData.append('monthYear', monthYear);
-      if (fromLocation) {
-        formData.append('fromLocation', fromLocation);
-      }
-      if (toLocation) {
-        formData.append('toLocation', toLocation);
-      }
-      if (returnType) {
-        formData.append('returnType', returnType);
-      }
-      if (kilometers !== undefined && kilometers !== null) {
-        formData.append('kilometers', String(kilometers));
-      }
-      if (stayDateFrom) {
-        formData.append('stayDateFrom', stayDateFrom);
-      }
-      if (stayDateTo) {
-        formData.append('stayDateTo', stayDateTo);
-      }
-      if (expense.supportingDocument && !travelCarBike) {
-        formData.append('supportingDocument', expense.supportingDocument);
-      }
-      if (expense.fuelType) {
-        formData.append('fuelType', expense.fuelType);
-      }
-
-      if (selectedFile) {
-        formData.append('file', selectedFile);
-      }
-
-      const payload = await apiFetch(`/api/expenses/${encodeURIComponent(id)}`, {
-        method: 'PUT',
-        body: formData,
-      });
-      if (!payload.success) {
-        throw new Error('Update failed');
-      }
-
-      void invalidateExpensesList();
-      setEditingExpense(null);
-      toast.success('Expense Record Updated Successfully');
-    } catch (error) {
-      console.error('Update expense error:', error);
-      toast.error(getErrorMessage(error));
-    }
+  const handleOpenEditExpense = (expense: ExpenseRecord) => {
+    saveMyExpenseViewState({
+      searchTerm,
+      selectedEmployee,
+      selectedMonth,
+      selectedYear,
+      scopeSelfOnly: Boolean(scopeSelfOnly),
+      scrollY: window.scrollY,
+    });
+    navigateToMyExpenseEdit(expense.expenseId);
   };
 
   const handleDeleteExpense = async (expenseId: string) => {
@@ -432,78 +356,37 @@ export default function ExpensesTab({
     [filteredExpenses]
   );
 
-  const handleExportData = () => {
+  const handleExportData = async () => {
     const rows = sortExpensesForExport(filteredExpenses);
     if (rows.length === 0) {
       toast.info('No expense rows to export for the current filters.');
       return;
     }
 
-    const headers = [
-      'Sr. #',
-      'Expense Head',
-      'Sub Category',
-      'Location',
-      'Purpose',
-      'From',
-      'To',
-      'Return',
-      'Kilometers (km)',
-      'Stay date (from)',
-      'Stay date (to)',
-      'Service Provider',
-      'Bill Number',
-      'Date',
-      'Amount (Rs)',
-      'Document URL',
-      'Supporting document',
-      'Fuel type',
-      ...(privileged ? ['Employee Name'] : []),
-      'Month-Year',
-    ];
+    const allApproved = rows.every(
+      (expense) => (expense.auditStatus ?? 'Pending') === 'Approved'
+    );
+    if (!allApproved) {
+      toast.error(
+        'Export failed. Some records are not Approved. All visible records must be Approved before exporting.'
+      );
+      return;
+    }
 
-    const lines: string[] = [headers.map(escapeCsvCell).join(',')];
-
-    rows.forEach((expense, index) => {
-      const docUrl =
-        expense.documents && expense.documents.length > 0
-          ? expense.documents[0].fileUrl
-          : '';
-      const cells = [
-        String(index + 1),
-        expense.expenseHead,
-        expense.subCategory?.trim() ?? '',
-        expense.location,
-        expense.purpose,
-        displayCell(expense.fromLocation),
-        displayCell(expense.toLocation),
-        displayCell(expense.returnType),
-        formatKm(expense.kilometers),
-        formatDateCell(expense.stayDateFrom),
-        formatDateCell(expense.stayDateTo),
-        expense.serviceProvider,
-        expense.billNumber,
-        formatDateCell(expense.date),
-        String(expense.amount),
-        docUrl,
-        expense.supportingDocument ??
-          (expense.documents && expense.documents.length > 0 ? 'Yes' : 'No'),
-        displayCell(expense.fuelType),
-        ...(privileged ? [expense.employeeName] : []),
-        expense.monthYear,
-      ];
-      lines.push(cells.map(escapeCsvCell).join(','));
-    });
-
-    const csv = `\uFEFF${lines.join('\n')}`;
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `expenses-export-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${rows.length} expense record(s)`);
+    try {
+      const context = buildExpenseExportContext(rows, {
+        privileged,
+        selectedEmployee,
+        selectedMonth,
+        selectedYear,
+        currentUserName,
+      });
+      await exportExpensesToExcel(rows, context);
+      toast.success(`Exported ${rows.length} expense record(s)`);
+    } catch (error) {
+      console.error('Expense export error:', error);
+      toast.error(getErrorMessage(error));
+    }
   };
 
   /** Legacy name from template download — same as CSV export (avoids stale JSX / hot-reload crashes). */
@@ -642,6 +525,7 @@ export default function ExpensesTab({
             <TableHeader>
               <TableRow className="bg-gray-50">
                 <TableHead className="whitespace-nowrap">Sr. #</TableHead>
+                <TableHead className="whitespace-nowrap">Status</TableHead>
                 <TableHead className="whitespace-nowrap">Expense Head</TableHead>
                 <TableHead className="whitespace-nowrap">Sub Category</TableHead>
                 <TableHead className="whitespace-nowrap">Location</TableHead>
@@ -667,20 +551,33 @@ export default function ExpensesTab({
             <TableBody>
               {isInitialLoading ? (
                 <TableRow>
-                  <TableCell colSpan={privileged ? 21 : 20} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={privileged ? 22 : 21} className="text-center py-8 text-gray-500">
                     Loading expense records…
                   </TableCell>
                 </TableRow>
               ) : showEmptyState ? (
                 <TableRow>
-                  <TableCell colSpan={privileged ? 21 : 20} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={privileged ? 22 : 21} className="text-center py-8 text-gray-500">
                     No expense records found
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredExpenses.map((expense, index) => (
+                filteredExpenses.map((expense, index) => {
+                  const auditStatus = expense.auditStatus ?? 'Pending';
+                  const showEditAction =
+                    canEditRecords && (auditStatus === 'Pending' || auditStatus === 'Rejected');
+                  return (
                   <TableRow key={expense.expenseId} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                     <TableCell className="whitespace-nowrap">{index + 1}</TableCell>
+                    <TableCell>
+                      {auditStatus === 'Approved' ? (
+                        <span style={myExpensesApprovedBadgeStyle}>Approved</span>
+                      ) : auditStatus === 'Rejected' ? (
+                        <span style={myExpensesRejectedBadgeStyle}>Rejected</span>
+                      ) : (
+                        <ExpenseAuditStatusBadge label={auditStatus} />
+                      )}
+                    </TableCell>
                     <TableCell>
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs bg-blue-100 text-blue-800">
                         {expense.expenseHead}
@@ -767,11 +664,11 @@ export default function ExpensesTab({
                     <TableCell className="whitespace-nowrap">{displayCell(expense.monthYear)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        {canEditRecords && (
+                        {showEditAction && (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <button
-                              onClick={() => setEditingExpense(expense)}
+                              onClick={() => handleOpenEditExpense(expense)}
                               className="text-[#1D4ED8] hover:text-[#1e40af] transition-colors"
                             >
                               <Edit className="w-5 h-5" />
@@ -800,7 +697,8 @@ export default function ExpensesTab({
                       </div>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -824,21 +722,10 @@ export default function ExpensesTab({
       {canCreateRecords && <ExpenseFormModal
         isOpen={isFormModalOpen}
         onClose={() => setIsFormModalOpen(false)}
-        onSubmit={handleCreateExpense}
+        onReview={handleReviewCreateExpense}
         isAdmin={privileged}
         currentEmployeeCode={currentEmployeeCode}
         currentUserName={currentUserName}
-      />}
-
-      {canEditRecords && <ExpenseFormModal
-        isOpen={!!editingExpense}
-        onClose={() => setEditingExpense(null)}
-        onSubmit={handleEditExpense}
-        isAdmin={privileged}
-        currentEmployeeCode={currentEmployeeCode}
-        currentUserName={currentUserName}
-        initialData={editingExpense || undefined}
-        isEdit={true}
       />}
 
       {canCreateRecords && <ExpenseImportModal

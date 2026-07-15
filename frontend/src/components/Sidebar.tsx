@@ -1,4 +1,4 @@
-import { TrendingUp, DollarSign, Users as UsersIcon, ShoppingCart, UserCog, FileText, ChevronLeft, ChevronRight, LayoutGrid, Activity } from 'lucide-react';
+import { TrendingUp, DollarSign, Users as UsersIcon, ShoppingCart, UserCog, FileText, ChevronLeft, ChevronRight, LayoutGrid, Activity, CalendarCheck } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from './ui/button';
 
@@ -9,6 +9,7 @@ export type ModuleName =
   | 'Purchases'
   | 'CRM'
   | 'User Management'
+  | 'Daily Planner'
   | 'System Metrics';
 
 interface SidebarProps {
@@ -31,6 +32,7 @@ const modules: Module[] = [
   { name: 'Payroll', icon: <FileText className="w-5 h-5" />, accessKey: 'payroll' },
   { name: 'Purchases', icon: <ShoppingCart className="w-5 h-5" />, accessKey: 'purchases' },
   { name: 'CRM', icon: <UsersIcon className="w-5 h-5" />, accessKey: 'crm' },
+  { name: 'Daily Planner', icon: <CalendarCheck className="w-5 h-5" />, accessKey: 'dailyPlanner' },
   { name: 'User Management', icon: <UserCog className="w-5 h-5" />, accessKey: 'userManagement' },
 ];
 
@@ -57,7 +59,7 @@ export default function Sidebar({
       className={`bg-white border-r border-gray-200 transition-all duration-300 flex flex-col flex-shrink-0 overflow-y-auto ${
         collapsed ? 'w-20' : 'w-64'
       }`}
-      style={{ height: 'calc(100vh - 4rem)' }}
+      style={{ height: 'calc(100vh - 4rem)', paddingLeft: 10 }}
       aria-label="Main navigation"
     >
       <div className="flex-1 py-6">

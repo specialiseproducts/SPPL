@@ -14,6 +14,9 @@ export const GSI_NAMES = {
   SALES_ENTITY_UPDATED: 'GSI_EntityUpdated',
   PURCHASE_HEADER: 'GSI_PurchaseHeader',
   EXPENSE_EMPLOYEE_UPDATED: 'GSI_EmployeeUpdated',
+  DAILY_PLANNER_EMPLOYEE_DATE: 'GSI_EmployeeDate',
+  DAILY_PLANNER_MANAGER_CODE: 'GSI_ManagerCode',
+  DAILY_PLANNER_EMPLOYEE_PLANNING: 'GSI_EmployeePlanning',
 };
 
 /** Index definitions passed to UpdateTable */
@@ -103,6 +106,59 @@ export const TABLE_GSI_DEFINITIONS = {
         KeySchema: [
           { AttributeName: 'created_by_employee_code', KeyType: 'HASH' },
           { AttributeName: 'updatedAt', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
+  DailyPlannerTasks: {
+    tableEnv: 'DYNAMODB_TABLE_DAILY_PLANNER_TASKS',
+    defaultName: 'DailyPlannerTasks',
+    attributeDefinitions: [
+      { AttributeName: 'plannerTaskId', AttributeType: 'S' },
+      { AttributeName: 'employeeCode', AttributeType: 'S' },
+      { AttributeName: 'date', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.DAILY_PLANNER_EMPLOYEE_DATE,
+        KeySchema: [
+          { AttributeName: 'employeeCode', KeyType: 'HASH' },
+          { AttributeName: 'date', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
+  DailyPlannerTeamMappings: {
+    tableEnv: 'DYNAMODB_TABLE_DAILY_PLANNER_TEAM_MAPPINGS',
+    defaultName: 'DailyPlannerTeamMappings',
+    attributeDefinitions: [
+      { AttributeName: 'mappingId', AttributeType: 'S' },
+      { AttributeName: 'managerCode', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.DAILY_PLANNER_MANAGER_CODE,
+        KeySchema: [{ AttributeName: 'managerCode', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
+  DailyPlannerPlanning: {
+    tableEnv: 'DYNAMODB_TABLE_DAILY_PLANNER_PLANNING',
+    defaultName: 'DailyPlannerPlanning',
+    attributeDefinitions: [
+      { AttributeName: 'planningRecordId', AttributeType: 'S' },
+      { AttributeName: 'employeeCode', AttributeType: 'S' },
+      { AttributeName: 'recordKey', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.DAILY_PLANNER_EMPLOYEE_PLANNING,
+        KeySchema: [
+          { AttributeName: 'employeeCode', KeyType: 'HASH' },
+          { AttributeName: 'recordKey', KeyType: 'RANGE' },
         ],
         Projection: { ProjectionType: 'ALL' },
       },

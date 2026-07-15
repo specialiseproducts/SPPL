@@ -7,6 +7,7 @@ import log from '../utils/logger.js';
 
 let transporter = null;
 let initAttempted = false;
+let verifyPromise = null;
 
 function getSmtpConfig() {
   const host = String(process.env.SMTP_HOST || '').trim();
@@ -21,11 +22,21 @@ function getSmtpConfig() {
   return { host, port, user, pass };
 }
 
-function getTransporter() {
-  if (transporter) return transporter;
-  if (initAttempted) return null;
+/** SES SMTP user is an IAM username — use verified sender email as FROM when needed. */
+function getFromAddress() {
+  const smtpFrom = String(process.env.SMTP_FROM || '').trim();
+  if (smtpFrom) return smtpFrom;
 
-  initAttempted = true;
+  const smtpUser = String(process.env.SMTP_USER || '').trim();
+  if (smtpUser.includes('@')) return smtpUser;
+
+  const adminEmail = String(process.env.ADMIN_EMAIL || '').trim();
+  if (adminEmail) return adminEmail;
+
+  return smtpUser;
+}
+
+function createTransporterInstance() {
   const config = getSmtpConfig();
   if (!config) {
     log.warn('Email service: SMTP not configured (SMTP_HOST, SMTP_USER, SMTP_PASS required)');
@@ -33,7 +44,7 @@ function getTransporter() {
   }
 
   try {
-    transporter = nodemailer.createTransport({
+    const tx = nodemailer.createTransport({
       host: config.host,
       port: config.port,
       secure: config.port === 465,
@@ -43,12 +54,60 @@ function getTransporter() {
       },
     });
     log.info('Email service: SMTP transporter initialized');
+    return tx;
   } catch (err) {
-    log.error('Email service: failed to initialize transporter', err?.message || err);
-    transporter = null;
+    log.error('Email service: failed to initialize transporter', {
+      error: err?.message || err,
+      stack: err?.stack,
+    });
+    return null;
   }
+}
 
+function getTransporter() {
+  if (transporter) return transporter;
+  if (initAttempted) return null;
+
+  initAttempted = true;
+  transporter = createTransporterInstance();
   return transporter;
+}
+
+/**
+ * Verify SMTP credentials at startup.
+ */
+export async function initEmailService() {
+  if (verifyPromise) return verifyPromise;
+
+  verifyPromise = (async () => {
+    const tx = getTransporter();
+    if (!tx) {
+      log.error('SMTP verification failed — transporter not available');
+      return false;
+    }
+
+    try {
+      await tx.verify();
+      log.info('SMTP verified successfully', { from: getFromAddress() });
+      return true;
+    } catch (err) {
+      log.error('SMTP verification failed', {
+        error: err?.message || err,
+        stack: err?.stack,
+      });
+      return false;
+    }
+  })();
+
+  return verifyPromise;
+}
+
+/** Collapse 3+ consecutive newlines to a single paragraph break; trim trailing whitespace. */
+function normalizeEmailText(text) {
+  return String(text)
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trimEnd();
 }
 
 /**
@@ -60,27 +119,46 @@ export async function sendEmail({ to, subject, text, html }) {
     .filter(Boolean);
 
   if (recipients.length === 0) {
+    log.error('Email send aborted — no recipients');
     return { ok: false, error: 'No recipients' };
   }
 
   const tx = getTransporter();
   if (!tx) {
+    log.error('Email send aborted — SMTP not configured');
     return { ok: false, error: 'SMTP not configured' };
   }
 
-  const from = String(process.env.SMTP_USER || '').trim();
+  const from = getFromAddress();
+
+  log.info('Attempting email send', {
+    FROM: from,
+    TO: recipients.join(', '),
+    SUBJECT: String(subject || '').trim(),
+  });
+
+  const normalizedText = normalizeEmailText(text);
 
   try {
     await tx.sendMail({
       from,
       to: recipients.join(', '),
       subject: String(subject || '').trim(),
-      text: String(text || ''),
+      text: normalizedText,
       html: html || undefined,
     });
+    log.info('Email sent successfully', { TO: recipients.join(', '), SUBJECT: String(subject || '').trim() });
     return { ok: true };
   } catch (err) {
-    log.error('Email send failed', { to: recipients, subject, error: err?.message || err });
+    log.error('Email send failed — full SMTP error', {
+      TO: recipients.join(', '),
+      SUBJECT: String(subject || '').trim(),
+      error: err?.message || err,
+      stack: err?.stack,
+      code: err?.code,
+      response: err?.response,
+      responseCode: err?.responseCode,
+    });
     return { ok: false, error: err?.message || String(err) };
   }
 }

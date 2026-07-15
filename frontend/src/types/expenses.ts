@@ -1,3 +1,5 @@
+export type ExpenseAuditDecision = 'Pending' | 'Approved' | 'Rejected';
+
 export interface ExpenseDocument {
   documentId?: string;
   fileName: string;
@@ -33,4 +35,8 @@ export interface ExpenseRecord {
   fuelType?: string;
   documents?: ExpenseDocument[];
   selectedFile?: File;
+  /** Audit decision from admin review; mirrors approval_status on the server */
+  auditStatus?: ExpenseAuditDecision;
+  /** Admin rejection reason shown when employee edits a rejected expense */
+  auditReason?: string;
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import LoginPage from './components/LoginPage';
 import Dashboard from './components/Dashboard';
 import { queryClient } from './lib/queryClient';
@@ -9,6 +9,10 @@ import { getEffectiveRole, hasModuleAccess } from './utils/accessControl';
 import ProfilePage from './components/ProfilePage';
 import type { UserMaster } from './components/UserCreationTab';
 import { isAdmin, isDeveloper } from './utils/accessControl';
+import AuditExpenseDetailPage from './components/expenses/AuditExpenseDetailPage';
+import MyExpenseEditPage from './components/expenses/MyExpenseEditPage';
+import { getAuditExpenseIdFromPath } from './utils/auditExpenseNavigation';
+import { getMyExpenseEditIdFromPath, isMyExpenseCreateReviewPath } from './utils/myExpenseNavigation';
 
 export type UserRole = 'Developer' | 'Admin' | 'Super Admin' | 'User' | 'Accountant' | 'None';
 
@@ -34,6 +38,28 @@ export default function App() {
     }
   });
   const [selectedEmployeeProfile, setSelectedEmployeeProfile] = useState<UserMaster | null>(null);
+  const [locationPath, setLocationPath] = useState(() => window.location.pathname);
+
+  useEffect(() => {
+    const onLocationChange = () => {
+      const path = window.location.pathname;
+      setLocationPath(path);
+      if (!getAuditExpenseIdFromPath(path) && !getMyExpenseEditIdFromPath(path) && !isMyExpenseCreateReviewPath(path)) {
+        try {
+          const mod = localStorage.getItem('sppl_selected_module');
+          if (mod) setSelectedModule(mod);
+        } catch {
+          // ignore
+        }
+      }
+    };
+    window.addEventListener('popstate', onLocationChange);
+    return () => window.removeEventListener('popstate', onLocationChange);
+  }, []);
+
+  const auditExpenseId = getAuditExpenseIdFromPath(locationPath);
+  const myExpenseCreateReview = isMyExpenseCreateReviewPath(locationPath);
+  const myExpenseEditId = getMyExpenseEditIdFromPath(locationPath);
 
   const handleLogin = async (employeeCode: string, password: string) => {
     await login(employeeCode, password);
@@ -94,6 +120,7 @@ export default function App() {
       purchases: hasModuleAccess('purchases', ac),
       crm: hasModuleAccess('crm', ac),
       userManagement: hasModuleAccess('userManagement', ac),
+      dailyPlanner: hasModuleAccess('dailyPlanner', ac),
     };
   }, [accessControl]);
 
@@ -106,6 +133,7 @@ export default function App() {
       purchases: getEffectiveRole('purchases', ac),
       crm: getEffectiveRole('crm', ac),
       userManagement: getEffectiveRole('userManagement', ac),
+      dailyPlanner: getEffectiveRole('dailyPlanner', ac),
     };
   }, [accessControl]);
 
@@ -143,7 +171,20 @@ export default function App() {
         <LoginPage onLogin={handleLogin} loading={loading} />
       ) : (
         <ProtectedRoute fallback={<LoginPage onLogin={handleLogin} loading={loading} />}>
-          {currentUser && isProfileSelected ? (
+          {currentUser && auditExpenseId ? (
+            <AuditExpenseDetailPage expenseId={auditExpenseId} />
+          ) : currentUser && myExpenseCreateReview ? (
+            <MyExpenseEditPage
+              mode="create"
+              currentUserName={currentUser.name}
+            />
+          ) : currentUser && myExpenseEditId ? (
+            <MyExpenseEditPage
+              mode="edit"
+              expenseId={myExpenseEditId}
+              currentUserName={currentUser.name}
+            />
+          ) : currentUser && isProfileSelected ? (
             <div className="p-6">
               <ProfilePage
                 employee={selectedEmployeeProfile}

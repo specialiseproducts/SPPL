@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -15,9 +15,12 @@ import type { SalesOpportunity } from '../../types/salesForecast';
 import type { ExchangeRatesMap } from '../../types/salesForecast';
 import type { UserMaster } from '../UserCreationTab';
 import { MasterCombobox } from './MasterCombobox';
+import { OrganizationCombobox } from './OrganizationCombobox';
+import { SearchableCombobox, comboboxOptionsWithCurrent } from './SearchableCombobox';
 import { computeInrValue, computeTotalValue } from '../../utils/salesForecastCalculations';
 import { principalNameToId } from '../../utils/principalId';
 import { useModelsByPrincipalQuery } from '../../hooks/sales/useSalesQueries';
+import { usePlannerOrganizationsQuery } from '../../hooks/sales/usePlannerQueries';
 import type { SalesPrincipalModelRow } from '../../types/salesForecast';
 
 export interface MastersState {
@@ -162,11 +165,41 @@ export default function SalesForecastingOpportunityFormModal({
 
   const principalId = useMemo(() => principalNameToId(f.principal), [f.principal]);
   const modelsQuery = useModelsByPrincipalQuery(principalId, isOpen);
+  const organizationsQuery = usePlannerOrganizationsQuery(isOpen);
   const principalModels = modelsQuery.data ?? [];
+
+  const activeOrganizations = useMemo(
+    () =>
+      (organizationsQuery.data ?? []).filter((o) => o.isActive),
+    [organizationsQuery.data],
+  );
+
+  const organizationAddressByName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const org of activeOrganizations) {
+      const name = org.organizationName.trim();
+      if (name) map.set(name.toLowerCase(), org.address.trim());
+    }
+    return map;
+  }, [activeOrganizations]);
+
+  const organizationOptions = useMemo(() => {
+    const names = activeOrganizations.map((o) => o.organizationName).filter(Boolean);
+    const current = f.customerOrganization.trim();
+    if (current && !names.some((n) => n.toLowerCase() === current.toLowerCase())) {
+      return [...names, current];
+    }
+    return names;
+  }, [activeOrganizations, f.customerOrganization]);
 
   const modelOptions = useMemo(
     () => principalModels.map((m) => m.modelNumber).filter(Boolean),
     [principalModels],
+  );
+
+  const modelOptionsForCombobox = useMemo(
+    () => comboboxOptionsWithCurrent(modelOptions, f.modelNumber),
+    [modelOptions, f.modelNumber],
   );
 
   const modelsByNumber = useMemo(() => {
@@ -201,6 +234,20 @@ export default function SalesForecastingOpportunityFormModal({
       productDescription: master?.productDescription ?? '',
     }));
   };
+
+  const handleCustomerOrganizationChange = (organizationName: string, address: string) => {
+    const trimmed = organizationName.trim();
+    setF((prev) => ({
+      ...prev,
+      customerOrganization: trimmed,
+      ...(address ? { contactAddress: address } : {}),
+    }));
+  };
+
+  const getOrganizationAddress = useCallback(
+    (name: string) => organizationAddressByName.get(name.trim().toLowerCase()) ?? '',
+    [organizationAddressByName],
+  );
 
   const totalValue = useMemo(
     () => computeTotalValue(f.unitPrice === '' ? null : Number(f.unitPrice), f.quantity === '' ? null : Number(f.quantity)),
@@ -255,12 +302,12 @@ export default function SalesForecastingOpportunityFormModal({
           }}
         >
           <div className={grid2}>
-            <MasterCombobox
+            <SearchableCombobox
               label="Status"
               value={f.opportunityStatus}
               onChange={(v) => setField('opportunityStatus', v)}
-              options={masters.STATUS}
-              placeholder="Select status"
+              options={comboboxOptionsWithCurrent(masters.STATUS, f.opportunityStatus)}
+              placeholder="Search or select status…"
             />
             <div />
           </div>
@@ -277,41 +324,40 @@ export default function SalesForecastingOpportunityFormModal({
           </div>
 
           <div className={grid2}>
-            <MasterCombobox
+            <SearchableCombobox
               label="Customer Segment"
               value={f.customerSegment}
               onChange={(v) => setField('customerSegment', v)}
-              options={masters.CUSTOMER_SEGMENT}
-              placeholder="Select segment"
+              options={comboboxOptionsWithCurrent(masters.CUSTOMER_SEGMENT, f.customerSegment)}
+              placeholder="Search or select segment…"
             />
-            <MasterCombobox
+            <SearchableCombobox
               label="Enquiry Type"
               value={f.enquiryType}
               onChange={(v) => setField('enquiryType', v)}
-              options={masters.ENQUIRY_TYPE}
-              placeholder="Select enquiry type"
+              options={comboboxOptionsWithCurrent(masters.ENQUIRY_TYPE, f.enquiryType)}
+              placeholder="Search or select enquiry type…"
             />
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="sf-org">Customer Organization</Label>
-            <Input
-              id="sf-org"
-              value={f.customerOrganization}
-              onChange={(e) => setField('customerOrganization', e.target.value)}
-              placeholder="Organization name"
-            />
-          </div>
+          <OrganizationCombobox
+            label="Customer Organization"
+            value={f.customerOrganization}
+            options={organizationOptions}
+            getAddressForOrganization={getOrganizationAddress}
+            onChange={handleCustomerOrganizationChange}
+            placeholder="Search or select organization…"
+          />
 
           <div className="space-y-3 rounded-md border border-border bg-muted/20 p-4">
             <h3 className="text-sm font-semibold text-[#212529]">Contact person</h3>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <MasterCombobox
+              <SearchableCombobox
                 label="Title"
                 value={f.contactTitle}
                 onChange={(v) => setField('contactTitle', v)}
-                options={masters.CONTACT_TITLE}
-                placeholder="Select title"
+                options={comboboxOptionsWithCurrent(masters.CONTACT_TITLE, f.contactTitle)}
+                placeholder="Search or select title…"
               />
               <div className="space-y-2">
                 <Label htmlFor="sf-cfn">Full name</Label>
@@ -342,19 +388,19 @@ export default function SalesForecastingOpportunityFormModal({
           </div>
 
           <div className={grid2}>
-            <MasterCombobox
+            <SearchableCombobox
               label="Principal"
               value={f.principal}
               onChange={handlePrincipalChange}
-              options={masters.PRINCIPAL}
-              placeholder="Select principal"
+              options={comboboxOptionsWithCurrent(masters.PRINCIPAL, f.principal)}
+              placeholder="Search or select principal…"
             />
-            <MasterCombobox
+            <SearchableCombobox
               label="Model Number"
               value={f.modelNumber}
               onChange={handleModelChange}
-              options={modelOptions}
-              placeholder={principalId ? 'Select model' : 'Select Principal First'}
+              options={modelOptionsForCombobox}
+              placeholder={principalId ? 'Search or select model…' : 'Select Principal First'}
               disabled={!principalId}
             />
           </div>
@@ -365,19 +411,19 @@ export default function SalesForecastingOpportunityFormModal({
           </div>
 
           <div className={grid2}>
-            <MasterCombobox
+            <SearchableCombobox
               label="Currency"
               value={f.currency}
               onChange={(v) => setField('currency', v)}
-              options={masters.CURRENCY}
-              placeholder="Select currency"
+              options={comboboxOptionsWithCurrent(masters.CURRENCY, f.currency)}
+              placeholder="Search or select currency…"
             />
-            <MasterCombobox
+            <SearchableCombobox
               label="Probability %"
               value={f.probabilityLabel}
               onChange={(v) => setField('probabilityLabel', v)}
-              options={masters.PROBABILITY_OPTION}
-              placeholder="Select probability"
+              options={comboboxOptionsWithCurrent(masters.PROBABILITY_OPTION, f.probabilityLabel)}
+              placeholder="Search or select probability…"
             />
           </div>
 
@@ -404,12 +450,12 @@ export default function SalesForecastingOpportunityFormModal({
           </div>
 
           <div className={grid2}>
-            <MasterCombobox
+            <SearchableCombobox
               label="Delivery (Days)"
               value={f.deliveryDays}
               onChange={(v) => setField('deliveryDays', v)}
-              options={masters.DELIVERY_DAYS}
-              placeholder="Select delivery"
+              options={comboboxOptionsWithCurrent(masters.DELIVERY_DAYS, f.deliveryDays)}
+              placeholder="Search or select delivery…"
             />
             <MasterCombobox
               label="Warranty"

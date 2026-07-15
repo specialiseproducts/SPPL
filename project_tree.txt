@@ -1,0 +1,299 @@
+.
+├── .cursor
+├── .DS_Store
+├── .gitignore
+├── .vscode
+│   └── launch.json
+├── backend
+│   ├── .env
+│   ├── .gitignore
+│   ├── data
+│   │   └── expense-travel-rates.json
+│   ├── docs
+│   │   ├── DYNAMODB_GSI_PHASE4.md
+│   │   ├── PHASE5_PAGINATION.md
+│   │   └── PHASE6_OBSERVABILITY.md
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── README.md
+│   ├── scripts
+│   │   ├── backfill-sales-entity-type.js
+│   │   └── ensure-dynamodb-gsis.js
+│   ├── server.js
+│   └── src
+│       ├── config
+│       │   ├── dynamodb.js
+│       │   ├── dynamodbIndexes.js
+│       │   ├── s3.js
+│       │   └── s3UserManagement.js
+│       ├── constants
+│       │   ├── expenseLegacy.js
+│       │   └── expenseSubCategories.js
+│       ├── controllers
+│       │   ├── accessControl.controller.js
+│       │   ├── auth.controller.js
+│       │   ├── employee.controller.js
+│       │   ├── expense.controller.js
+│       │   ├── expenseTravelRateSettings.controller.js
+│       │   ├── metrics.controller.js
+│       │   ├── purchase.controller.js
+│       │   └── salesForecast.controller.js
+│       ├── middleware
+│       │   ├── auth.middleware.js
+│       │   ├── errorHandler.js
+│       │   └── requestMetrics.middleware.js
+│       ├── models
+│       │   ├── AccessRules.js
+│       │   ├── AuditLogs.js
+│       │   ├── CurrencyRates.js
+│       │   ├── EmployeeMaster.js
+│       │   ├── ExpenseDocuments.js
+│       │   ├── Expenses.js
+│       │   ├── ExpenseTravelRateSettings.js
+│       │   ├── Notifications.js
+│       │   ├── PurchaseHeaders.js
+│       │   ├── PurchaseLineItems.js
+│       │   ├── SalesForecasts.js
+│       │   ├── SalesMasterData.js
+│       │   ├── UserAccessControl.js
+│       │   └── UsersAuth.js
+│       ├── routes
+│       │   ├── accessControl.routes.js
+│       │   ├── auth.routes.js
+│       │   ├── employee.routes.js
+│       │   ├── expense.routes.js
+│       │   ├── metrics.routes.js
+│       │   ├── purchase.routes.js
+│       │   ├── salesForecast.routes.js
+│       │   └── user.routes.js
+│       ├── scheduler
+│       │   └── salesQuotationScheduler.js
+│       ├── services
+│       │   ├── accessControl.service.js
+│       │   ├── auth.service.js
+│       │   ├── emailService.js
+│       │   ├── employee.service.js
+│       │   ├── expense.service.js
+│       │   ├── expenseTravelRateSettings.service.js
+│       │   ├── purchase.service.js
+│       │   ├── salesForecast.service.js
+│       │   ├── salesQuotationEmailTemplates.js
+│       │   └── salesQuotationNotificationService.js
+│       └── utils
+│           ├── accessControl.js
+│           ├── activityLogger.js
+│           ├── approval.js
+│           ├── audit.js
+│           ├── dynamoGsi.js
+│           ├── dynamoInstrument.js
+│           ├── dynamoPagination.js
+│           ├── dynamoSort.js
+│           ├── expenseLocationFields.js
+│           ├── expenseTravelAmount.js
+│           ├── expenseValidation.js
+│           ├── jwt.js
+│           ├── listDtos.js
+│           ├── logger.js
+│           ├── metricsStore.js
+│           ├── notifications.js
+│           ├── password.js
+│           ├── s3SignedUrl.js
+│           ├── salesMasterInit.js
+│           ├── salesQuotationDates.js
+│           ├── salesQuotationEmailUtils.js
+│           ├── salesQuotationRef.js
+│           ├── softDelete.js
+│           ├── structuredLog.js
+│           └── userPassword.util.js
+├── frontend
+│   ├── .env
+│   ├── index.html
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── public
+│   │   └── logo.png
+│   ├── README.md
+│   ├── src
+│   │   ├── .DS_Store
+│   │   ├── App.tsx
+│   │   ├── Attributions.md
+│   │   ├── components
+│   │   │   ├── AccessFormModal.tsx
+│   │   │   ├── AccessManagementTab.tsx
+│   │   │   ├── admin
+│   │   │   │   └── PerformanceDashboard.tsx
+│   │   │   ├── auth
+│   │   │   │   └── ProtectedRoute.tsx
+│   │   │   ├── CurrencyRateSettingsModal.tsx
+│   │   │   ├── Dashboard.tsx
+│   │   │   ├── EditLineItemModal.tsx
+│   │   │   ├── errors
+│   │   │   │   └── ModuleErrorBoundary.tsx
+│   │   │   ├── ExpenseFormModal.tsx
+│   │   │   ├── ExpenseImportModal.tsx
+│   │   │   ├── ExpenseRateSettingsModal.tsx
+│   │   │   ├── expenses
+│   │   │   │   ├── AuditExpenseDetailPage.tsx
+│   │   │   │   ├── AuditExpenseDetailView.tsx
+│   │   │   │   ├── AuditExpensesTab.tsx
+│   │   │   │   ├── expenseAuditStatusBadge.tsx
+│   │   │   │   ├── ExpensesAdminDashboardTab.tsx
+│   │   │   │   └── MyExpensesTab.tsx
+│   │   │   ├── Expenses.tsx
+│   │   │   ├── ExpensesTab.tsx
+│   │   │   ├── figma
+│   │   │   │   └── ImageWithFallback.tsx
+│   │   │   ├── ImportUsersModal.tsx
+│   │   │   ├── LoginPage.tsx
+│   │   │   ├── ModuleDashboard.tsx
+│   │   │   ├── Navbar.tsx
+│   │   │   ├── ProfilePage.tsx
+│   │   │   ├── PurchaseFormModal.tsx
+│   │   │   ├── PurchaseFormModalNew.tsx
+│   │   │   ├── PurchaseHeaderModal.tsx
+│   │   │   ├── PurchaseImportModal.tsx
+│   │   │   ├── PurchaseLineItemModal.tsx
+│   │   │   ├── PurchaseLineItemsScreen.tsx
+│   │   │   ├── Purchases.tsx
+│   │   │   ├── PurchasesTab.tsx
+│   │   │   ├── PurchasesTablesViews.tsx
+│   │   │   ├── PurchasesTabNew.tsx
+│   │   │   ├── sales
+│   │   │   │   ├── MasterCombobox.tsx
+│   │   │   │   ├── QuotationDeadlineBadge.tsx
+│   │   │   │   ├── SalesForecastingDetailModal.tsx
+│   │   │   │   ├── SalesForecastingOpportunityFormModal.tsx
+│   │   │   │   ├── SalesFormSection.tsx
+│   │   │   │   ├── SalesMasterDataPage.tsx
+│   │   │   │   └── SalesMasterSettingsModal.tsx
+│   │   │   ├── SalesForecasting.tsx
+│   │   │   ├── SalesForecastingTab.tsx
+│   │   │   ├── Sidebar.tsx
+│   │   │   ├── ui
+│   │   │   │   ├── accordion.tsx
+│   │   │   │   ├── alert-dialog.tsx
+│   │   │   │   ├── alert.tsx
+│   │   │   │   ├── aspect-ratio.tsx
+│   │   │   │   ├── avatar.tsx
+│   │   │   │   ├── badge.tsx
+│   │   │   │   ├── breadcrumb.tsx
+│   │   │   │   ├── button.tsx
+│   │   │   │   ├── calendar.tsx
+│   │   │   │   ├── card.tsx
+│   │   │   │   ├── carousel.tsx
+│   │   │   │   ├── chart.tsx
+│   │   │   │   ├── checkbox.tsx
+│   │   │   │   ├── collapsible.tsx
+│   │   │   │   ├── command.tsx
+│   │   │   │   ├── context-menu.tsx
+│   │   │   │   ├── dialog.tsx
+│   │   │   │   ├── drawer.tsx
+│   │   │   │   ├── dropdown-menu.tsx
+│   │   │   │   ├── form.tsx
+│   │   │   │   ├── hover-card.tsx
+│   │   │   │   ├── input-otp.tsx
+│   │   │   │   ├── input.tsx
+│   │   │   │   ├── label.tsx
+│   │   │   │   ├── menubar.tsx
+│   │   │   │   ├── ModuleLoadingFallback.tsx
+│   │   │   │   ├── navigation-menu.tsx
+│   │   │   │   ├── pagination.tsx
+│   │   │   │   ├── popover.tsx
+│   │   │   │   ├── progress.tsx
+│   │   │   │   ├── radio-group.tsx
+│   │   │   │   ├── resizable.tsx
+│   │   │   │   ├── scroll-area.tsx
+│   │   │   │   ├── select.tsx
+│   │   │   │   ├── separator.tsx
+│   │   │   │   ├── sheet.tsx
+│   │   │   │   ├── sidebar.tsx
+│   │   │   │   ├── skeleton.tsx
+│   │   │   │   ├── slider.tsx
+│   │   │   │   ├── sonner.tsx
+│   │   │   │   ├── switch.tsx
+│   │   │   │   ├── table.tsx
+│   │   │   │   ├── tabs.tsx
+│   │   │   │   ├── textarea.tsx
+│   │   │   │   ├── toggle-group.tsx
+│   │   │   │   ├── toggle.tsx
+│   │   │   │   ├── tooltip.tsx
+│   │   │   │   ├── use-mobile.ts
+│   │   │   │   ├── utils.ts
+│   │   │   │   └── VirtualizedTableBody.tsx
+│   │   │   ├── UserCreationTab.tsx
+│   │   │   ├── UserFormModal.tsx
+│   │   │   └── UserManagement.tsx
+│   │   ├── config
+│   │   │   └── apiBase.ts
+│   │   ├── constants
+│   │   │   ├── expenseLegacy.ts
+│   │   │   └── expenseSubCategories.ts
+│   │   ├── context
+│   │   │   └── AuthContext.tsx
+│   │   ├── guidelines
+│   │   │   └── Guidelines.md
+│   │   ├── hooks
+│   │   │   ├── access
+│   │   │   │   ├── accessApi.ts
+│   │   │   │   ├── accessQueryKeys.ts
+│   │   │   │   └── useAccessQueries.ts
+│   │   │   ├── employees
+│   │   │   │   ├── employeesQueryKeys.ts
+│   │   │   │   └── useEmployeesQuery.ts
+│   │   │   ├── expenses
+│   │   │   │   ├── expensesApi.ts
+│   │   │   │   ├── expensesQueryKeys.ts
+│   │   │   │   └── useExpensesQueries.ts
+│   │   │   ├── paginationTypes.ts
+│   │   │   ├── purchases
+│   │   │   │   ├── purchasesApi.ts
+│   │   │   │   ├── purchasesQueryKeys.ts
+│   │   │   │   └── usePurchasesQueries.ts
+│   │   │   ├── queryDefaults.ts
+│   │   │   ├── sales
+│   │   │   │   ├── salesApi.ts
+│   │   │   │   ├── SalesDataContext.tsx
+│   │   │   │   ├── salesQueryKeys.ts
+│   │   │   │   └── useSalesQueries.ts
+│   │   │   └── useDebouncedValue.ts
+│   │   ├── index.css
+│   │   ├── lib
+│   │   │   ├── observability
+│   │   │   │   ├── errorReporter.ts
+│   │   │   │   └── performance.ts
+│   │   │   └── queryClient.ts
+│   │   ├── main.tsx
+│   │   ├── services
+│   │   │   ├── api.ts
+│   │   │   └── authService.ts
+│   │   ├── styles
+│   │   │   └── globals.css
+│   │   ├── types
+│   │   │   ├── employeeListDto.ts
+│   │   │   ├── expenses.ts
+│   │   │   ├── salesForecast.ts
+│   │   │   └── userMaster.ts
+│   │   └── utils
+│   │       ├── accessControl.ts
+│   │       ├── auditExpenseCache.ts
+│   │       ├── auditExpenseNavigation.ts
+│   │       ├── expenseAmountCalculation.ts
+│   │       ├── expenseRowNormalize.ts
+│   │       ├── expenseTravelRatesFromApi.ts
+│   │       ├── mapApiEmployee.ts
+│   │       ├── paginatedFetch.ts
+│   │       ├── principalId.ts
+│   │       ├── queryLoading.ts
+│   │       ├── salesDeadlineStatus.ts
+│   │       ├── salesForecastCalculations.ts
+│   │       └── sanitizeSelectOptions.ts
+│   ├── tsconfig.json
+│   ├── tsconfig.node.json
+│   └── vite.config.ts
+├── package-lock.json
+├── package.json
+├── project_tree.txt
+├── push-to-github.sh
+└── setup-git.sh
+
+44 directories, 253 files

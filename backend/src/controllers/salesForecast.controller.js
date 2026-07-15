@@ -214,6 +214,40 @@ export const adminUpsertModel = async (req, res, next) => {
   }
 };
 
+export const adminUpsertOrganization = async (req, res, next) => {
+  try {
+    const data = await SalesForecastService.adminUpsertOrganizationMap(req.body || {}, req.effectiveRole);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Admin upsert organization error:', error);
+    next(error);
+  }
+};
+
+export const listPartsAdmin = async (req, res, next) => {
+  try {
+    const organizationId = req.query.organizationId;
+    const data = await SalesForecastService.listOrganizationPartsAdmin(
+      organizationId,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List organization parts admin error:', error);
+    next(error);
+  }
+};
+
+export const adminUpsertPart = async (req, res, next) => {
+  try {
+    const data = await SalesForecastService.adminUpsertOrganizationPart(req.body || {}, req.effectiveRole);
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Admin upsert part error:', error);
+    next(error);
+  }
+};
+
 export const getRates = async (req, res, next) => {
   try {
     const data = await SalesForecastService.getExchangeRatesForSales();

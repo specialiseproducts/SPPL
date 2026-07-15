@@ -89,3 +89,21 @@ export interface SalesPrincipalModelRow {
   createdAt?: string;
   updatedAt?: string;
 }
+
+export interface SalesOrganizationAdminRow {
+  organizationName: string;
+  address: string;
+  isActive: boolean;
+  sk: string;
+}
+
+export interface SalesOrganizationPartRow {
+  partId: string;
+  organizationId: string;
+  organizationName: string;
+  partNumber: string;
+  itemDescription: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}

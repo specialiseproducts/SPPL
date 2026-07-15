@@ -6,6 +6,12 @@ import { apiFetch } from '../services/api';
 import { toast } from 'sonner';
 import { Eye, EyeOff } from 'lucide-react';
 import type { UserMaster } from './UserCreationTab';
+import PlanningPerformanceCard from './dailyPlanner/PlanningPerformanceCard';
+import PlanningHistorySection from './dailyPlanner/PlanningHistorySection';
+import {
+  useEmployeePlanningProfileQuery,
+  useMyPlanningProfileQuery,
+} from '../hooks/dailyPlanner/useDailyPlannerQueries';
 
 type ProfileValue = string | undefined | null;
 
@@ -46,9 +52,23 @@ export default function ProfilePage({ onBack, employee, isSelfProfile = true }: 
   const { user, accessControl } = useAuth();
   const [photoFailed, setPhotoFailed] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  if (!user) return null;
 
   const profileEmployee = employee || null;
+  const employeeCode = String(
+    profileEmployee?.employeeCode ||
+      profileEmployee?.employee_code ||
+      user?.employeeCode ||
+      '',
+  ).trim();
+  const selfPlanningQuery = useMyPlanningProfileQuery(isSelfProfile && !!user && !!employeeCode);
+  const employeePlanningQuery = useEmployeePlanningProfileQuery(
+    employeeCode,
+    !isSelfProfile && !!user && !!employeeCode,
+  );
+  const planningProfileQuery = isSelfProfile ? selfPlanningQuery : employeePlanningQuery;
+
+  if (!user) return null;
+
   const effectiveProfile = {
     firstName: profileEmployee?.firstName || profileEmployee?.first_name || user.firstName,
     lastName: profileEmployee?.lastName || profileEmployee?.last_name || user.lastName,
@@ -239,6 +259,21 @@ export default function ProfilePage({ onBack, employee, isSelfProfile = true }: 
           </div>
         </Card>
       ))}
+
+      {employeeCode && !planningProfileQuery.isError ? (
+        <PlanningPerformanceCard
+          variant="profile"
+          record={planningProfileQuery.data?.currentMonth}
+          loading={planningProfileQuery.isLoading}
+        />
+      ) : null}
+
+      {employeeCode && !planningProfileQuery.isError ? (
+        <PlanningHistorySection
+          employeeCode={isSelfProfile ? 'me' : employeeCode}
+          enabled={!!employeeCode}
+        />
+      ) : null}
 
       <Card className="p-6">
         <h3 className="text-[#212529] mb-4">Access Control</h3>

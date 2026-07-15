@@ -1,5 +1,12 @@
-import { useState, useEffect, useMemo } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from './ui/dialog';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -25,19 +32,14 @@ import { apiFetch } from '../services/api';
 interface ExpenseFormModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (expense: ExpenseRecord) => void | Promise<void>;
+  onReview: (expense: ExpenseRecord) => void;
   isAdmin: boolean;
-  /** Reserved for future employee-scoped defaults */
   currentEmployeeCode?: string;
   currentUserName: string;
-  initialData?: ExpenseRecord;
-  isEdit?: boolean;
 }
 
-/** Radix Select requires `value` to match an item; use sentinel for "not chosen yet". */
 const SUB_CATEGORY_UNSET = '__unset__';
 const FUEL_TYPE_UNSET = '__fuel_unset__';
-
 const SUPPORTING_FILE_EXT = /\.(doc|docx|pdf|jpg|jpeg|png|xls|xlsx)$/i;
 
 const emptyForm = {
@@ -63,72 +65,22 @@ const emptyForm = {
 export default function ExpenseFormModal({
   isOpen,
   onClose,
-  onSubmit,
+  onReview,
   isAdmin: _privileged,
   currentUserName,
   currentEmployeeCode: _currentEmployeeCode,
-  initialData,
-  isEdit,
 }: ExpenseFormModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [travelRates, setTravelRates] = useState<ExpenseTravelRates | null>(null);
-
-  const expenseHeadOptions = useMemo(() => {
-    const base: string[] = [...EXPENSE_HEADS];
-    const legacy = initialData?.expenseHead;
-    if (legacy && !base.includes(legacy)) {
-      base.push(legacy);
-    }
-    return base;
-  }, [initialData?.expenseHead]);
-
   const [formData, setFormData] = useState({ ...emptyForm });
+  const prevShowTravelRef = useRef<boolean | null>(null);
 
   useEffect(() => {
-    if (initialData) {
-      const head = initialData.expenseHead;
-      const savedSub = initialData.subCategory?.trim() || '';
-      const options = getSubcategoriesForHead(head);
-      const subCategory =
-        savedSub && options.includes(savedSub) ? savedSub : SUB_CATEGORY_UNSET;
-      const sdRaw = initialData.supportingDocument;
-      const supportingDocument: 'Yes' | 'No' =
-        sdRaw === 'Yes' || sdRaw === 'No'
-          ? sdRaw
-          : initialData.documents && initialData.documents.length > 0
-            ? 'Yes'
-            : 'No';
-      const ft = initialData.fuelType?.trim();
-      const fuelType =
-        ft === 'Petrol/Diesel' || ft === 'Electric' ? ft : FUEL_TYPE_UNSET;
-
-      setFormData({
-        expenseHead: head,
-        subCategory,
-        location: initialData.location || '',
-        purpose: initialData.purpose || '',
-        serviceProvider: initialData.serviceProvider,
-        billNumber: initialData.billNumber,
-        date: initialData.date,
-        amount: initialData.amount.toString(),
-        monthYear: initialData.monthYear,
-        fromLocation: initialData.fromLocation ?? '',
-        toLocation: initialData.toLocation ?? '',
-        returnType: initialData.returnType ?? '',
-        kilometers:
-          initialData.kilometers !== undefined && initialData.kilometers !== null
-            ? String(initialData.kilometers)
-            : '',
-        stayDateFrom: initialData.stayDateFrom ?? '',
-        stayDateTo: initialData.stayDateTo ?? '',
-        supportingDocument,
-        fuelType,
-      });
-    } else {
-      setFormData({ ...emptyForm });
-    }
+    if (!isOpen) return;
+    setFormData({ ...emptyForm });
     setSelectedFile(null);
-  }, [initialData, isOpen]);
+    prevShowTravelRef.current = null;
+  }, [isOpen]);
 
   useEffect(() => {
     if (formData.supportingDocument === 'No') {
@@ -151,7 +103,7 @@ export default function ExpenseFormModal({
           setTravelRates(parsed);
         }
       } catch {
-        /* keep previous travelRates / null; submit path validates when needed */
+        /* submit path validates when needed */
       }
     })();
     return () => {
@@ -166,7 +118,6 @@ export default function ExpenseFormModal({
   const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
   const isAutoAmount = showTravelDetail;
 
-  /** Month-Year from main Date, or from stay range when Hotel_Booking → Self (single Date hidden). */
   useEffect(() => {
     let src = '';
     if (showHotelStay) {
@@ -195,7 +146,10 @@ export default function ExpenseFormModal({
   }, [showHotelStay]);
 
   useEffect(() => {
+    const wasTravelDetail = prevShowTravelRef.current;
+    prevShowTravelRef.current = showTravelDetail;
     if (!showTravelDetail) return;
+    if (wasTravelDetail !== false) return;
     setFormData((prev) => ({
       ...prev,
       serviceProvider: '',
@@ -211,8 +165,7 @@ export default function ExpenseFormModal({
     const rawKm = formData.kilometers.trim();
     const kmParsed = rawKm === '' ? 0 : parseFloat(rawKm);
     const kmSafe = Number.isFinite(kmParsed) ? kmParsed : 0;
-    const fuel =
-      formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType.trim() : '';
+    const fuel = formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType.trim() : '';
 
     const computed = computeTravelCarBikeRupeeAmount({
       expenseHead: formData.expenseHead,
@@ -303,14 +256,11 @@ export default function ExpenseFormModal({
     }
 
     if (!showTravelDetail && formData.supportingDocument === 'Yes') {
-      const hasNewFile = Boolean(selectedFile);
-      const hasExistingDoc =
-        Boolean(isEdit && initialData?.documents && initialData.documents.length > 0);
-      if (!hasNewFile && !hasExistingDoc) {
+      if (!selectedFile) {
         toast.error('Please attach a supporting document');
         return;
       }
-      if (selectedFile && !SUPPORTING_FILE_EXT.test(selectedFile.name)) {
+      if (!SUPPORTING_FILE_EXT.test(selectedFile.name)) {
         toast.error('Invalid file type. Allowed: DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX');
         return;
       }
@@ -340,8 +290,7 @@ export default function ExpenseFormModal({
       const rawKm = formData.kilometers.trim();
       const kmParsed = rawKm === '' ? 0 : parseFloat(rawKm);
       const kmSafe = Number.isFinite(kmParsed) ? kmParsed : 0;
-      const fuel =
-        formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType.trim() : '';
+      const fuel = formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType.trim() : '';
       amountNum = computeTravelCarBikeRupeeAmount({
         expenseHead: formData.expenseHead,
         subCategory: effectiveSubCategory,
@@ -361,21 +310,15 @@ export default function ExpenseFormModal({
       amountNum = parseFloat(formData.amount);
     }
 
-    const employeeName =
-      (isEdit && initialData?.employeeName) || currentUserName;
-
     const subCategoryResolved =
       formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
-
     const submissionDate = showHotelStay
       ? (formData.stayDateFrom || formData.stayDateTo || '').trim()
       : formData.date.trim();
-
-    const wantsSupportingFile =
-      !showTravelDetail && formData.supportingDocument === 'Yes';
+    const wantsSupportingFile = !showTravelDetail && formData.supportingDocument === 'Yes';
 
     const expense: ExpenseRecord = {
-      expenseId: isEdit && initialData ? initialData.expenseId : '',
+      expenseId: '',
       expenseHead: formData.expenseHead,
       subCategory: subCategoryResolved || undefined,
       location: formData.location.trim(),
@@ -384,70 +327,50 @@ export default function ExpenseFormModal({
       billNumber: showTravelDetail ? '' : formData.billNumber.trim(),
       date: submissionDate,
       amount: amountNum,
-      employeeName,
-      employeeId: initialData?.employeeId,
-      employeeEmail: initialData?.employeeEmail,
+      employeeName: currentUserName,
       monthYear: formData.monthYear,
-      createdAt: initialData?.createdAt || new Date().toISOString(),
+      createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       supportingDocument: showTravelDetail ? 'No' : formData.supportingDocument,
       selectedFile: wantsSupportingFile ? selectedFile || undefined : undefined,
-      documents: showTravelDetail
-        ? []
-        : !wantsSupportingFile
-          ? []
-          : selectedFile
-            ? [
-                {
-                  fileName: selectedFile.name,
-                  fileUrl: `/uploads/expenses/${selectedFile.name}`,
-                },
-              ]
-            : initialData?.documents || [],
+      documents: wantsSupportingFile && selectedFile
+        ? [{ fileName: selectedFile.name, fileUrl: `/uploads/expenses/${selectedFile.name}` }]
+        : [],
       ...(showTravelDetail
         ? {
             fromLocation: formData.fromLocation.trim(),
             toLocation: formData.toLocation.trim(),
             returnType: formData.returnType.trim(),
             kilometers: parseFloat(formData.kilometers) || 0,
-            fuelType:
-              formData.fuelType !== FUEL_TYPE_UNSET
-                ? formData.fuelType
-                : undefined,
+            fuelType: formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType : undefined,
           }
         : {}),
       ...(showHotelStay
-        ? {
-            stayDateFrom: formData.stayDateFrom,
-            stayDateTo: formData.stayDateTo,
-          }
+        ? { stayDateFrom: formData.stayDateFrom, stayDateTo: formData.stayDateTo }
         : {}),
     };
 
-    onSubmit(expense);
-
-    if (!isEdit) {
-      setFormData({ ...emptyForm });
-      setSelectedFile(null);
-    }
+    onReview(expense);
+    onClose();
   };
 
-  const subCategoryOptions = getSubcategoriesForHead(formData.expenseHead);
+  const subCategoryOptions = useMemo(
+    () => getSubcategoriesForHead(formData.expenseHead),
+    [formData.expenseHead],
+  );
   const subCategoryDisabled =
     !formData.expenseHead || !isCanonicalExpenseHead(formData.expenseHead);
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{isEdit ? 'Edit Expense Record' : 'Create New Expense Record'}</DialogTitle>
-          <DialogDescription>
-            {isEdit ? 'Update expense details below' : 'Fill in the expense details below'}
-          </DialogDescription>
+          <DialogTitle>Create New Expense Record</DialogTitle>
+          <DialogDescription>Fill in the expense details below</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="expense_head">Expense Head *</Label>
               <Select
@@ -472,7 +395,7 @@ export default function ExpenseFormModal({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {expenseHeadOptions.map((head) => (
+                  {EXPENSE_HEADS.map((head) => (
                     <SelectItem key={head} value={head}>
                       {head}
                     </SelectItem>
@@ -490,12 +413,12 @@ export default function ExpenseFormModal({
                 onValueChange={(value) => {
                   const wasTravelDetail = isTravelCarOrBike(
                     formData.expenseHead,
-                    effectiveSubCategory
+                    effectiveSubCategory,
                   );
                   const willTravelDetail = isTravelCarOrBike(formData.expenseHead, value);
                   const wasHotelSelf = isHotelBookingSelf(
                     formData.expenseHead,
-                    effectiveSubCategory
+                    effectiveSubCategory,
                   );
                   const willHotelSelf = isHotelBookingSelf(formData.expenseHead, value);
                   setFormData({
@@ -547,7 +470,7 @@ export default function ExpenseFormModal({
               </Select>
             </div>
 
-            {!showHotelStay && (
+            {!showHotelStay ? (
               <div className="space-y-2">
                 <Label htmlFor="date">Date *</Label>
                 <Input
@@ -557,7 +480,7 @@ export default function ExpenseFormModal({
                   onChange={(e) => setFormData({ ...formData, date: e.target.value })}
                 />
               </div>
-            )}
+            ) : null}
 
             <div className="space-y-2">
               <Label htmlFor="amount">Amount (Rs) *</Label>
@@ -572,16 +495,16 @@ export default function ExpenseFormModal({
                 readOnly={isAutoAmount}
                 className={isAutoAmount ? 'bg-gray-50' : ''}
               />
-              {isAutoAmount && (
+              {isAutoAmount ? (
                 <p className="text-xs text-gray-500">
                   Auto-calculated using configured travel rates.
                 </p>
-              )}
+              ) : null}
             </div>
           </div>
 
-          {showTravelDetail && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {showTravelDetail ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2 sm:col-span-2">
                 <Label htmlFor="fuel_type">Fuel Type *</Label>
                 <Select
@@ -640,10 +563,10 @@ export default function ExpenseFormModal({
                 />
               </div>
             </div>
-          )}
+          ) : null}
 
-          {showHotelStay && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {showHotelStay ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="stay_from">Date (from) *</Label>
                 <Input
@@ -663,9 +586,9 @@ export default function ExpenseFormModal({
                 />
               </div>
             </div>
-          )}
+          ) : null}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="location">Location *</Label>
               <Input
@@ -686,8 +609,8 @@ export default function ExpenseFormModal({
             </div>
           </div>
 
-          {!showTravelDetail && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {!showTravelDetail ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="service_provider">Service Provider Name *</Label>
                 <Input
@@ -697,7 +620,6 @@ export default function ExpenseFormModal({
                   onChange={(e) => setFormData({ ...formData, serviceProvider: e.target.value })}
                 />
               </div>
-
               <div className="space-y-2">
                 <Label htmlFor="bill_number">Bill Number *</Label>
                 <Input
@@ -708,17 +630,17 @@ export default function ExpenseFormModal({
                 />
               </div>
             </div>
-          )}
+          ) : null}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="monthYear">Month-Year (Auto-detected)</Label>
               <Input id="monthYear" value={formData.monthYear} disabled className="bg-gray-50" />
             </div>
           </div>
 
-          {!showTravelDetail && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {!showTravelDetail ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="supporting_doc_choice">Supporting Document *</Label>
                 <Select
@@ -737,10 +659,10 @@ export default function ExpenseFormModal({
                 </Select>
               </div>
             </div>
-          )}
+          ) : null}
 
-          {!showTravelDetail && formData.supportingDocument === 'Yes' && (
-            <div className="space-y-2 min-h-[5.5rem]">
+          {!showTravelDetail && formData.supportingDocument === 'Yes' ? (
+            <div className="min-h-[5.5rem] space-y-2">
               <Label htmlFor="supporting_file">Upload supporting document *</Label>
               <div className="flex items-center gap-3">
                 <input
@@ -751,7 +673,7 @@ export default function ExpenseFormModal({
                     const f = e.target.files?.[0] ?? null;
                     if (f && !SUPPORTING_FILE_EXT.test(f.name)) {
                       toast.error(
-                        'Invalid file type. Allowed: DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX'
+                        'Invalid file type. Allowed: DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX',
                       );
                       e.target.value = '';
                       setSelectedFile(null);
@@ -761,29 +683,19 @@ export default function ExpenseFormModal({
                   }}
                   className="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-sm file:font-medium"
                 />
-                <Upload className="w-5 h-5 text-gray-400 shrink-0" />
+                <Upload className="h-5 w-5 shrink-0 text-gray-400" />
               </div>
-              <p className="text-xs text-gray-500">
-                DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX
-              </p>
-              {selectedFile && <p className="text-xs text-green-600">✓ {selectedFile.name}</p>}
-              {isEdit &&
-                initialData?.documents &&
-                initialData.documents.length > 0 &&
-                !selectedFile && (
-                  <p className="text-xs text-gray-600">
-                    Current: {initialData.documents[0].fileName} (upload a new file to replace)
-                  </p>
-                )}
+              <p className="text-xs text-gray-500">DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX</p>
+              {selectedFile ? <p className="text-xs text-green-600">✓ {selectedFile.name}</p> : null}
             </div>
-          )}
+          ) : null}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
             <Button type="submit" className="bg-[#007BFF] hover:bg-[#0056b3]">
-              Save Record
+              Review Record
             </Button>
           </DialogFooter>
         </form>

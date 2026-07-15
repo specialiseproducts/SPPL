@@ -16,8 +16,14 @@ export const salesQueryKeys = {
   masterAdminList: (category: string) =>
     [...salesQueryKeys.all, 'master-admin', 'list', category] as const,
   masterAdminPrincipals: () => [...salesQueryKeys.all, 'master-admin', 'principals'] as const,
+  masterAdminOrganizations: () => [...salesQueryKeys.all, 'master-admin', 'organizations'] as const,
   masterAdminModels: (principalId: string) =>
     [...salesQueryKeys.all, 'master-admin', 'models', principalId] as const,
+  masterAdminParts: (organizationId: string) =>
+    [...salesQueryKeys.all, 'master-admin', 'parts', organizationId] as const,
   modelsByPrincipal: (principalId: string, activeOnly: boolean) =>
     [...salesQueryKeys.all, 'models', principalId, activeOnly] as const,
+  plannerOrganizations: () => [...salesQueryKeys.all, 'planner', 'organizations'] as const,
+  plannerMonth: (year: number, month: number, employeeCode?: string) =>
+    [...salesQueryKeys.all, 'planner', 'month', year, month, employeeCode || 'self'] as const,
 };

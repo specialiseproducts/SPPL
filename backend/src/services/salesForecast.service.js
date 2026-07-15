@@ -12,6 +12,7 @@ import { buildQuotationRef, indianFinancialYearLabel } from '../utils/salesQuota
 import log from '../utils/logger.js';
 import { ensureSalesMasterReady } from '../utils/salesMasterInit.js';
 import { sendRejectionNotification } from './salesQuotationNotificationService.js';
+import { resolveOwnerCode, sanitizeRejectionReason } from '../utils/salesQuotationEmailUtils.js';
 import { parsePaginationOptions, toPaginatedResponse } from '../utils/dynamoPagination.js';
 import { toSalesOpportunityListDto } from '../utils/listDtos.js';
 import { sortSalesForecastsDesc } from '../utils/dynamoSort.js';
@@ -567,15 +568,34 @@ export const rejectOpportunity = async (forecastId, body, authUser, effectiveRol
     approval_status: 'Rejected',
     rejected_by: authUser?.fullName || authUser?.employeeCode || '',
     rejected_at: now,
-    approval_comments: String(body?.remarks || body?.reason || '').trim(),
+    approval_comments: sanitizeRejectionReason(String(body?.remarks || body?.reason || '')),
     updatedAt: now,
   };
 
   const updated = await SalesForecastsModel.updateSalesForecast(forecastId, patch);
 
-  sendRejectionNotification(updated, patch.approval_comments).catch((err) => {
-    log.error('Rejection email failed', { forecastId, error: err?.message || err });
-  });
+  const rejectionReason = patch.approval_comments;
+  const ownerCode = resolveOwnerCode(updated);
+  log.info('Reject email triggered', { forecastId, ownerCode, reason: rejectionReason });
+
+  try {
+    const emailResult = await sendRejectionNotification(updated, rejectionReason);
+    if (emailResult.ok) {
+      log.info('Reject email success', { forecastId });
+    } else {
+      log.error('Reject email failed', {
+        forecastId,
+        error: emailResult.error,
+        skipped: emailResult.skipped || false,
+      });
+    }
+  } catch (err) {
+    log.error('Reject email failed', {
+      forecastId,
+      error: err?.message || err,
+      stack: err?.stack,
+    });
+  }
 
   await logActivity({
     actorEmployeeCode: authUser?.employeeCode || '',
@@ -648,6 +668,9 @@ export const listMasterAdminCategory = async (category, effectiveRole) => {
   if (cat === 'PRINCIPAL_MAP' || cat === 'PRINCIPALS') {
     return { principals: await SalesMasterDataModel.listPrincipalMapAdmin() };
   }
+  if (cat === 'ORGANIZATION_MAP' || cat === 'ORGANIZATIONS') {
+    return { organizations: await SalesMasterDataModel.listOrganizationMapAdmin() };
+  }
   return { items: await SalesMasterDataModel.listSimpleMasterAdmin(cat) };
 };
 
@@ -698,6 +721,44 @@ export const adminUpsertPrincipalModel = async (body, effectiveRole) => {
   assertCanModerate(effectiveRole);
   await ensureSalesMasterReady();
   const row = await SalesMasterDataModel.upsertPrincipalModel(body || {});
+  return row;
+};
+
+export const adminUpsertOrganizationMap = async (body, effectiveRole) => {
+  assertCanModerate(effectiveRole);
+  await ensureSalesMasterReady();
+  return SalesMasterDataModel.upsertOrganizationMapEntry(body || {});
+};
+
+export const listOrganizationParts = async (organizationId, opts = {}) => {
+  if (!String(organizationId || '').trim()) {
+    const err = new Error('organizationId query parameter is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  await ensureSalesMasterReady();
+  const parts = await SalesMasterDataModel.listOrganizationParts(organizationId, opts);
+  return { parts };
+};
+
+export const listOrganizationPartsAdmin = async (organizationId, effectiveRole) => {
+  assertCanModerate(effectiveRole);
+  if (!String(organizationId || '').trim()) {
+    const err = new Error('organizationId query parameter is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  await ensureSalesMasterReady();
+  const parts = await SalesMasterDataModel.listOrganizationParts(organizationId, {
+    activeOnly: false,
+  });
+  return { parts };
+};
+
+export const adminUpsertOrganizationPart = async (body, effectiveRole) => {
+  assertCanModerate(effectiveRole);
+  await ensureSalesMasterReady();
+  const row = await SalesMasterDataModel.upsertOrganizationPart(body || {});
   return row;
 };
 
