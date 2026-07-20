@@ -2,6 +2,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { queryDefaults } from '../queryDefaults';
 import { measureAsync } from '../../lib/observability/performance';
 import {
+  fetchAuditEmployeeDirectory,
   fetchAuditExpensesFiltered,
   fetchExpensesPage,
   fetchExpenseTravelRates,
@@ -77,27 +78,11 @@ export function useAuditExpensesFilteredQuery(
           return cached;
         }
 
-        const isWideOpen =
-          filters.employeeId === 'all' && filters.month === 'all' && filters.year === 'all';
-
-        if (isWideOpen) {
-          const page = await fetchAuditExpensesFiltered(filters);
-          const entry = { pages: page.data, nextCursor: page.nextCursor };
-          setAuditCacheEntry(cacheKey, entry);
-          return entry;
-        }
-
-        let rows: import('../../types/expenses').ExpenseRecord[] = [];
-        let cursor: string | undefined;
-        let nextCursor: string | null = null;
-        do {
-          const page = await fetchAuditExpensesFiltered(filters, cursor);
-          rows = rows.concat(page.data);
-          nextCursor = page.nextCursor;
-          cursor = page.nextCursor ?? undefined;
-        } while (cursor);
-
-        const entry = { pages: rows, nextCursor: null };
+        // Always fetch a single page. Further pages load via "Load more expenses"
+        // (fetchNextAuditFilteredPage). Eagerly draining every cursor for large
+        // employees blocked the table for minutes/hours.
+        const page = await fetchAuditExpensesFiltered(filters);
+        const entry = { pages: page.data, nextCursor: page.nextCursor };
         setAuditCacheEntry(cacheKey, entry);
         return entry;
       }),
@@ -122,6 +107,15 @@ export async function fetchNextAuditFilteredPage(
 /** @deprecated Prefer useExpensesInfiniteQuery */
 export function useExpensesListQuery() {
   return useExpensesListRows();
+}
+
+/** Employee directory for Audit Expenses filter — uses expenses module auth, not User Management. */
+export function useAuditExpenseEmployeesQuery() {
+  return useQuery({
+    queryKey: expensesQueryKeys.auditEmployees(),
+    queryFn: fetchAuditEmployeeDirectory,
+    ...queryDefaults.employees,
+  });
 }
 
 export function useExpenseTravelRatesQuery(enabled: boolean) {

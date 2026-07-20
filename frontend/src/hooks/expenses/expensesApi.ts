@@ -1,6 +1,9 @@
 import { fetchPaginatedList } from '../../utils/paginatedFetch';
 import type { PaginatedResponse } from '../paginationTypes';
+import type { EmployeeListDto } from '../../types/employeeListDto';
 import type { ExpenseDocument, ExpenseRecord } from '../../types/expenses';
+import type { UserMaster } from '../../types/userMaster';
+import { mapApiEmployee } from '../../utils/mapApiEmployee';
 import { normalizeExpenseRow } from '../../utils/expenseRowNormalize';
 import type { ExpenseTravelRateSettings } from '../../components/ExpenseRateSettingsModal';
 import { parseTravelRatesApiData } from '../../utils/expenseTravelRatesFromApi';
@@ -92,6 +95,26 @@ export type AuditExpenseFilters = {
   month: string;
   year: string;
 };
+
+async function fetchAuditEmployeesPage(cursor?: string): Promise<PaginatedResponse<UserMaster>> {
+  const page = await fetchPaginatedList<EmployeeListDto>('/api/expenses/audit/employees', cursor);
+  return {
+    data: page.data.map((emp) => mapApiEmployee(emp)),
+    nextCursor: page.nextCursor,
+  };
+}
+
+/** Loads all employee pages for Audit Expenses filter dropdown. */
+export async function fetchAuditEmployeeDirectory(): Promise<UserMaster[]> {
+  const all: UserMaster[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await fetchAuditEmployeesPage(cursor);
+    all.push(...page.data);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return all;
+}
 
 export async function fetchAuditExpensesFiltered(
   filters: AuditExpenseFilters,

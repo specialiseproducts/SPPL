@@ -29,11 +29,11 @@ import {
 } from '../../hooks/expenses/expensesApi';
 import {
   fetchNextAuditFilteredPage,
+  useAuditExpenseEmployeesQuery,
   useAuditExpensesFilteredQuery,
   useInvalidateExpensesList,
 } from '../../hooks/expenses/useExpensesQueries';
 import { expensesQueryKeys } from '../../hooks/expenses/expensesQueryKeys';
-import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
 import { isQueryColdLoading } from '../../utils/queryLoading';
 
 const MONTH_FILTER_OPTIONS = [
@@ -92,7 +92,7 @@ const rejectedActionBadgeStyle = {
 
 export default function AuditExpensesTab() {
   const queryClient = useQueryClient();
-  const employeesQuery = useEmployeesListQuery();
+  const employeesQuery = useAuditExpenseEmployeesQuery();
   const invalidateExpenses = useInvalidateExpensesList();
 
   const [selectedEmployee, setSelectedEmployee] = useState('all');

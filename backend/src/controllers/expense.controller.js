@@ -66,6 +66,30 @@ export const getExpenseById = async (req, res, next) => {
 };
 
 /**
+ * Employee directory for Audit Expenses filter dropdown.
+ * GET /api/expenses/audit/employees
+ */
+export const getAuditEmployeeDirectory = async (req, res, next) => {
+  try {
+    const options = {
+      limit: req.query.limit ?? DEFAULT_QUERY_LIMIT,
+      cursor: req.query.cursor ?? req.query.lastKey,
+    };
+
+    const result = await ExpenseService.getAuditEmployeeDirectory(options, req.effectiveRole);
+
+    res.status(200).json({
+      success: true,
+      data: result.data,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    });
+  } catch (error) {
+    log.error('Get audit employee directory controller error:', error);
+    next(error);
+  }
+};
+
+/**
  * Organization-wide expense list for Audit Expenses tab.
  * GET /api/expenses/audit
  */

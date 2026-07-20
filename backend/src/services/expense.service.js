@@ -738,6 +738,16 @@ function assertCanModerateExpenseAudit(effectiveRole) {
 }
 
 /**
+ * Active employee directory for Audit Expenses filter dropdown (Admin / Developer).
+ * Uses expenses module authorization — not User Management module access.
+ */
+export const getAuditEmployeeDirectory = async (options = {}, effectiveRole = 'User') => {
+  assertCanModerateExpenseAudit(effectiveRole);
+  const result = await EmployeeModel.getAllEmployees(options);
+  return { data: result.data || [], nextCursor: result.nextCursor ?? null };
+};
+
+/**
  * Organization-wide expense list for Audit Expenses (Admin / Developer).
  * Filters are applied in DynamoDB (employeeId, month, year).
  */
