@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import type { PlannerEvent } from '../../../types/planner';
-import { isCompanyHoliday } from '../../../utils/companyWorkingDays';
+import { getCompanyHolidayInfo } from '../../../utils/companyWorkingDays';
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -137,10 +137,16 @@ export type CalendarDayCell = {
   iso: string;
   inMonth: boolean;
   isCompanyHoliday: boolean;
+  holidayName: string | null;
   events: PlannerEvent[];
 };
 
-export function buildMonthGrid(year: number, month: number, events: PlannerEvent[]): CalendarDayCell[] {
+export function buildMonthGrid(
+  year: number,
+  month: number,
+  events: PlannerEvent[],
+  location?: string | null,
+): CalendarDayCell[] {
   const first = new Date(Date.UTC(year, month - 1, 1));
   const startOffset = first.getUTCDay();
   const gridStart = new Date(first);
@@ -160,11 +166,14 @@ export function buildMonthGrid(year: number, month: number, events: PlannerEvent
     const d = new Date(gridStart);
     d.setUTCDate(gridStart.getUTCDate() + i);
     const iso = toIsoDateOnly(d);
+    const holidayInfo = getCompanyHolidayInfo(iso, location);
     cells.push({
       date: d,
       iso,
       inMonth: d.getUTCMonth() === month - 1,
-      isCompanyHoliday: isCompanyHoliday(iso),
+      isCompanyHoliday: holidayInfo.isHoliday,
+      holidayName:
+        holidayInfo.holidayType === 'declared' ? holidayInfo.holidayName : null,
       events: byDate.get(iso) ?? [],
     });
   }

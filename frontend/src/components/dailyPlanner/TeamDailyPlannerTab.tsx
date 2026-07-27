@@ -1,32 +1,29 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import { Card } from '../ui/card';
-import { Button } from '../ui/button';
-import { cn } from '../ui/utils';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
 import type { DailyPlannerTask } from '../../types/dailyPlanner';
 import {
+  useInvalidateDailyPlannerQueries,
   useTeamDailyPlannerMonthQuery,
+  useTeamDailyPlannerQuery,
   useTeamMappingsQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
 import { useAuth } from '../../context/AuthContext';
 import { isQueryColdLoading } from '../../utils/queryLoading';
+import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
 import TeamDailyPlannerTaskChip from './TeamDailyPlannerTaskChip';
 import CalendarHolidayDayHeader from '../calendar/CalendarHolidayDayHeader';
-import BulletPointList from './BulletPointList';
 import {
   buildDailyMonthGrid,
   DAILY_STATUS_LEGEND,
+  todayIso,
   WEEKDAY_LABELS,
   type DailyCalendarDayCell,
 } from './dailyPlannerUtils';
+import TodayTaskReviewWizard from './TodayTaskReviewWizard';
+import { Card } from '../ui/card';
+import { Button } from '../ui/button';
+import { cn } from '../ui/utils';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 
 const MONTHS = [
   'January',
@@ -56,73 +53,6 @@ const CALENDAR_BODY_GRID: CSSProperties = {
   gridTemplateRows: 'repeat(6, minmax(7.5rem, 1fr))',
   minHeight: '36rem',
 };
-
-function displayCell(value: string | number | undefined | null): string {
-  if (value === undefined || value === null) return '—';
-  const s = String(value).trim();
-  return s === '' ? '—' : s;
-}
-
-function formatDateCell(iso: string | undefined | null): string {
-  if (!iso || String(iso).trim() === '') return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return displayCell(iso);
-  return d.toLocaleDateString('en-GB');
-}
-
-const STATUS_BADGE_STYLES: Record<string, { bg: string; text: string; border: string }> = {
-  Pending: { bg: '#DBEAFE', text: '#1D4ED8', border: '#93C5FD' },
-  Approved: { bg: '#ECFDF3', text: '#027A48', border: '#A6F4C5' },
-  Rejected: { bg: '#FEF3F2', text: '#B42318', border: '#FECDCA' },
-  Completed: { bg: '#ECFDF3', text: '#027A48', border: '#A6F4C5' },
-  'Not Completed': { bg: '#FEF3F2', text: '#B42318', border: '#FECDCA' },
-  Rescheduled: { bg: '#FFFAEB', text: '#B54708', border: '#FEDF89' },
-  Terminated: { bg: '#FEF3F2', text: '#B42318', border: '#FECDCA' },
-};
-
-function statusBadge(status: string) {
-  const label = status === 'Terminated' ? 'Closed' : status;
-  const colors = STATUS_BADGE_STYLES[status] || STATUS_BADGE_STYLES.Pending;
-  return (
-    <span
-      className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium"
-      style={{ backgroundColor: colors.bg, color: colors.text, border: `1px solid ${colors.border}` }}
-    >
-      {label}
-    </span>
-  );
-}
-
-function ViewField({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0 space-y-1.5">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</p>
-      <div className="text-sm text-[#212529] break-words">{value}</div>
-    </div>
-  );
-}
-
-function ViewSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="mb-3 border-b border-gray-100 pb-2 text-sm font-semibold text-[#212529]">
-        {title}
-      </h3>
-      {children}
-    </section>
-  );
-}
-
-function ViewBulletField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 space-y-1.5">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</p>
-      <div className="min-h-[2.5rem] rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
-        <BulletPointList text={value} />
-      </div>
-    </div>
-  );
-}
 
 function TeamPlannerDayCell({
   cell,
@@ -158,6 +88,7 @@ function TeamPlannerDayCell({
         dayNumber={cell.date.getUTCDate()}
         inMonth={cell.inMonth}
         isCompanyHoliday={cell.isCompanyHoliday}
+        holidayName={cell.holidayName}
       />
 
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden">
@@ -200,15 +131,20 @@ function TeamPlannerDayCell({
 
 export default function TeamDailyPlannerTab() {
   const { user } = useAuth();
+  const invalidate = useInvalidateDailyPlannerQueries();
   const managerCode = String(user?.employeeCode || user?.id || '').trim();
   const now = new Date();
   const [view, setView] = useState({ year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 });
   const { year, month } = view;
   const [selectedEmployeeCode, setSelectedEmployeeCode] = useState('');
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
-  const [viewTask, setViewTask] = useState<DailyPlannerTask | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardTaskIndex, setWizardTaskIndex] = useState(0);
+  const [wizardDismissedForEmployee, setWizardDismissedForEmployee] = useState('');
+  const today = todayIso();
 
   const mappingsQuery = useTeamMappingsQuery();
+  const employeesQuery = useEmployeesListQuery();
   const employeeOptions = useMemo(() => {
     const mappings = mappingsQuery.data ?? [];
     return mappings
@@ -235,13 +171,86 @@ export default function TeamDailyPlannerTab() {
     !!selectedEmployeeCode,
   );
 
+  const todayTasksQuery = useTeamDailyPlannerQuery(
+    { employeeCode: selectedEmployeeCode, date: today },
+    !!selectedEmployeeCode,
+  );
+
+  const selectedEmployeeLocation = useMemo(() => {
+    const code = String(selectedEmployeeCode || '').trim();
+    if (!code) return undefined;
+    const emp = (employeesQuery.data ?? []).find((e) => {
+      const empCode = String(e.employee_code || e.employeeCode || '').trim();
+      return empCode === code;
+    });
+    return emp?.location || undefined;
+  }, [selectedEmployeeCode, employeesQuery.data]);
+
+  const selectedEmployeeProfile = useMemo(() => {
+    const code = String(selectedEmployeeCode || '').trim();
+    if (!code) return null;
+    const emp = (employeesQuery.data ?? []).find((e) => {
+      const empCode = String(e.employee_code || e.employeeCode || '').trim();
+      return empCode === code;
+    });
+    const mapping = (mappingsQuery.data ?? []).find(
+      (m) => m.employeeCode === code && m.managerCode === managerCode,
+    );
+    return {
+      employeeCode: code,
+      employeeName: mapping?.employeeName || emp?.name || emp?.employee_name || code,
+      department: emp?.department || '',
+      designation: emp?.designation || '',
+    };
+  }, [selectedEmployeeCode, employeesQuery.data, mappingsQuery.data, managerCode]);
+
+  const todayTasks = useMemo(() => {
+    const list = todayTasksQuery.data ?? [];
+    return [...list].sort((a, b) => a.taskName.localeCompare(b.taskName));
+  }, [todayTasksQuery.data]);
+
+  const todayTasksLoading = isQueryColdLoading(todayTasksQuery);
+
+  useEffect(() => {
+    setWizardDismissedForEmployee('');
+    setWizardOpen(false);
+    setWizardTaskIndex(0);
+  }, [selectedEmployeeCode]);
+
+  useEffect(() => {
+    if (!selectedEmployeeCode || todayTasksLoading) return;
+    if (wizardDismissedForEmployee === selectedEmployeeCode) return;
+    if (todayTasks.length > 0) {
+      setWizardOpen(true);
+      setWizardTaskIndex(0);
+    } else {
+      setWizardOpen(false);
+    }
+  }, [
+    selectedEmployeeCode,
+    todayTasksLoading,
+    todayTasks.length,
+    wizardDismissedForEmployee,
+  ]);
+
   const tasks = monthQuery.data ?? [];
-  const grid = useMemo(() => buildDailyMonthGrid(year, month, tasks), [year, month, tasks]);
+  const grid = useMemo(
+    () => buildDailyMonthGrid(year, month, tasks, selectedEmployeeLocation),
+    [year, month, tasks, selectedEmployeeLocation],
+  );
   const isLoading = isQueryColdLoading(monthQuery);
 
-  const latestViewTask = viewTask
-    ? tasks.find((t) => t.plannerTaskId === viewTask.plannerTaskId) || viewTask
-    : null;
+  const handleSelectTask = (task: DailyPlannerTask) => {
+    if (task.date !== today || todayTasks.length === 0) return;
+    const index = todayTasks.findIndex((t) => t.plannerTaskId === task.plannerTaskId);
+    setWizardTaskIndex(index >= 0 ? index : 0);
+    setWizardOpen(true);
+  };
+
+  const refreshTasks = async () => {
+    invalidate();
+    await Promise.all([monthQuery.refetch(), todayTasksQuery.refetch()]);
+  };
 
   const yearOptions = useMemo(() => {
     const base = now.getUTCFullYear();
@@ -335,6 +344,7 @@ export default function TeamDailyPlannerTab() {
                 value={selectedEmployeeCode}
                 onChange={(e) => {
                   setExpandedCells(new Set());
+                  setWizardDismissedForEmployee('');
                   setSelectedEmployeeCode(e.target.value);
                 }}
                 aria-label="Employee"
@@ -373,35 +383,43 @@ export default function TeamDailyPlannerTab() {
             </div>
           </div>
 
-          <div
-            className="flex flex-wrap items-center justify-end gap-3 border-b border-gray-100 bg-white px-5 py-2"
-            style={{ gap: 12 }}
-          >
-            {DAILY_STATUS_LEGEND.map((item) => (
-              <div
-                key={item.status}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  color: '#6B7280',
-                  marginRight: item.status === 'Sales Visit' ? 20 : 0,
-                }}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 10,
-                    height: 10,
-                    borderRadius: '50%',
-                    backgroundColor: item.color,
-                    flexShrink: 0,
-                  }}
-                />
-                <span>{item.status}</span>
-              </div>
-            ))}
+          <div className="w-full max-w-full border-b border-gray-100 bg-white px-4 py-3">
+            <div className="flex w-full flex-col items-end" style={{ rowGap: 14 }}>
+              {[DAILY_STATUS_LEGEND.slice(0, 5), DAILY_STATUS_LEGEND.slice(5)].map((row, rowIndex) => (
+                <div
+                  key={rowIndex}
+                  className="flex w-full flex-wrap items-center justify-end"
+                  style={{ columnGap: 20, rowGap: 10 }}
+                >
+                  {row.map((item) => (
+                    <div
+                      key={item.status}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 11,
+                        fontSize: 13,
+                        fontWeight: 500,
+                        color: '#6B7280',
+                        padding: '2px 4px',
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 9,
+                          height: 9,
+                          borderRadius: '50%',
+                          backgroundColor: item.color,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span>{item.status}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
 
           <div
@@ -430,7 +448,7 @@ export default function TeamDailyPlannerTab() {
                   cellIndex={index}
                   expanded={expandedCells.has(cell.iso)}
                   onToggleExpand={() => toggleCellExpand(cell.iso)}
-                  onSelectTask={setViewTask}
+                  onSelectTask={handleSelectTask}
                   showEmployeeName={false}
                 />
               ))}
@@ -438,127 +456,36 @@ export default function TeamDailyPlannerTab() {
           </div>
         </Card>
 
+        {!todayTasksLoading && selectedEmployeeCode && todayTasks.length === 0 ? (
+          <p className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+            No tasks created today.
+          </p>
+        ) : null}
+
         <p className="text-xs text-muted-foreground">
-          Click a task chip to view details.
+          Today&apos;s tasks open in the review wizard automatically. Click a today task chip to
+          reopen the wizard.
         </p>
       </div>
 
-      <Dialog open={!!viewTask} onOpenChange={(v) => !v && setViewTask(null)}>
-        <DialogContent
-          className="!flex !h-[90vh] !max-h-[90vh] !w-[min(92vw,1100px)] !max-w-[1100px] !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-[1100px]"
-          style={{
-            width: 'min(92vw, 1100px)',
-            maxWidth: '1100px',
-            height: '90vh',
-            maxHeight: '90vh',
+      {selectedEmployeeProfile && todayTasks.length > 0 ? (
+        <TodayTaskReviewWizard
+          open={wizardOpen}
+          tasks={todayTasks}
+          employee={selectedEmployeeProfile}
+          reviewDate={today}
+          initialTaskIndex={wizardTaskIndex}
+          onClose={() => {
+            setWizardOpen(false);
+            setWizardDismissedForEmployee(selectedEmployeeCode);
           }}
-        >
-          <DialogHeader className="shrink-0 border-b border-gray-200 px-6 py-4 text-left">
-            <DialogTitle className="text-lg font-semibold text-[#212529]">
-              Task Details
-            </DialogTitle>
-            {latestViewTask?.employeeName ? (
-              <p className="text-sm text-gray-600">
-                {latestViewTask.employeeName}
-                {latestViewTask.employeeCode ? ` · ${latestViewTask.employeeCode}` : ''}
-              </p>
-            ) : null}
-          </DialogHeader>
-
-          {latestViewTask ? (
-            <div className="min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto scroll-smooth bg-[#F8F9FA] px-6 py-5 overscroll-contain">
-              <ViewSection title="Task Information">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <ViewField label="Task Name" value={displayCell(latestViewTask.taskName)} />
-                  <ViewField label="Date" value={displayCell(latestViewTask.date)} />
-                  <ViewField label="Task Type" value={displayCell(latestViewTask.taskType)} />
-                  <ViewField label="Source" value={displayCell(latestViewTask.source)} />
-                </div>
-                <div className="mt-4">
-                  <ViewBulletField
-                    label="Description"
-                    value={displayCell(latestViewTask.description)}
-                  />
-                </div>
-              </ViewSection>
-
-              <ViewSection title="Completion Information">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <ViewField
-                    label="Employee Status"
-                    value={statusBadge(latestViewTask.status)}
-                  />
-                  <ViewField
-                    label="Last Updated"
-                    value={formatDateCell(latestViewTask.updatedAt)}
-                  />
-                </div>
-                {latestViewTask.status === 'Completed' ? (
-                  <div className="mt-4">
-                    <ViewBulletField
-                      label="Work Done"
-                      value={displayCell(latestViewTask.reason)}
-                    />
-                  </div>
-                ) : null}
-                {latestViewTask.status === 'Not Completed' ? (
-                  <div className="mt-4">
-                    <ViewBulletField
-                      label="Not Completed Reason"
-                      value={displayCell(latestViewTask.reason)}
-                    />
-                  </div>
-                ) : null}
-                {latestViewTask.status === 'Rescheduled' ? (
-                  <div className="mt-4 space-y-3">
-                    <ViewField
-                      label="Rescheduled To"
-                      value={displayCell(latestViewTask.rescheduledToDate)}
-                    />
-                    <ViewBulletField
-                      label="Reschedule Reason"
-                      value={displayCell(latestViewTask.reason)}
-                    />
-                  </div>
-                ) : null}
-                {latestViewTask.status === 'Terminated' ? (
-                  <div className="mt-4 space-y-3">
-                    <ViewBulletField
-                      label="Termination Reason"
-                      value={displayCell(latestViewTask.reason)}
-                    />
-                  </div>
-                ) : null}
-              </ViewSection>
-
-              <ViewSection title="History">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <ViewField
-                    label="Created On"
-                    value={formatDateCell(latestViewTask.createdAt)}
-                  />
-                  <ViewField
-                    label="Last Updated"
-                    value={formatDateCell(latestViewTask.updatedAt)}
-                  />
-                  <ViewField
-                    label="Updated By"
-                    value={displayCell(
-                      latestViewTask.approvedByName || latestViewTask.employeeName,
-                    )}
-                  />
-                </div>
-              </ViewSection>
-            </div>
-          ) : null}
-
-          <DialogFooter className="shrink-0 border-t border-gray-200 bg-white px-6 py-4 sm:justify-end">
-            <Button type="button" variant="outline" onClick={() => setViewTask(null)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          onFinish={() => {
+            setWizardOpen(false);
+            setWizardDismissedForEmployee(selectedEmployeeCode);
+          }}
+          onTasksUpdated={refreshTasks}
+        />
+      ) : null}
     </TooltipPrimitive.Provider>
   );
 }

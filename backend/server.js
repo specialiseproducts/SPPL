@@ -23,6 +23,7 @@ import userRoutes from './src/routes/user.routes.js';
 import accessControlRoutes from './src/routes/accessControl.routes.js';
 import metricsRoutes from './src/routes/metrics.routes.js';
 import dailyPlannerRoutes from './src/routes/dailyPlanner.routes.js';
+import orderProcessingRoutes from './src/routes/orderProcessing.routes.js';
 import { initSalesMasterOnStartup } from './src/utils/salesMasterInit.js';
 import { initDailyPlannerStorageOnStartup } from './src/utils/dailyPlannerStorageInit.js';
 import {
@@ -86,6 +87,7 @@ app.use('/api/sales-forecasts', salesForecastRoutes);
 app.use('/api/access-control', accessControlRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/daily-planner', dailyPlannerRoutes);
+app.use('/api/order-processing', orderProcessingRoutes);
 
 // 404 handler (must be after all routes)
 app.use(notFoundHandler);

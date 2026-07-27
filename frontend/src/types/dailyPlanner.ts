@@ -6,12 +6,22 @@ export type DailyPlannerStatus =
   | 'Not Completed'
   | 'Rejected'
   | 'Terminated'
-  | 'Rescheduled';
+  | 'Rescheduled'
+  | 'Needs Revision'
+  | 'Awaiting Verification'
+  | 'Verified Complete';
 export type DailyPlannerTaskType = 'Manual' | 'Sales Visit';
 export type DailyPlannerSource = 'MANUAL' | 'SALES_FORECASTING' | 'RESCHEDULED';
 export type DailyPlannerNotCompletedAction = 'terminate' | 'next_date';
 export type DailyPlannerPlanningCategory = 'Regular' | 'Urgent';
 export type DailyPlannerPlanningWindow = 'Morning' | 'Evening' | 'Outside' | null;
+
+export interface DailyPlannerReplacementTask {
+  taskName: string;
+  description: string;
+  priority: DailyPlannerPriority;
+  expectedOutcome?: string;
+}
 
 export interface DailyPlannerTask {
   plannerTaskId: string;
@@ -24,16 +34,30 @@ export interface DailyPlannerTask {
   originalPriority: DailyPlannerPriority;
   currentPriority: DailyPlannerPriority;
   priorityEdited: boolean;
+  priorityEditedBy?: string;
+  priorityEditedByName?: string;
+  priorityEditedAt?: string | null;
   status: DailyPlannerStatus;
   reason: string;
   taskType: DailyPlannerTaskType;
   source: DailyPlannerSource;
   salesPlannerId?: string | null;
   approved: boolean;
+  approvalStatus?: string;
   approvedBy: string;
   approvedByName: string;
   approvedDate?: string | null;
+  approvedAt?: string | null;
   managerComments: string;
+  verifiedBy?: string;
+  verifiedByName?: string;
+  verifiedAt?: string | null;
+  verificationStatus?: string;
+  revisionReason?: string;
+  revisionRequestedBy?: string;
+  revisionRequestedByName?: string;
+  revisionRequestedAt?: string | null;
+  replacementTask?: DailyPlannerReplacementTask | null;
   planningCategory?: DailyPlannerPlanningCategory;
   urgentReason?: string;
   planningWindowUsed?: DailyPlannerPlanningWindow;

@@ -32,6 +32,7 @@ const allPages: ModuleName[] = [
   'Purchases',
   'CRM',
   'Daily Planner',
+  'Order Processing',
   'User Management',
 ];
 

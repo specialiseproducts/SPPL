@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
-import type { User } from '../../App';
+import type { User, UserRole } from '../../App';
 import type { DailyPlannerTeamMapping } from '../../types/dailyPlanner';
 import {
   assignTeamMapping,
@@ -28,12 +28,14 @@ import {
   useTeamMappingsQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
 import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
+import { isSuperAdmin } from '../../utils/accessControl';
 
 interface TeamManagementTabProps {
   user: User;
+  moduleRole: UserRole;
 }
 
-export default function TeamManagementTab({ user }: TeamManagementTabProps) {
+export default function TeamManagementTab({ user, moduleRole }: TeamManagementTabProps) {
   const mappingsQuery = useTeamMappingsQuery();
   const employeesQuery = useEmployeesListQuery();
   const invalidate = useInvalidateDailyPlannerQueries();
@@ -43,11 +45,17 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [employeeSearchQuery, setEmployeeSearchQuery] = useState('');
   const employeeSelectorRef = useRef<HTMLDivElement>(null);
+  const managerSelectorRef = useRef<HTMLDivElement>(null);
   const [transferManagerCode, setTransferManagerCode] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const managerCode = String(user.employeeCode || user.id || '').trim();
-  const managerName = String(user.name || '').trim() || managerCode;
+  const canSelectReportingManager = isSuperAdmin(moduleRole);
+  const selfManagerCode = String(user.employeeCode || user.id || '').trim();
+  const selfManagerName = String(user.name || '').trim() || selfManagerCode;
+
+  const [selectedManagerCode, setSelectedManagerCode] = useState(selfManagerCode);
+  const [managerPickerOpen, setManagerPickerOpen] = useState(false);
+  const [managerSearchQuery, setManagerSearchQuery] = useState('');
 
   const employees = employeesQuery.data ?? [];
   const employeeOptions = useMemo(
@@ -55,7 +63,10 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
       employees
         .map((e) => {
           const code = String(e.employee_code || e.employeeCode || '').trim();
-          const name = `${e.first_name || e.firstName || ''} ${e.last_name || e.lastName || ''}`.trim() || code;
+          const name =
+            String(e.name || '').trim() ||
+            `${e.first_name || e.firstName || ''} ${e.last_name || e.lastName || ''}`.trim() ||
+            code;
           return { code, name };
         })
         .filter((e) => e.code)
@@ -68,6 +79,11 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
     employeeOptions.forEach((e) => map.set(e.code, e.name));
     return map;
   }, [employeeOptions]);
+
+  const managerCode = canSelectReportingManager ? selectedManagerCode : selfManagerCode;
+  const managerName = canSelectReportingManager
+    ? nameByCode.get(managerCode) || managerCode
+    : selfManagerName;
 
   const mappings = (mappingsQuery.data ?? []).filter((m) => m.status === 'Active');
 
@@ -88,6 +104,9 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
     setSelectedEmployeeCodes(new Set());
     setEmployeePickerOpen(false);
     setEmployeeSearchQuery('');
+    setManagerPickerOpen(false);
+    setManagerSearchQuery('');
+    setSelectedManagerCode(selfManagerCode);
     setAssignOpen(true);
   };
 
@@ -102,6 +121,17 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [employeePickerOpen]);
 
+  useEffect(() => {
+    if (!managerPickerOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!managerSelectorRef.current?.contains(event.target as Node)) {
+        setManagerPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [managerPickerOpen]);
+
   const filteredAssignableEmployees = useMemo(() => {
     const query = employeeSearchQuery.trim().toLowerCase();
     if (!query) return assignableEmployees;
@@ -111,6 +141,16 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
         employee.code.toLowerCase().includes(query),
     );
   }, [assignableEmployees, employeeSearchQuery]);
+
+  const filteredManagerOptions = useMemo(() => {
+    const query = managerSearchQuery.trim().toLowerCase();
+    if (!query) return employeeOptions;
+    return employeeOptions.filter(
+      (employee) =>
+        employee.name.toLowerCase().includes(query) ||
+        employee.code.toLowerCase().includes(query),
+    );
+  }, [employeeOptions, managerSearchQuery]);
 
   const employeeFieldDisplay = useMemo(() => {
     if (selectedEmployeeCodes.size === 0) return 'Select Employees';
@@ -130,6 +170,11 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
   };
 
   const handleAssign = async () => {
+    if (!managerCode) {
+      toast.error('Select a reporting manager');
+      return;
+    }
+
     const selected = [...selectedEmployeeCodes];
     if (selected.length === 0) {
       toast.error('Select at least one employee');
@@ -140,7 +185,11 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
     const skippedCount = selected.length - toAssign.length;
 
     if (toAssign.length === 0) {
-      toast.error('All selected employees are already assigned to you');
+      toast.error(
+        canSelectReportingManager
+          ? 'All selected employees are already assigned to this manager'
+          : 'All selected employees are already assigned to you',
+      );
       return;
     }
 
@@ -287,21 +336,114 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
             setSelectedEmployeeCodes(new Set());
             setEmployeePickerOpen(false);
             setEmployeeSearchQuery('');
+            setManagerPickerOpen(false);
+            setManagerSearchQuery('');
           }
         }}
       >
         <DialogContent className="max-w-md overflow-hidden">
           <DialogHeader><DialogTitle>Assign Team Mapping</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div className="space-y-1">
-              <Label htmlFor="reporting-manager-readonly">Reporting Manager</Label>
-              <Input
-                id="reporting-manager-readonly"
-                value={managerName}
-                readOnly
-                disabled
-                className="bg-gray-50"
-              />
+            <div ref={managerSelectorRef} className="space-y-1">
+              <Label htmlFor={canSelectReportingManager ? 'reporting-manager-select-trigger' : 'reporting-manager-readonly'}>
+                Reporting Manager
+              </Label>
+              {canSelectReportingManager ? (
+                <>
+                  <button
+                    id="reporting-manager-select-trigger"
+                    type="button"
+                    aria-expanded={managerPickerOpen}
+                    aria-haspopup="listbox"
+                    className={cn(
+                      'border-input flex min-h-9 w-full items-center justify-between gap-2 rounded-md border bg-input-background px-3 py-2 text-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]',
+                    )}
+                    onClick={() => {
+                      setEmployeePickerOpen(false);
+                      setManagerPickerOpen((open) => !open);
+                    }}
+                  >
+                    <span
+                      className={cn(
+                        'min-w-0 flex-1 text-left leading-snug',
+                        !managerCode && 'text-muted-foreground',
+                      )}
+                    >
+                      {managerCode
+                        ? nameByCode.get(managerCode) || managerCode
+                        : 'Select Reporting Manager'}
+                    </span>
+                    <ChevronDownIcon
+                      className={cn(
+                        'size-4 shrink-0 opacity-50 transition-transform',
+                        managerPickerOpen && 'rotate-180',
+                      )}
+                    />
+                  </button>
+                  {managerPickerOpen ? (
+                    <div className="rounded-md border border-gray-200 bg-white shadow-sm">
+                      <div className="border-b border-gray-100 p-2">
+                        <Input
+                          value={managerSearchQuery}
+                          onChange={(event) => setManagerSearchQuery(event.target.value)}
+                          placeholder="Search employees…"
+                          aria-label="Search reporting managers"
+                        />
+                      </div>
+                      <div
+                        role="listbox"
+                        className="p-2"
+                        style={{
+                          maxHeight: '300px',
+                          overflowY: 'auto',
+                          overflowX: 'hidden',
+                        }}
+                      >
+                        <div className="space-y-1">
+                          {filteredManagerOptions.length === 0 ? (
+                            <p className="px-1 py-2 text-sm text-muted-foreground">
+                              No matching employees.
+                            </p>
+                          ) : (
+                            filteredManagerOptions.map((employee) => (
+                              <button
+                                key={employee.code}
+                                type="button"
+                                role="option"
+                                aria-selected={selectedManagerCode === employee.code}
+                                className={cn(
+                                  'flex w-full cursor-pointer items-center rounded-md px-2 py-1.5 text-left text-sm text-[#212529] hover:bg-gray-50',
+                                  selectedManagerCode === employee.code && 'bg-blue-50',
+                                )}
+                                onClick={() => {
+                                  setSelectedManagerCode(employee.code);
+                                  setSelectedEmployeeCodes((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(employee.code);
+                                    return next;
+                                  });
+                                  setManagerPickerOpen(false);
+                                  setManagerSearchQuery('');
+                                }}
+                              >
+                                {employee.name}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <Input
+                  id="reporting-manager-readonly"
+                  value={managerName}
+                  readOnly
+                  disabled
+                  className="bg-gray-50"
+                />
+              )}
             </div>
             <div ref={employeeSelectorRef} className="space-y-1">
               <Label htmlFor="employee-multi-select-trigger">Employee</Label>
@@ -313,7 +455,10 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
                 className={cn(
                   'border-input flex min-h-9 w-full items-center justify-between gap-2 rounded-md border bg-input-background px-3 py-2 text-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]',
                 )}
-                onClick={() => setEmployeePickerOpen((open) => !open)}
+                onClick={() => {
+                  setManagerPickerOpen(false);
+                  setEmployeePickerOpen((open) => !open);
+                }}
               >
                 <span
                   className={cn(
@@ -422,3 +567,4 @@ export default function TeamManagementTab({ user }: TeamManagementTabProps) {
     </div>
   );
 }
+

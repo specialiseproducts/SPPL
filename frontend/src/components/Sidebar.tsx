@@ -1,4 +1,4 @@
-import { TrendingUp, DollarSign, Users as UsersIcon, ShoppingCart, UserCog, FileText, ChevronLeft, ChevronRight, LayoutGrid, Activity, CalendarCheck } from 'lucide-react';
+import { TrendingUp, DollarSign, Users as UsersIcon, ShoppingCart, UserCog, FileText, ChevronLeft, ChevronRight, LayoutGrid, Activity, CalendarCheck, ClipboardList } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from './ui/button';
 
@@ -10,6 +10,7 @@ export type ModuleName =
   | 'CRM'
   | 'User Management'
   | 'Daily Planner'
+  | 'Order Processing'
   | 'System Metrics';
 
 interface SidebarProps {
@@ -33,6 +34,7 @@ const modules: Module[] = [
   { name: 'Purchases', icon: <ShoppingCart className="w-5 h-5" />, accessKey: 'purchases' },
   { name: 'CRM', icon: <UsersIcon className="w-5 h-5" />, accessKey: 'crm' },
   { name: 'Daily Planner', icon: <CalendarCheck className="w-5 h-5" />, accessKey: 'dailyPlanner' },
+  { name: 'Order Processing', icon: <ClipboardList className="w-5 h-5" />, accessKey: 'orderProcessing' },
   { name: 'User Management', icon: <UserCog className="w-5 h-5" />, accessKey: 'userManagement' },
 ];
 

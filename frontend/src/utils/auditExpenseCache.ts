@@ -35,8 +35,21 @@ export function appendAuditCachePage(
     setAuditCacheEntry(key, { pages: newRows, nextCursor });
     return;
   }
+  const merged = [...existing.pages, ...newRows];
+  const deduped: ExpenseRecord[] = [];
+  const seen = new Set<string>();
+  for (const row of merged) {
+    const id = String(row?.expenseId || '').trim();
+    if (!id) {
+      deduped.push(row);
+      continue;
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    deduped.push(row);
+  }
   setAuditCacheEntry(key, {
-    pages: [...existing.pages, ...newRows],
+    pages: deduped,
     nextCursor,
   });
 }

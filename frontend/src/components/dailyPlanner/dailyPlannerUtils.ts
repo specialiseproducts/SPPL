@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import type { DailyPlannerTask, DailyPlannerStatus } from '../../types/dailyPlanner';
-import { isCompanyHoliday } from '../../utils/companyWorkingDays';
+import { getCompanyHolidayInfo } from '../../utils/companyWorkingDays';
 import { parseIsoDateOnly, toIsoDateOnly } from '../sales/planner/plannerUtils';
 
 /** Solid event-card colours — same structure as Sales Planner PLANNER_STATUS_COLORS. */
@@ -10,9 +10,12 @@ export const DAILY_TASK_COLORS = {
   Low: { bg: '#22C55E', text: '#FFFFFF', border: '#16A34A' },
   'Sales Visit': { bg: '#8B5CF6', text: '#FFFFFF', border: '#7C3AED' },
   Completed: { bg: '#22C55E', text: '#FFFFFF', border: '#16A34A' },
+  'Verified Complete': { bg: '#22C55E', text: '#FFFFFF', border: '#16A34A' },
+  'Awaiting Verification': { bg: '#F97316', text: '#FFFFFF', border: '#EA580C' },
   'Not Completed': { bg: '#EF4444', text: '#FFFFFF', border: '#DC2626' },
-  Pending: { bg: '#3B82F6', text: '#FFFFFF', border: '#2563EB' },
-  Approved: { bg: '#1E40AF', text: '#FFFFFF', border: '#1E3A8A' },
+  'Needs Revision': { bg: '#EF4444', text: '#FFFFFF', border: '#DC2626' },
+  Pending: { bg: '#EAB308', text: '#FFFFFF', border: '#CA8A04' },
+  Approved: { bg: '#3B82F6', text: '#FFFFFF', border: '#2563EB' },
   Rejected: { bg: '#EF4444', text: '#FFFFFF', border: '#DC2626' },
 } as const;
 
@@ -22,7 +25,10 @@ export const DAILY_STATUS_DOT_COLORS: Record<string, string> = {
   Pending: DAILY_TASK_COLORS.Pending.bg,
   Approved: DAILY_TASK_COLORS.Approved.bg,
   Completed: DAILY_TASK_COLORS.Completed.bg,
+  'Verified Complete': DAILY_TASK_COLORS['Verified Complete'].bg,
+  'Awaiting Verification': DAILY_TASK_COLORS['Awaiting Verification'].bg,
   'Not Completed': DAILY_TASK_COLORS['Not Completed'].bg,
+  'Needs Revision': DAILY_TASK_COLORS['Needs Revision'].bg,
   Rejected: DAILY_TASK_COLORS.Rejected.bg,
   'Sales Visit': DAILY_TASK_COLORS['Sales Visit'].bg,
   High: DAILY_TASK_COLORS.High.bg,
@@ -31,10 +37,15 @@ export const DAILY_STATUS_DOT_COLORS: Record<string, string> = {
 };
 
 export const DAILY_STATUS_LEGEND = [
-  { status: 'Pending', color: DAILY_TASK_COLORS.Pending.bg },
-  { status: 'Completed', color: DAILY_TASK_COLORS.Completed.bg },
-  { status: 'Not Completed', color: DAILY_TASK_COLORS['Not Completed'].bg },
-  { status: 'Sales Visit', color: DAILY_TASK_COLORS['Sales Visit'].bg },
+  { status: 'Sales Forecasting Event', color: DAILY_TASK_COLORS['Sales Visit'].bg },
+  { status: 'Pending Approval', color: DAILY_TASK_COLORS.Pending.bg },
+  { status: 'Approved', color: DAILY_TASK_COLORS.Approved.bg },
+  { status: 'Awaiting Completion Verification', color: DAILY_TASK_COLORS['Awaiting Verification'].bg },
+  { status: 'Verified Completed', color: DAILY_TASK_COLORS['Verified Complete'].bg },
+  { status: 'Marked Not Completed', color: DAILY_TASK_COLORS['Not Completed'].bg },
+  { status: 'Needs Revision', color: '#6B7280' },
+  { status: 'Rescheduled Task', color: '#06B6D4' },
+  { status: 'Terminated / Closed Task', color: '#111827' },
 ] as const;
 
 export type DailyCalendarDayCell = {
@@ -42,6 +53,7 @@ export type DailyCalendarDayCell = {
   iso: string;
   inMonth: boolean;
   isCompanyHoliday: boolean;
+  holidayName: string | null;
   tasks: DailyPlannerTask[];
 };
 
@@ -70,11 +82,14 @@ export function buildDailyMonthGrid(
     const d = new Date(gridStart);
     d.setUTCDate(gridStart.getUTCDate() + i);
     const iso = toIsoDateOnly(d);
+    const holidayInfo = getCompanyHolidayInfo(iso, location);
     cells.push({
       date: d,
       iso,
       inMonth: d.getUTCMonth() === month - 1,
-      isCompanyHoliday: isCompanyHoliday(iso, location),
+      isCompanyHoliday: holidayInfo.isHoliday,
+      holidayName:
+        holidayInfo.holidayType === 'declared' ? holidayInfo.holidayName : null,
       tasks: byDate.get(iso) ?? [],
     });
   }
@@ -83,7 +98,10 @@ export function buildDailyMonthGrid(
 
 /** Calendar colour is driven by task status (and Sales Visit type), never priority. */
 export function getDailyTaskVisualKey(task: DailyPlannerTask): DailyTaskVisualKey {
-  if (task.status === 'Completed') return 'Completed';
+  if (task.status === 'Verified Complete' || task.status === 'Completed') return 'Verified Complete';
+  if (task.status === 'Awaiting Verification') return 'Awaiting Verification';
+  if (task.status === 'Needs Revision') return 'Needs Revision';
+  if (task.status === 'Approved') return 'Approved';
   if (
     task.status === 'Not Completed' ||
     task.status === 'Rejected' ||
@@ -99,6 +117,7 @@ export function getDailyTaskVisualKey(task: DailyPlannerTask): DailyTaskVisualKe
 /** User-facing label — Terminated tasks display as Closed. */
 export function getDailyTaskStatusLabel(status: DailyPlannerStatus): string {
   if (status === 'Terminated') return 'Closed';
+  if (status === 'Pending') return 'Pending Approval';
   return status;
 }
 

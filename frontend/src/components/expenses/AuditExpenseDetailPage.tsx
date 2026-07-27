@@ -363,6 +363,7 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
           <ReadField label="Date" value={detailExpense?.date} />
           <ReadField label="Bill Number" value={detailExpense?.billNumber} />
           <ReadField label="Amount" value={detailExpense?.amount} />
+          <ReadField label="Purpose" value={detailExpense?.purpose} />
           <ReadField label="Supporting Document" value={detailExpense?.supportingDocument} />
           <ReadField label="Month-Year" value={detailExpense?.monthYear} />
         </div>

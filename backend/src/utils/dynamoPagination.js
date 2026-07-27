@@ -15,7 +15,11 @@ export function parsePaginationOptions(options = {}) {
     }
   }
 
-  const cursor = options.cursor ?? options.nextCursor ?? options.exclusiveStartKey;
+  if (options.exclusiveStartKey && typeof options.exclusiveStartKey === 'object') {
+    return { limit, exclusiveStartKey: options.exclusiveStartKey, paginated: limit != null };
+  }
+
+  const cursor = options.cursor ?? options.nextCursor;
   const exclusiveStartKey = decodeCursor(cursor);
 
   return { limit, exclusiveStartKey, paginated: limit != null };

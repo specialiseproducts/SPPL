@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryDefaults } from '../queryDefaults';
 import { measureAsync } from '../../lib/observability/performance';
+import type { ExpenseRecord } from '../../types/expenses';
 import {
   fetchAuditEmployeeDirectory,
   fetchAuditExpensesFiltered,
@@ -93,13 +94,18 @@ export function useAuditExpensesFilteredQuery(
 export async function fetchNextAuditFilteredPage(
   filters: AuditExpenseFilters,
   cursor: string,
+  currentPages: ExpenseRecord[] = [],
 ) {
   const cacheKey = buildAuditCacheKey(filters);
+  const existing = getAuditCacheEntry(cacheKey);
+  if (!existing && currentPages.length > 0) {
+    setAuditCacheEntry(cacheKey, { pages: currentPages, nextCursor: cursor });
+  }
   const page = await fetchAuditExpensesFiltered(filters, cursor);
   appendAuditCachePage(cacheKey, page.data, page.nextCursor);
   const cached = getAuditCacheEntry(cacheKey);
   if (!cached) {
-    return { pages: page.data, nextCursor: page.nextCursor };
+    return { pages: [...currentPages, ...page.data], nextCursor: page.nextCursor };
   }
   return cached;
 }

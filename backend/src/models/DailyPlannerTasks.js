@@ -45,6 +45,15 @@ export function toDailyPlannerTaskDto(row) {
   if (!row || row.is_deleted) return null;
   const currentPriority = String(row.currentPriority || row.priority || 'Medium').trim();
   const originalPriority = String(row.originalPriority || row.priority || currentPriority).trim();
+  const replacement =
+    row.replacementTask && typeof row.replacementTask === 'object'
+      ? {
+          taskName: String(row.replacementTask.taskName || '').trim(),
+          description: String(row.replacementTask.description || '').trim(),
+          priority: String(row.replacementTask.priority || 'Medium').trim(),
+          expectedOutcome: String(row.replacementTask.expectedOutcome || '').trim(),
+        }
+      : null;
   return {
     plannerTaskId: String(row.plannerTaskId || '').trim(),
     employeeCode: String(row.employeeCode || '').trim(),
@@ -56,16 +65,30 @@ export function toDailyPlannerTaskDto(row) {
     originalPriority,
     currentPriority,
     priorityEdited: Boolean(row.priorityEdited),
+    priorityEditedBy: String(row.priorityEditedBy || '').trim(),
+    priorityEditedByName: String(row.priorityEditedByName || '').trim(),
+    priorityEditedAt: row.priorityEditedAt || null,
     status: String(row.status || 'Pending').trim(),
     reason: String(row.reason || '').trim(),
     taskType: String(row.taskType || 'Manual').trim(),
     source: String(row.source || 'MANUAL').trim(),
     salesPlannerId: row.salesPlannerId ? String(row.salesPlannerId).trim() : null,
     approved: Boolean(row.approved),
+    approvalStatus: String(row.approvalStatus || (row.approved ? 'APPROVED' : '')).trim(),
     approvedBy: String(row.approvedBy || '').trim(),
     approvedByName: String(row.approvedByName || '').trim(),
-    approvedDate: row.approvedDate || null,
+    approvedDate: row.approvedDate || row.approvedAt || null,
+    approvedAt: row.approvedAt || row.approvedDate || null,
     managerComments: String(row.managerComments || '').trim(),
+    verifiedBy: String(row.verifiedBy || '').trim(),
+    verifiedByName: String(row.verifiedByName || '').trim(),
+    verifiedAt: row.verifiedAt || null,
+    verificationStatus: String(row.verificationStatus || '').trim(),
+    revisionReason: String(row.revisionReason || '').trim(),
+    revisionRequestedBy: String(row.revisionRequestedBy || '').trim(),
+    revisionRequestedByName: String(row.revisionRequestedByName || '').trim(),
+    revisionRequestedAt: row.revisionRequestedAt || null,
+    replacementTask: replacement,
     planningCategory: String(row.planningCategory || 'Regular').trim(),
     urgentReason: String(row.urgentReason || '').trim(),
     planningWindowUsed: row.planningWindowUsed ? String(row.planningWindowUsed).trim() : null,

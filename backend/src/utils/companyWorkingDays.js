@@ -1,7 +1,13 @@
 /**
  * Company working-day calendar (IST date keys, YYYY-MM-DD).
  *
- * Location-aware holidays (Employee.location):
+ * Shared holiday engine used by Daily Planner and Sales Forecasting.
+ *
+ * Holiday =
+ *   Weekly holiday (location-aware)
+ *   OR Declared company holiday (FY 2026–2027)
+ *
+ * Weekly holidays (Employee.location):
  * - Office (default): Sunday, 3rd Saturday, 4th Saturday
  * - Factory: Sunday only (Saturdays are working days)
  */
@@ -13,6 +19,27 @@ export const COMPANY_HOLIDAY_MESSAGE =
 
 export const EMPLOYEE_LOCATION_OFFICE = 'Office';
 export const EMPLOYEE_LOCATION_FACTORY = 'Factory';
+
+/**
+ * Declared company holidays for Financial Year 2026–2027 (YYYY-MM-DD).
+ * Applies to all locations (Office and Factory).
+ */
+export const DECLARED_COMPANY_HOLIDAYS_FY_2026_2027 = Object.freeze([
+  '2026-05-01', // Maharashtra Day
+  '2026-08-15', // Independence Day
+  '2026-09-14', // Ganesh Festival
+  '2026-09-15', // Ganesh Festival
+  '2026-10-02', // Gandhi Jayanti
+  '2026-10-20', // Dassara / Vijayadashami
+  '2026-11-09', // Diwali – Amavasya Laxmi Poojan
+  '2026-11-10', // Diwali – Bali Pratipada
+  '2026-11-11', // Diwali – Bhau Beej
+  '2026-12-25', // Christmas
+  '2027-01-26', // Republic Day
+  '2027-03-23', // Holi
+]);
+
+const DECLARED_HOLIDAY_SET = new Set(DECLARED_COMPANY_HOLIDAYS_FY_2026_2027);
 
 /** Normalize employee location; empty/unknown → Office rules. */
 export function normalizeEmployeeLocation(location) {
@@ -39,11 +66,18 @@ export function getSaturdayOccurrenceInMonth(dateKey) {
   return count;
 }
 
+/** Declared company holiday (not weekly). */
+export function isDeclaredCompanyHolidayDateKey(dateKey) {
+  const key = String(dateKey || '').trim();
+  return key ? DECLARED_HOLIDAY_SET.has(key) : false;
+}
+
 /**
+ * Weekly holiday only (location-aware). Does not include declared holidays.
  * @param {string} dateKey
  * @param {string} [location] Office | Factory
  */
-export function isCompanyHolidayDateKey(dateKey, location) {
+export function isWeeklyCompanyHolidayDateKey(dateKey, location) {
   const parsed = parseDateKey(dateKey);
   if (!parsed) return false;
 
@@ -62,6 +96,16 @@ export function isCompanyHolidayDateKey(dateKey, location) {
   }
 
   return false;
+}
+
+/**
+ * Holiday = weekly holiday OR declared company holiday.
+ * @param {string} dateKey
+ * @param {string} [location] Office | Factory
+ */
+export function isCompanyHolidayDateKey(dateKey, location) {
+  if (isDeclaredCompanyHolidayDateKey(dateKey)) return true;
+  return isWeeklyCompanyHolidayDateKey(dateKey, location);
 }
 
 export function isCompanyWorkingDayDateKey(dateKey, location) {

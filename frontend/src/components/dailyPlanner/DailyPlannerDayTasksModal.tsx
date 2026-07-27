@@ -25,11 +25,13 @@ import {
   PAST_DATE_READONLY_MESSAGE,
 } from './dailyPlannerDateRules';
 import {
+  acceptDailyPlannerRevision,
   completeDailyPlannerTask,
   notCompletedDailyPlannerTask,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import BulletPointList from './BulletPointList';
+import { parseBulletPoints } from './bulletPointUtils';
 import { isCompanyHoliday } from '../../utils/companyWorkingDays';
 import { todayIso } from './dailyPlannerUtils';
 import { useAuth } from '../../context/AuthContext';
@@ -62,6 +64,7 @@ export default function DailyPlannerDayTasksModal({
   const [busyId, setBusyId] = useState<string | null>(null);
   const workDoneEditorRef = useRef<BulletPointEditorHandle>(null);
   const reasonEditorRef = useRef<BulletPointEditorHandle>(null);
+  const [revisionActionTaskId, setRevisionActionTaskId] = useState<string | null>(null);
 
   const dateMode = useMemo(() => getDailyPlannerDateMode(date), [date]);
   const isPastDate = dateMode === 'past';
@@ -170,6 +173,19 @@ export default function DailyPlannerDayTasksModal({
     }
   };
 
+  const acceptSuggestion = async (task: DailyPlannerTask) => {
+    setBusyId(task.plannerTaskId);
+    try {
+      await acceptDailyPlannerRevision(task.plannerTaskId);
+      toast.success('Manager suggestion accepted');
+      onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Accept revision failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <>
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -207,11 +223,17 @@ export default function DailyPlannerDayTasksModal({
                   <div key={task.plannerTaskId} className="rounded-lg border border-gray-200 p-3">
                     <div className="flex items-start gap-3">
                       <Checkbox
-                        checked={task.status === 'Completed'}
+                        checked={
+                          task.status === 'Awaiting Verification' ||
+                          task.status === 'Completed' ||
+                          task.status === 'Verified Complete'
+                        }
                         disabled={
                           !canModifyTasks ||
                           busyId === task.plannerTaskId ||
+                          task.status === 'Awaiting Verification' ||
                           task.status === 'Completed' ||
+                          task.status === 'Verified Complete' ||
                           isClosed
                         }
                         onCheckedChange={(v) => {
@@ -221,7 +243,12 @@ export default function DailyPlannerDayTasksModal({
                             }
                             return;
                           }
-                          if (v === true && task.status !== 'Completed') {
+                          if (
+                            v === true &&
+                            task.status !== 'Awaiting Verification' &&
+                            task.status !== 'Completed' &&
+                            task.status !== 'Verified Complete'
+                          ) {
                             setCompleteTaskId(task.plannerTaskId);
                           }
                         }}
@@ -247,8 +274,11 @@ export default function DailyPlannerDayTasksModal({
                             : ''}
                         </p>
                         {canModifyTasks &&
+                        task.status !== 'Awaiting Verification' &&
                         task.status !== 'Completed' &&
+                        task.status !== 'Verified Complete' &&
                         task.status !== 'Not Completed' &&
+                        task.status !== 'Needs Revision' &&
                         task.status !== 'Terminated' &&
                         task.status !== 'Rescheduled' ? (
                           <Button
@@ -262,9 +292,16 @@ export default function DailyPlannerDayTasksModal({
                             Mark Not Completed
                           </Button>
                         ) : null}
-                        {task.status === 'Completed' && task.reason ? (
+                        {(task.status === 'Awaiting Verification' ||
+                          task.status === 'Completed' ||
+                          task.status === 'Verified Complete') &&
+                        task.reason ? (
                           <div className="mt-2 text-xs">
-                            <p className="font-medium text-green-700">Work Done</p>
+                            <p className="font-medium text-green-700">
+                              {task.status === 'Awaiting Verification'
+                                ? 'Work Done (Awaiting Verification)'
+                                : 'Work Done'}
+                            </p>
                             <BulletPointList text={task.reason} />
                           </div>
                         ) : null}
@@ -281,6 +318,56 @@ export default function DailyPlannerDayTasksModal({
                               <p>Moved to {task.rescheduledToDate}</p>
                             ) : null}
                             {task.reason ? <BulletPointList text={task.reason} /> : null}
+                          </div>
+                        ) : null}
+                        {task.status === 'Needs Revision' ? (
+                          <div className="mt-3 space-y-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+                            <div>
+                              <p className="font-medium">Needs Revision</p>
+                              {task.revisionReason ? (
+                                <BulletPointList text={task.revisionReason} />
+                              ) : null}
+                            </div>
+                            {task.replacementTask ? (
+                              <div className="space-y-1">
+                                <p className="font-medium">Reporting Manager Suggestion</p>
+                                <p><span className="font-medium">Task Name:</span> {task.replacementTask.taskName || '—'}</p>
+                                <div>
+                                  <p className="font-medium">Description:</p>
+                                  <BulletPointList text={task.replacementTask.description || '—'} />
+                                </div>
+                                <p><span className="font-medium">Priority:</span> {task.replacementTask.priority || '—'}</p>
+                                {task.replacementTask.expectedOutcome ? (
+                                  <div>
+                                    <p className="font-medium">Expected Outcome:</p>
+                                    <BulletPointList
+                                      text={parseBulletPoints(task.replacementTask.expectedOutcome).join('\n')}
+                                    />
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={busyId === task.plannerTaskId}
+                                onClick={() => void acceptSuggestion(task)}
+                              >
+                                Accept Suggestion
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setRevisionActionTaskId(task.plannerTaskId);
+                                  onAddTask();
+                                }}
+                              >
+                                Create Own Revised Task
+                              </Button>
+                            </div>
                           </div>
                         ) : null}
                         {isClosed ? (

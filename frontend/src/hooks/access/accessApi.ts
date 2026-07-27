@@ -11,9 +11,10 @@ const MODULE_KEY_TO_LABEL: Record<string, ModuleName> = {
   crm: 'CRM',
   userManagement: 'User Management',
   dailyPlanner: 'Daily Planner',
+  orderProcessing: 'Order Processing',
 };
 
-const MODULE_LABEL_TO_KEY: Record<ModuleName, string> = {
+const MODULE_LABEL_TO_KEY: Partial<Record<ModuleName, string>> = {
   'Sales Forecasting': 'salesForecasting',
   Expenses: 'expenses',
   Payroll: 'payroll',
@@ -21,6 +22,7 @@ const MODULE_LABEL_TO_KEY: Record<ModuleName, string> = {
   CRM: 'crm',
   'User Management': 'userManagement',
   'Daily Planner': 'dailyPlanner',
+  'Order Processing': 'orderProcessing',
 };
 
 export function accessRuleToApiPayload(rule: AccessRule) {

@@ -121,6 +121,7 @@ export default function App() {
       crm: hasModuleAccess('crm', ac),
       userManagement: hasModuleAccess('userManagement', ac),
       dailyPlanner: hasModuleAccess('dailyPlanner', ac),
+      orderProcessing: hasModuleAccess('orderProcessing', ac),
     };
   }, [accessControl]);
 
@@ -134,6 +135,7 @@ export default function App() {
       crm: getEffectiveRole('crm', ac),
       userManagement: getEffectiveRole('userManagement', ac),
       dailyPlanner: getEffectiveRole('dailyPlanner', ac),
+      orderProcessing: getEffectiveRole('orderProcessing', ac),
     };
   }, [accessControl]);
 
@@ -160,6 +162,7 @@ export default function App() {
       purchases: 'purchases',
       crm: 'crm',
       'user-management': 'userManagement',
+      'order-processing': 'orderProcessing',
     } as Record<string, keyof typeof moduleAccess>)[selectedModule] || 'salesForecasting'
   ]
     ? selectedModule

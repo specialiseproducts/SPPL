@@ -1,4 +1,4 @@
-import { BarChart3, DollarSign, Users, ShoppingCart, Building2, UserCog, ArrowRight, Activity, CalendarCheck2 } from 'lucide-react';
+import { BarChart3, DollarSign, Users, ShoppingCart, Building2, UserCog, ArrowRight, Activity, CalendarCheck2, ClipboardList } from 'lucide-react';
 import { Card } from './ui/card';
 
 interface ModuleDashboardProps {
@@ -66,6 +66,15 @@ const ALL_MODULES: ModuleCard[] = [
     color: '',
     iconBackground: '#14B8A6',
     accessKey: 'dailyPlanner',
+  },
+  {
+    id: 'order-processing',
+    name: 'Order Processing',
+    icon: ClipboardList,
+    description: 'Manage customer order processing forms',
+    color: '',
+    iconBackground: '#0891B2',
+    accessKey: 'orderProcessing',
   },
   {
     id: 'user-management',

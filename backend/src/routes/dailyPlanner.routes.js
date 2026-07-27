@@ -32,6 +32,9 @@ router.post('/tasks/:id/not-completed', DailyPlannerController.notCompletedTask)
 router.delete('/tasks/:id', DailyPlannerController.deleteTask);
 router.post('/tasks/:id/approve', DailyPlannerController.approveTask);
 router.post('/tasks/:id/reject', DailyPlannerController.rejectTask);
+router.post('/tasks/:id/needs-revision', DailyPlannerController.requestNeedsRevision);
+router.post('/tasks/:id/verify-completion', DailyPlannerController.verifyTaskCompletion);
+router.post('/tasks/:id/accept-revision', DailyPlannerController.acceptRevisionSuggestion);
 router.put('/tasks/:id/priority', DailyPlannerController.editPriority);
 
 router.get('/team-mappings', DailyPlannerController.listTeamMappings);

@@ -17,6 +17,7 @@ const Expenses = lazy(() => import('./Expenses'));
 const SalesForecasting = lazy(() => import('./SalesForecasting'));
 const Purchases = lazy(() => import('./Purchases'));
 const DailyPlanner = lazy(() => import('./DailyPlanner'));
+const OrderProcessing = lazy(() => import('./OrderProcessing'));
 const PerformanceDashboard = lazy(() => import('./admin/PerformanceDashboard'));
 
 interface DashboardProps {
@@ -39,6 +40,7 @@ const MODULE_ID_TO_NAME: Record<string, ModuleName> = {
   crm: 'CRM',
   'user-management': 'User Management',
   'daily-planner': 'Daily Planner',
+  'order-processing': 'Order Processing',
   'system-metrics': 'System Metrics',
 };
 
@@ -58,6 +60,8 @@ function isImplementedModule(name: ModuleName, moduleAccess: Record<string, bool
       return !!moduleAccess.purchases;
     case 'Daily Planner':
       return !!moduleAccess.dailyPlanner;
+    case 'Order Processing':
+      return !!moduleAccess.orderProcessing;
     case 'System Metrics':
       return isDeveloper(user.role);
     default:
@@ -161,6 +165,9 @@ export default function Dashboard({
           'Daily Planner',
           <DailyPlanner user={user} moduleRole={(moduleRoles.dailyPlanner || user.role) as UserRole} />,
         );
+      case 'order-processing':
+        if (!moduleAccess.orderProcessing) return null;
+        return wrapModule('Order Processing', <OrderProcessing />);
       case 'system-metrics':
         if (!isDeveloper(user.role)) return null;
         return wrapModule('System Metrics', <PerformanceDashboard />);

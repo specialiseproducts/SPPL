@@ -125,6 +125,46 @@ export const rejectTask = async (req, res, next) => {
   }
 };
 
+export const requestNeedsRevision = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.requestNeedsRevision(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner requestNeedsRevision error:', error);
+    next(error);
+  }
+};
+
+export const verifyTaskCompletion = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.verifyTaskCompletion(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner verifyTaskCompletion error:', error);
+    next(error);
+  }
+};
+
+export const acceptRevisionSuggestion = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.acceptRevisionSuggestion(req.params.id, req.user);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner acceptRevisionSuggestion error:', error);
+    next(error);
+  }
+};
+
 export const editPriority = async (req, res, next) => {
   try {
     const data = await DailyPlannerService.editTaskPriority(

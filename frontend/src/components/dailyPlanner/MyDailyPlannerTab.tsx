@@ -87,6 +87,7 @@ function PlannerDayCell({
         dayNumber={cell.date.getUTCDate()}
         inMonth={cell.inMonth}
         isCompanyHoliday={cell.isCompanyHoliday}
+        holidayName={cell.holidayName}
       />
 
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden">
@@ -273,35 +274,43 @@ export default function MyDailyPlannerTab() {
             </div>
           </div>
 
-          <div
-            className="flex flex-wrap items-center justify-end gap-3 border-b border-gray-100 bg-white px-5 py-2"
-            style={{ gap: 12 }}
-          >
-            {DAILY_STATUS_LEGEND.map((item) => (
-              <div
-                key={item.status}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  color: '#6B7280',
-                  marginRight: item.status === 'Sales Visit' ? 20 : 0,
-                }}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 10,
-                    height: 10,
-                    borderRadius: '50%',
-                    backgroundColor: item.color,
-                    flexShrink: 0,
-                  }}
-                />
-                <span>{item.status}</span>
-              </div>
-            ))}
+          <div className="w-full max-w-full border-b border-gray-100 bg-white px-4 py-3">
+            <div className="flex w-full flex-col items-end" style={{ rowGap: 14 }}>
+              {[DAILY_STATUS_LEGEND.slice(0, 5), DAILY_STATUS_LEGEND.slice(5)].map((row, rowIndex) => (
+                <div
+                  key={rowIndex}
+                  className="flex w-full flex-wrap items-center justify-end"
+                  style={{ columnGap: 20, rowGap: 10 }}
+                >
+                  {row.map((item) => (
+                    <div
+                      key={item.status}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 11,
+                        fontSize: 13,
+                        fontWeight: 500,
+                        color: '#6B7280',
+                        padding: '2px 4px',
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 9,
+                          height: 9,
+                          borderRadius: '50%',
+                          backgroundColor: item.color,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span>{item.status}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
 
           <div

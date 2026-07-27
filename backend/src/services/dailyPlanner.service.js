@@ -42,17 +42,33 @@ function employeeNameOf(authUser) {
 }
 
 function assertTaskNotPermanentlyClosed(task) {
-  if (String(task?.status || '').trim() === 'Terminated') {
+  const status = String(task?.status || '').trim();
+  if (status === 'Terminated' || status === 'Verified Complete') {
     const err = new Error('This task is permanently closed and cannot be modified');
     err.statusCode = 400;
     throw err;
   }
 }
 
+function assertCanModerateTeamTask(effectiveRole) {
+  if (!canAccessAllRecords(effectiveRole)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+function normalizePriorityValue(value, fallback = 'Medium') {
+  const p = String(value || '').trim();
+  if (p === 'High' || p === 'Medium' || p === 'Low') return p;
+  return fallback;
+}
+
 export function sortDailyPlannerTasks(tasks) {
   return [...tasks].sort((a, b) => {
-    const aCompleted = a.status === 'Completed';
-    const bCompleted = b.status === 'Completed';
+    const doneStatuses = new Set(['Completed', 'Awaiting Verification', 'Verified Complete']);
+    const aCompleted = doneStatuses.has(a.status);
+    const bCompleted = doneStatuses.has(b.status);
     if (aCompleted !== bCompleted) return aCompleted ? 1 : -1;
 
     const pa = PRIORITY_ORDER[a.currentPriority || a.priority] ?? 1;
@@ -361,10 +377,12 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
   }
   assertTaskNotPermanentlyClosed(existing);
   const planningScore = Number(existing.planningScore) || 0;
+  // Keep existing scoring: employee completion still awards Completed contribution.
   const completionScore = computeTaskCompletionContribution('Completed');
   const task = await DailyPlannerTasksModel.updateTask(taskId, {
-    status: 'Completed',
+    status: 'Awaiting Verification',
     reason: workDone,
+    verificationStatus: 'AWAITING_VERIFICATION',
     completionScore,
     finalScore: planningScore + completionScore,
   });
@@ -580,11 +598,7 @@ export const listTeamTasks = async (authUser, effectiveRole, filters = {}) => {
 };
 
 export const approveTask = async (taskId, body, authUser, effectiveRole) => {
-  if (!canAccessAllRecords(effectiveRole)) {
-    const err = new Error('Forbidden');
-    err.statusCode = 403;
-    throw err;
-  }
+  assertCanModerateTeamTask(effectiveRole);
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing) {
     const err = new Error('Task not found');
@@ -592,14 +606,40 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
     throw err;
   }
 
-  const task = await DailyPlannerTasksModel.updateTask(taskId, {
+  const nowIso = new Date().toISOString();
+  const reviewerCode = employeeCodeOf(authUser);
+  const reviewerName = employeeNameOf(authUser);
+  const patch = {
     approved: true,
+    approvalStatus: 'APPROVED',
     status: 'Approved',
-    approvedBy: employeeCodeOf(authUser),
-    approvedByName: employeeNameOf(authUser),
-    approvedDate: new Date().toISOString(),
+    approvedBy: reviewerCode,
+    approvedByName: reviewerName,
+    approvedDate: nowIso,
+    approvedAt: nowIso,
     managerComments: String(body.comments || existing.managerComments || '').trim(),
-  });
+  };
+
+  const requestedPriority = body.priority != null ? String(body.priority).trim() : '';
+  if (requestedPriority) {
+    const nextPriority = normalizePriorityValue(
+      requestedPriority,
+      existing.currentPriority || existing.priority || 'Medium',
+    );
+    const originalPriority =
+      existing.originalPriority || existing.priority || nextPriority;
+    patch.priority = nextPriority;
+    patch.currentPriority = nextPriority;
+    patch.originalPriority = originalPriority;
+    patch.priorityEdited = originalPriority !== nextPriority;
+    if (patch.priorityEdited) {
+      patch.priorityEditedBy = reviewerCode;
+      patch.priorityEditedByName = reviewerName;
+      patch.priorityEditedAt = nowIso;
+    }
+  }
+
+  const task = await DailyPlannerTasksModel.updateTask(taskId, patch);
 
   void notifyUser(
     existing.employeeCode,
@@ -613,11 +653,12 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
 };
 
 export const rejectTask = async (taskId, body, authUser, effectiveRole) => {
-  if (!canAccessAllRecords(effectiveRole)) {
-    const err = new Error('Forbidden');
-    err.statusCode = 403;
-    throw err;
-  }
+  // Backward-compatible alias — prefer requestNeedsRevision.
+  return requestNeedsRevision(taskId, body, authUser, effectiveRole);
+};
+
+export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing) {
     const err = new Error('Task not found');
@@ -625,20 +666,55 @@ export const rejectTask = async (taskId, body, authUser, effectiveRole) => {
     throw err;
   }
 
-  const comments = String(body.comments || '').trim();
+  const reason = String(body.reason || body.comments || '').trim();
+  if (!reason) {
+    const err = new Error('Reason is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const replacementRaw = body.replacementTask || {};
+  const replacementTask = {
+    taskName: String(replacementRaw.taskName || '').trim(),
+    description: String(replacementRaw.description || '').trim(),
+    priority: normalizePriorityValue(
+      replacementRaw.priority,
+      existing.currentPriority || existing.priority || 'Medium',
+    ),
+    expectedOutcome: String(replacementRaw.expectedOutcome || '').trim(),
+  };
+
+  if (!replacementTask.taskName) {
+    const err = new Error('Replacement task name is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!replacementTask.description) {
+    const err = new Error('Replacement task description is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const nowIso = new Date().toISOString();
+  const reviewerCode = employeeCodeOf(authUser);
+  const reviewerName = employeeNameOf(authUser);
+
   const task = await DailyPlannerTasksModel.updateTask(taskId, {
     approved: false,
-    status: 'Rejected',
-    managerComments: comments,
-    approvedBy: employeeCodeOf(authUser),
-    approvedByName: employeeNameOf(authUser),
-    approvedDate: new Date().toISOString(),
+    status: 'Needs Revision',
+    revisionReason: reason,
+    managerComments: reason,
+    revisionRequestedBy: reviewerCode,
+    revisionRequestedByName: reviewerName,
+    revisionRequestedAt: nowIso,
+    replacementTask,
+    verificationStatus: '',
   });
 
   void notifyUser(
     existing.employeeCode,
-    'Daily Planner task rejected',
-    comments || `Your task "${existing.taskName}" was rejected.`,
+    'Daily Planner task needs revision',
+    reason || `Your task "${existing.taskName}" needs revision.`,
     'INFO',
     { plannerTaskId: taskId },
   );
@@ -646,14 +722,113 @@ export const rejectTask = async (taskId, body, authUser, effectiveRole) => {
   return { task };
 };
 
-export const editTaskPriority = async (taskId, body, authUser, effectiveRole) => {
-  if (!canAccessAllRecords(effectiveRole)) {
+export const verifyTaskCompletion = async (taskId, body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing) {
+    const err = new Error('Task not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const status = String(existing.status || '').trim();
+  if (status !== 'Awaiting Verification' && status !== 'Completed') {
+    const err = new Error('Task is not awaiting verification');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const nowIso = new Date().toISOString();
+  const task = await DailyPlannerTasksModel.updateTask(taskId, {
+    status: 'Verified Complete',
+    verificationStatus: 'VERIFIED_COMPLETED',
+    verifiedBy: employeeCodeOf(authUser),
+    verifiedByName: employeeNameOf(authUser),
+    verifiedAt: nowIso,
+    managerComments: String(body.comments || existing.managerComments || '').trim(),
+  });
+
+  void notifyUser(
+    existing.employeeCode,
+    'Daily Planner completion verified',
+    `Completion of "${existing.taskName}" was verified.`,
+    'INFO',
+    { plannerTaskId: taskId },
+  );
+
+  return { task };
+};
+
+export const acceptRevisionSuggestion = async (taskId, authUser) => {
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing || existing.employeeCode !== employeeCodeOf(authUser)) {
     const err = new Error('Forbidden');
     err.statusCode = 403;
     throw err;
   }
-  const newPriority = String(body.priority || '').trim();
-  if (!newPriority) {
+  if (String(existing.status || '').trim() !== 'Needs Revision') {
+    const err = new Error('Task is not awaiting revision');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const suggestion = existing.replacementTask;
+  if (!suggestion || !String(suggestion.taskName || '').trim()) {
+    const err = new Error('No manager suggestion available');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const priority = normalizePriorityValue(
+    suggestion.priority,
+    existing.currentPriority || existing.priority || 'Medium',
+  );
+  const descriptionParts = [String(suggestion.description || '').trim()];
+  const expected = String(suggestion.expectedOutcome || '').trim();
+  if (expected) {
+    descriptionParts.push(`Expected Outcome: ${expected}`);
+  }
+
+  const revisedTask = await DailyPlannerTasksModel.createTask({
+    employeeCode: existing.employeeCode,
+    employeeName: existing.employeeName,
+    date: existing.date,
+    taskName: String(suggestion.taskName).trim(),
+    description: descriptionParts.filter(Boolean).join('\n'),
+    priority,
+    originalPriority: priority,
+    currentPriority: priority,
+    priorityEdited: false,
+    taskType: 'Manual',
+    source: 'MANUAL',
+    status: 'Pending',
+    planningCategory:
+      existing.planningCategory === PLANNING_CATEGORY_URGENT
+        ? PLANNING_CATEGORY_URGENT
+        : PLANNING_CATEGORY_REGULAR,
+    urgentReason: existing.urgentReason || '',
+    parentTaskId: existing.plannerTaskId,
+    planningWindowUsed: null,
+    planningTimestamp: new Date().toISOString(),
+    planningScore: 0,
+    completionScore: 0,
+    finalScore: 0,
+  });
+
+  if (existing.planningCategory === PLANNING_CATEGORY_REGULAR) {
+    await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+      employeeCode: existing.employeeCode,
+      workingDayDateKey: existing.date,
+    });
+  }
+
+  return { task: existing, revisedTask };
+};
+
+export const editTaskPriority = async (taskId, body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const newPriority = normalizePriorityValue(body.priority, '');
+  if (!newPriority || (newPriority !== 'High' && newPriority !== 'Medium' && newPriority !== 'Low')) {
     const err = new Error('priority is required');
     err.statusCode = 400;
     throw err;
@@ -666,12 +841,16 @@ export const editTaskPriority = async (taskId, body, authUser, effectiveRole) =>
     throw err;
   }
 
+  const nowIso = new Date().toISOString();
   const originalPriority = existing.originalPriority || existing.priority || newPriority;
   const task = await DailyPlannerTasksModel.updateTask(taskId, {
     priority: newPriority,
     currentPriority: newPriority,
     originalPriority,
     priorityEdited: originalPriority !== newPriority,
+    priorityEditedBy: employeeCodeOf(authUser),
+    priorityEditedByName: employeeNameOf(authUser),
+    priorityEditedAt: nowIso,
     managerComments: String(body.comments || existing.managerComments || '').trim(),
     approved: existing.approved,
     status: existing.status === 'Pending' ? 'Pending' : existing.status,

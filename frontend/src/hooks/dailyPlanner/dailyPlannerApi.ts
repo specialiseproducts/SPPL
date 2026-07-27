@@ -22,6 +22,10 @@ import {
 function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPlannerTask {
   const r = raw as Record<string, unknown>;
   const priority = String(r.currentPriority || r.priority || 'Medium').trim() as DailyPlannerTask['priority'];
+  const replacementRaw =
+    r.replacementTask && typeof r.replacementTask === 'object'
+      ? (r.replacementTask as Record<string, unknown>)
+      : null;
   return {
     ...(raw as DailyPlannerTask),
     plannerTaskId: String(r.plannerTaskId ?? '').trim(),
@@ -34,15 +38,37 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     originalPriority: String(r.originalPriority || priority).trim() as DailyPlannerTask['priority'],
     currentPriority: priority,
     priorityEdited: Boolean(r.priorityEdited),
+    priorityEditedBy: String(r.priorityEditedBy ?? '').trim(),
+    priorityEditedByName: String(r.priorityEditedByName ?? '').trim(),
+    priorityEditedAt: r.priorityEditedAt ? String(r.priorityEditedAt) : null,
     status: String(r.status ?? 'Pending').trim() as DailyPlannerTask['status'],
     reason: String(r.reason ?? '').trim(),
     taskType: String(r.taskType ?? 'Manual').trim() as DailyPlannerTask['taskType'],
     source: String(r.source ?? 'MANUAL').trim() as DailyPlannerTask['source'],
     salesPlannerId: r.salesPlannerId ? String(r.salesPlannerId).trim() : null,
     approved: Boolean(r.approved),
+    approvalStatus: String(r.approvalStatus ?? '').trim(),
     approvedBy: String(r.approvedBy ?? '').trim(),
     approvedByName: String(r.approvedByName ?? '').trim(),
+    approvedDate: r.approvedDate ? String(r.approvedDate) : r.approvedAt ? String(r.approvedAt) : null,
+    approvedAt: r.approvedAt ? String(r.approvedAt) : r.approvedDate ? String(r.approvedDate) : null,
     managerComments: String(r.managerComments ?? '').trim(),
+    verifiedBy: String(r.verifiedBy ?? '').trim(),
+    verifiedByName: String(r.verifiedByName ?? '').trim(),
+    verifiedAt: r.verifiedAt ? String(r.verifiedAt) : null,
+    verificationStatus: String(r.verificationStatus ?? '').trim(),
+    revisionReason: String(r.revisionReason ?? '').trim(),
+    revisionRequestedBy: String(r.revisionRequestedBy ?? '').trim(),
+    revisionRequestedByName: String(r.revisionRequestedByName ?? '').trim(),
+    revisionRequestedAt: r.revisionRequestedAt ? String(r.revisionRequestedAt) : null,
+    replacementTask: replacementRaw
+      ? {
+          taskName: String(replacementRaw.taskName ?? '').trim(),
+          description: String(replacementRaw.description ?? '').trim(),
+          priority: String(replacementRaw.priority || 'Medium').trim() as DailyPlannerTask['priority'],
+          expectedOutcome: String(replacementRaw.expectedOutcome ?? '').trim(),
+        }
+      : null,
     planningCategory: (String(r.planningCategory || PLANNING_CATEGORY_REGULAR).trim() ||
       PLANNING_CATEGORY_REGULAR) as DailyPlannerTask['planningCategory'],
     urgentReason: String(r.urgentReason ?? '').trim(),
@@ -271,12 +297,15 @@ export async function fetchTeamDailyPlannerMonth(
 
 export async function approveDailyPlannerTask(
   taskId: string,
-  comments?: string,
+  options?: { comments?: string; priority?: string },
 ): Promise<DailyPlannerTask> {
   const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ comments: comments || '' }),
+    body: JSON.stringify({
+      comments: options?.comments || '',
+      ...(options?.priority ? { priority: options.priority } : {}),
+    }),
   })) as { data?: { task?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Approve failed');
   return normalizeTask(res.data.task);
@@ -289,10 +318,66 @@ export async function rejectDailyPlannerTask(
   const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/reject`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ comments: comments || '' }),
+    body: JSON.stringify({ comments: comments || '', reason: comments || '' }),
   })) as { data?: { task?: DailyPlannerTask } };
-  if (!res?.data?.task) throw new Error('Reject failed');
+  if (!res?.data?.task) throw new Error('Needs revision request failed');
   return normalizeTask(res.data.task);
+}
+
+export async function requestNeedsRevisionDailyPlannerTask(
+  taskId: string,
+  body: {
+    reason: string;
+    replacementTask: {
+      taskName: string;
+      description: string;
+      priority: string;
+      expectedOutcome?: string;
+    };
+  },
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/needs-revision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Needs revision request failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function verifyDailyPlannerCompletion(
+  taskId: string,
+  comments?: string,
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/verify-completion`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ comments: comments || '' }),
+    },
+  )) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Verify completion failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function acceptDailyPlannerRevision(
+  taskId: string,
+): Promise<{ task: DailyPlannerTask; revisedTask: DailyPlannerTask }> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/accept-revision`,
+    { method: 'POST' },
+  )) as { data?: { task?: DailyPlannerTask; revisedTask?: DailyPlannerTask } };
+  if (!res?.data?.task || !res?.data?.revisedTask) {
+    throw new Error('Accept revision failed');
+  }
+  return {
+    task: normalizeTask(res.data.task),
+    revisedTask: normalizeTask(res.data.revisedTask),
+  };
 }
 
 export async function editDailyPlannerPriority(

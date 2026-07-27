@@ -107,6 +107,7 @@ function PlannerDayCell({
         dayNumber={cell.date.getUTCDate()}
         inMonth={cell.inMonth}
         isCompanyHoliday={cell.isCompanyHoliday}
+        holidayName={cell.holidayName}
       />
 
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden">
@@ -209,7 +210,21 @@ export default function SalesPlannerTab({
     isAllTeamSelected,
   );
   const events = isAllTeamSelected ? (allTeamMonthQuery.data ?? []) : (monthQuery.data ?? []);
-  const grid = useMemo(() => buildMonthGrid(year, month, events), [year, month, events]);
+
+  const holidayLocation = useMemo(() => {
+    const code = String(plannerEmployeeCode || currentEmployeeCode || '').trim();
+    if (!code) return undefined;
+    const emp = (employeesQuery.data ?? []).find((e) => {
+      const empCode = String(e.employee_code || e.employeeCode || '').trim();
+      return empCode === code;
+    });
+    return emp?.location || undefined;
+  }, [plannerEmployeeCode, currentEmployeeCode, employeesQuery.data]);
+
+  const grid = useMemo(
+    () => buildMonthGrid(year, month, events, holidayLocation),
+    [year, month, events, holidayLocation],
+  );
 
   const shiftMonth = (delta: -1 | 1) => {
     setExpandedCells(new Set());
@@ -258,7 +273,7 @@ export default function SalesPlannerTab({
   };
 
   const openCreate = (iso: string) => {
-    if (isCompanyHoliday(iso)) {
+    if (isCompanyHoliday(iso, holidayLocation)) {
       toast.error(COMPANY_HOLIDAY_MESSAGE);
       return;
     }
@@ -356,35 +371,43 @@ export default function SalesPlannerTab({
             </div>
           </div>
 
-          <div
-            className="flex flex-wrap items-center justify-end gap-3 border-b border-gray-100 bg-white px-5 py-2"
-            style={{ gap: 12 }}
-          >
-            {PLANNER_STATUS_LEGEND.map((item) => (
-              <div
-                key={item.status}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  color: '#6B7280',
-                  marginRight: item.status === 'Rescheduled' ? 20 : 0,
-                }}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 10,
-                    height: 10,
-                    borderRadius: '50%',
-                    backgroundColor: item.color,
-                    flexShrink: 0,
-                  }}
-                />
-                <span>{item.status}</span>
-              </div>
-            ))}
+          <div className="w-full max-w-full border-b border-gray-100 bg-white px-4 py-3">
+            <div className="flex w-full flex-col items-end" style={{ rowGap: 14 }}>
+              {[PLANNER_STATUS_LEGEND.slice(0, 5), PLANNER_STATUS_LEGEND.slice(5)].map((row, rowIndex) => (
+                <div
+                  key={rowIndex}
+                  className="flex w-full flex-wrap items-center justify-end"
+                  style={{ columnGap: 20, rowGap: 10 }}
+                >
+                  {row.map((item) => (
+                    <div
+                      key={item.status}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 11,
+                        fontSize: 13,
+                        fontWeight: 500,
+                        color: '#6B7280',
+                        padding: '2px 4px',
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 9,
+                          height: 9,
+                          borderRadius: '50%',
+                          backgroundColor: item.color,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span>{item.status}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
 
           <div

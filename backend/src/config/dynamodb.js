@@ -60,6 +60,7 @@ export const TABLES = {
   DAILY_PLANNER_PLANNING:
     process.env.DYNAMODB_TABLE_DAILY_PLANNER_PLANNING || 'DailyPlannerPlanning',
   AUDIT_LOGS: process.env.DYNAMODB_TABLE_AUDIT_LOGS || 'AuditLogs',
+  ORDER_PROCESSING: process.env.DYNAMODB_TABLE_ORDER_PROCESSING || 'OrderProcessing',
 };
 
 

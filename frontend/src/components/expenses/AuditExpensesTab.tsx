@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eye } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -102,6 +102,7 @@ export default function AuditExpensesTab() {
   const [rejectTarget, setRejectTarget] = useState<ExpenseRecord | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
+  const loadMoreInFlightRef = useRef(false);
 
   const employees = employeesQuery.data ?? [];
 
@@ -206,17 +207,19 @@ export default function AuditExpensesTab() {
     filtersApplied && !isLoading && !auditQuery.isError && expenses.length === 0;
 
   const handleLoadMore = useCallback(async () => {
-    if (!nextCursor || loadingMore) return;
+    if (!nextCursor || loadMoreInFlightRef.current) return;
+    loadMoreInFlightRef.current = true;
     setLoadingMore(true);
     try {
-      const updated = await fetchNextAuditFilteredPage(activeFilters, nextCursor);
+      const updated = await fetchNextAuditFilteredPage(activeFilters, nextCursor, expenses);
       queryClient.setQueryData(expensesQueryKeys.auditFiltered(activeFilters), updated);
     } catch {
       toast.error('Failed to load more records');
     } finally {
+      loadMoreInFlightRef.current = false;
       setLoadingMore(false);
     }
-  }, [activeFilters, loadingMore, nextCursor, queryClient]);
+  }, [activeFilters, expenses, nextCursor, queryClient]);
 
   const openRejectDialog = (expense: ExpenseRecord) => {
     setRejectReason('');
@@ -299,7 +302,7 @@ export default function AuditExpensesTab() {
           <Table className="min-w-[900px]">
             <TableHeader>
               <TableRow className="bg-gray-50">
-                <TableHead className="whitespace-nowrap">Employee Name</TableHead>
+                <TableHead className="whitespace-nowrap">Sr. #</TableHead>
                 <TableHead className="whitespace-nowrap">Date</TableHead>
                 <TableHead className="whitespace-nowrap">Bill Number</TableHead>
                 <TableHead className="whitespace-nowrap">Amount</TableHead>
@@ -361,7 +364,7 @@ export default function AuditExpensesTab() {
                       key={expense.expenseId}
                       className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50/80'}
                     >
-                      <TableCell className="font-medium">{displayCell(expense.employeeName)}</TableCell>
+                      <TableCell className="font-medium">{index + 1}</TableCell>
                       <TableCell className="whitespace-nowrap">{formatDateCell(expense.date)}</TableCell>
                       <TableCell>{displayCell(expense.billNumber)}</TableCell>
                       <TableCell className="whitespace-nowrap">

@@ -80,3 +80,44 @@ export function canManageDailyPlannerTeam(role: string) {
   return isSuperAdmin(r) || isAdmin(r) || isDeveloper(r);
 }
 
+export type DailyPlannerTabId =
+  | 'my-daily-planner'
+  | 'team-daily-planner'
+  | 'team-performance'
+  | 'reports'
+  | 'team-management';
+
+/**
+ * Role-wise Daily Planner tab visibility based on the module access role.
+ * Updates automatically when Access Management changes the Daily Planner role.
+ */
+export function getDailyPlannerVisibleTabs(role: string): DailyPlannerTabId[] {
+  const r = normalizeRole(role);
+
+  if (isSuperAdmin(r)) {
+    return ['team-daily-planner', 'team-performance', 'team-management'];
+  }
+
+  if (isAdmin(r)) {
+    return ['my-daily-planner', 'team-daily-planner', 'team-performance'];
+  }
+
+  if (isDeveloper(r)) {
+    return [
+      'my-daily-planner',
+      'team-daily-planner',
+      'team-performance',
+      'reports',
+      'team-management',
+    ];
+  }
+
+  // User (and any other non-elevated role)
+  return ['my-daily-planner', 'reports'];
+}
+
+export function getDefaultDailyPlannerTab(role: string): DailyPlannerTabId {
+  const visible = getDailyPlannerVisibleTabs(role);
+  return visible[0] ?? 'my-daily-planner';
+}
+
