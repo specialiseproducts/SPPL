@@ -17,6 +17,7 @@ export const CORPORATE_ID = 'SpecialisePdt';
 
 const LOCATION_VALUES = new Set(['Office', 'Factory']);
 const GENDER_VALUES = new Set(['Male', 'Female']);
+const inFlightCreateByEmployeeCode = new Set();
 
 /**
  * Normalize incoming API / multipart body to DynamoDB-oriented fields (camelCase).
@@ -205,6 +206,7 @@ export const getAllEmployees = async (filters = {}, options = {}, authUser = nul
 };
 
 export const createEmployee = async (employeeData, authUser) => {
+  let employeeCodeKey = '';
   try {
     // TODO: TEMP DEV MODE — restore bcrypt before production.
     const normalized = normalizeEmployeePayload(employeeData, { isUpdate: false });
@@ -217,6 +219,20 @@ export const createEmployee = async (employeeData, authUser) => {
     }
     if (!normalized.employeeCode) {
       throw new Error('employeeCode is required');
+    }
+    employeeCodeKey = String(normalized.employeeCode).trim().toUpperCase();
+    if (inFlightCreateByEmployeeCode.has(employeeCodeKey)) {
+      const err = new Error('Create user request already in progress for this employee code');
+      err.statusCode = 409;
+      throw err;
+    }
+    inFlightCreateByEmployeeCode.add(employeeCodeKey);
+
+    const existing = await EmployeeModel.getEmployeeByCode(normalized.employeeCode);
+    if (existing && !existing.is_deleted) {
+      const err = new Error('Employee code already exists');
+      err.statusCode = 409;
+      throw err;
     }
 
     delete normalized.password;
@@ -253,6 +269,10 @@ export const createEmployee = async (employeeData, authUser) => {
   } catch (error) {
     log.error('Error creating employee:', error);
     throw error;
+  } finally {
+    if (employeeCodeKey) {
+      inFlightCreateByEmployeeCode.delete(employeeCodeKey);
+    }
   }
 };
 

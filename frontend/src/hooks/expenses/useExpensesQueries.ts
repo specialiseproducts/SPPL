@@ -138,10 +138,14 @@ export function useInvalidateExpensesList() {
   return () => {
     clearAuditExpenseCache();
     void queryClient.invalidateQueries({ queryKey: expensesQueryKeys.all });
+    void queryClient.refetchQueries({ queryKey: expensesQueryKeys.all, type: 'all' });
   };
 }
 
 export function useInvalidateExpenseTravelRates() {
   const queryClient = useQueryClient();
-  return () => queryClient.invalidateQueries({ queryKey: expensesQueryKeys.travelRates() });
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: expensesQueryKeys.travelRates() });
+    void queryClient.refetchQueries({ queryKey: expensesQueryKeys.travelRates(), type: 'all' });
+  };
 }

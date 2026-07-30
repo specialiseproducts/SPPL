@@ -204,6 +204,10 @@ function invalidateBootstrapAndSlices(queryClient: ReturnType<typeof useQueryCli
   void queryClient.invalidateQueries({ queryKey: salesQueryKeys.masters() });
   void queryClient.invalidateQueries({ queryKey: salesQueryKeys.rates() });
   void queryClient.invalidateQueries({ queryKey: salesQueryKeys.plannerOrganizations() });
+  void queryClient.refetchQueries({ queryKey: salesQueryKeys.bootstrap(), type: 'all' });
+  void queryClient.refetchQueries({ queryKey: salesQueryKeys.masters(), type: 'all' });
+  void queryClient.refetchQueries({ queryKey: salesQueryKeys.rates(), type: 'all' });
+  void queryClient.refetchQueries({ queryKey: salesQueryKeys.plannerOrganizations(), type: 'all' });
 }
 
 /** Invalidate quotation dropdown masters after master-data admin changes. */
@@ -218,6 +222,8 @@ export function useInvalidateSalesForecasts() {
   return () => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.forecasts() });
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.forecastsInfinite() });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.forecasts(), type: 'all' });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.forecastsInfinite(), type: 'all' });
   };
 }
 
@@ -226,12 +232,17 @@ export function useInvalidateSalesRates() {
   return () => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.rates() });
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.bootstrap() });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.rates(), type: 'all' });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.bootstrap(), type: 'all' });
   };
 }
 
 export function useInvalidateSalesBootstrap() {
   const queryClient = useQueryClient();
-  return () => queryClient.invalidateQueries({ queryKey: salesQueryKeys.bootstrap() });
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: salesQueryKeys.bootstrap() });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.bootstrap(), type: 'all' });
+  };
 }
 
 export type { ExchangeRatesMap };

@@ -64,6 +64,7 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
   const [documentsFile, setDocumentsFile] = useState<File | null>(null);
   const [pastExperienceFile, setPastExperienceFile] = useState<File | null>(null);
   const [profilePhotoFile, setProfilePhotoFile] = useState<File | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (initialData) {
@@ -103,6 +104,7 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
     setDocumentsFile(null);
     setPastExperienceFile(null);
     setProfilePhotoFile(null);
+    setIsSubmitting(false);
   }, [initialData, isOpen]);
 
   const validateForm = (): boolean => {
@@ -194,12 +196,14 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
 
     if (!validateForm()) {
       return;
     }
 
     try {
+      setIsSubmitting(true);
       const payload: UserMaster = {
         ...(formData as UserMaster),
         name: `${formData.first_name || ''} ${formData.last_name || ''}`.trim(),
@@ -218,6 +222,7 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
       }
     } catch (error) {
       console.error('Submit Error:', error);
+      setIsSubmitting(false);
     }
   };
 
@@ -603,11 +608,15 @@ export default function UserFormModal({ isOpen, onClose, onSubmit, initialData, 
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={isSubmitting}>
               Cancel
             </Button>
-            <Button type="submit" className="bg-[#007BFF] hover:bg-[#0056b3]">
-              {isEdit ? 'Update User' : 'Create User'}
+            <Button
+              type="submit"
+              className="bg-[#007BFF] hover:bg-[#0056b3]"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? (isEdit ? 'Updating User…' : 'Creating User…') : isEdit ? 'Update User' : 'Create User'}
             </Button>
           </DialogFooter>
         </form>

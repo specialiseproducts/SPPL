@@ -71,6 +71,7 @@ export default function AccessManagementTab() {
       body: JSON.stringify(accessRuleToApiPayload(rule)),
     });
     void invalidateAccessRules();
+    setIsModalOpen(false);
     setEditingRule(null);
     toast.success('Role Management updated');
   };

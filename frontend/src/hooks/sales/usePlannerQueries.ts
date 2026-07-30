@@ -77,13 +77,16 @@ export function useInvalidatePlannerMonth() {
   const queryClient = useQueryClient();
   return (year: number, month: number) => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.plannerMonth(year, month) });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.plannerMonth(year, month), type: 'all' });
   };
 }
 
 export function useInvalidatePlannerQueries() {
   const queryClient = useQueryClient();
   return () => {
-    void queryClient.invalidateQueries({ queryKey: [...salesQueryKeys.all, 'planner'] });
+    const plannerKey = [...salesQueryKeys.all, 'planner'] as const;
+    void queryClient.invalidateQueries({ queryKey: plannerKey });
+    void queryClient.refetchQueries({ queryKey: plannerKey, type: 'all' });
   };
 }
 
@@ -92,5 +95,7 @@ export function useInvalidateSalesForecastsFromPlanner() {
   return () => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.forecasts() });
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.forecastsInfinite() });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.forecasts(), type: 'all' });
+    void queryClient.refetchQueries({ queryKey: salesQueryKeys.forecastsInfinite(), type: 'all' });
   };
 }

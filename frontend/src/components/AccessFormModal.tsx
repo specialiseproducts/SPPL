@@ -14,7 +14,7 @@ import type { UserMaster } from './UserCreationTab';
 interface AccessFormModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (rule: AccessRule) => void;
+  onSubmit: (rule: AccessRule) => Promise<void> | void;
   availableUsers: UserMaster[];
   initialData?: AccessRule;
   isEdit?: boolean;
@@ -56,7 +56,7 @@ export default function AccessFormModal({ isOpen, onClose, onSubmit, availableUs
     }
   }, [initialData, isOpen]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedEmployeeCode) {
       toast.error('Please select a name');
@@ -77,13 +77,16 @@ export default function AccessFormModal({ isOpen, onClose, onSubmit, availableUs
       lastModified: new Date().toISOString().split('T')[0],
     };
 
-    onSubmit(rule);
-    
-    // Reset form only if not editing
-    if (!isEdit) {
-      setSelectedEmployeeCode('');
-      setBaseRole('User');
-      setOverrides([]);
+    try {
+      await onSubmit(rule);
+      // Reset form only if not editing and save succeeded.
+      if (!isEdit) {
+        setSelectedEmployeeCode('');
+        setBaseRole('User');
+        setOverrides([]);
+      }
+    } catch {
+      // Keep modal open and preserve entered values for retry.
     }
   };
 

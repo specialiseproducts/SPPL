@@ -168,5 +168,6 @@ export function useInvalidateDailyPlannerQueries() {
   const queryClient = useQueryClient();
   return () => {
     void queryClient.invalidateQueries({ queryKey: dailyPlannerQueryKeys.all });
+    void queryClient.refetchQueries({ queryKey: dailyPlannerQueryKeys.all, type: 'all' });
   };
 }
