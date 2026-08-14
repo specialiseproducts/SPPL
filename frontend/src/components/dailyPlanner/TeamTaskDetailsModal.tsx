@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
+import AuditHistoryModal from '../audit/AuditHistoryModal';
 import type { DailyPlannerPriority, DailyPlannerTask } from '../../types/dailyPlanner';
 import {
   approveDailyPlannerTask,
@@ -113,6 +114,7 @@ export default function TeamTaskDetailsModal({
   const [replacementDescription, setReplacementDescription] = useState('');
   const [replacementPriority, setReplacementPriority] = useState<DailyPlannerPriority>('Medium');
   const [replacementOutcome, setReplacementOutcome] = useState('');
+  const [auditOpen, setAuditOpen] = useState(false);
 
   useEffect(() => {
     if (!task) return;
@@ -331,6 +333,11 @@ export default function TeamTaskDetailsModal({
             </ViewSection>
 
             <ViewSection title="History">
+              <div className="mb-3 flex justify-end">
+                <Button type="button" variant="outline" size="sm" onClick={() => setAuditOpen(true)}>
+                  Audit History
+                </Button>
+              </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <ViewField label="Created On" value={formatDateCell(task.createdAt)} />
                 <ViewField label="Last Updated" value={formatDateCell(task.updatedAt)} />
@@ -484,6 +491,15 @@ export default function TeamTaskDetailsModal({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AuditHistoryModal
+        open={auditOpen}
+        onOpenChange={setAuditOpen}
+        title="Task Audit History"
+        entityType="plannerTask"
+        entityId={task.plannerTaskId}
+        module="dailyPlanner"
+      />
     </>
   );
 }

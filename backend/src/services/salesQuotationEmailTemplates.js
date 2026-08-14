@@ -205,3 +205,38 @@ export function buildRejectionEmail(quotation, rejectionReason, ownerDisplayName
 
   return { subject, text };
 }
+
+function formatValuesBlock(values) {
+  const obj = values && typeof values === 'object' ? values : {};
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return '—';
+  return keys.map((k) => `${k}: ${obj[k] == null || obj[k] === '' ? '—' : obj[k]}`).join('\n');
+}
+
+export function buildEditPermissionRequestEmail(request) {
+  const subject = `Quotation Edit Permission Request: ${request.quotationRef || request.quotationId || ''}`;
+  const text = [
+    'A quotation edit permission request requires your review.',
+    '',
+    'Request Details',
+    '',
+    `Employee Name: ${request.employeeName || '—'}`,
+    `Employee Code: ${request.employeeCode || '—'}`,
+    `Official Email: ${request.employeeOfficialEmail || '—'}`,
+    `Quotation Ref: ${request.quotationRef || '—'}`,
+    `Customer: ${request.customerOrganization || '—'}`,
+    `Principal: ${request.principal || '—'}`,
+    `Request Type: ${request.requestType || '—'}`,
+    '',
+    'Old Values',
+    formatValuesBlock(request.oldValues),
+    '',
+    'Requested Values',
+    formatValuesBlock(request.requestedValues),
+    '',
+    'Portal Link',
+    'https://erp.specialiseproducts.com',
+  ].join('\n');
+
+  return { subject, text };
+}

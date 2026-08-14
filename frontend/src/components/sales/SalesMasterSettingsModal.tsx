@@ -127,7 +127,7 @@ export default function SalesMasterSettingsModal({
     const name = pName.trim();
     const code = pCode.trim().toUpperCase();
     if (!name || !code) {
-      toast.error('Principal name and short code are required');
+      toast.error('Principle name and short code are required');
       return;
     }
     setBusy(true);
@@ -142,7 +142,7 @@ export default function SalesMasterSettingsModal({
           previousSk: pPrevSk || undefined,
         }),
       });
-      toast.success('Principal saved');
+      toast.success('Principle saved');
       setPName('');
       setPCode('');
       setPActive(true);
@@ -228,7 +228,7 @@ export default function SalesMasterSettingsModal({
           <Tabs value={tab} onValueChange={setTab} className="flex flex-col gap-4">
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="lists">Lists</TabsTrigger>
-              <TabsTrigger value="principals">Principals</TabsTrigger>
+              <TabsTrigger value="principals">Principles</TabsTrigger>
               <TabsTrigger value="rates">FX rates</TabsTrigger>
             </TabsList>
 
@@ -300,7 +300,7 @@ export default function SalesMasterSettingsModal({
             <TabsContent value="principals" className="mt-0 space-y-4 outline-none data-[state=inactive]:hidden">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="space-y-2 sm:col-span-2">
-                  <Label>Principal name</Label>
+                  <Label>Principle name</Label>
                   <Input value={pName} onChange={(e) => setPName(e.target.value)} placeholder="e.g. Vortran" />
                 </div>
                 <div className="space-y-2">
@@ -337,7 +337,7 @@ export default function SalesMasterSettingsModal({
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Principal</TableHead>
+                      <TableHead>Principle</TableHead>
                       <TableHead className="w-[100px]">Code</TableHead>
                       <TableHead className="w-[100px] text-center">Active</TableHead>
                       <TableHead className="w-[140px] text-right">Actions</TableHead>

@@ -139,6 +139,46 @@ export const approveExpense = async (req, res, next) => {
 };
 
 /**
+ * Pending previous-month expenses for Export Data workflow.
+ * GET /api/expenses/export/pending-previous?month=MM&year=YYYY&employeeCode=
+ */
+export const getPendingPreviousExportExpenses = async (req, res, next) => {
+  try {
+    const data = await ExpenseService.getPendingPreviousExportExpenses(
+      {
+        month: req.query.month,
+        year: req.query.year,
+        employeeCode: req.query.employeeCode || req.query.employeeId,
+      },
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Get pending previous export expenses controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Mark expenses as Exported or Skipped after export actions.
+ * POST /api/expenses/export/mark-status
+ */
+export const markExpenseExportStatuses = async (req, res, next) => {
+  try {
+    const data = await ExpenseService.markExpenseExportStatuses(
+      req.body || {},
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Mark expense export statuses controller error:', error);
+    next(error);
+  }
+};
+
+/**
  * Reject expense (audit)
  * POST /api/expenses/:id/reject
  */

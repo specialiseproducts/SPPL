@@ -1,10 +1,23 @@
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy';
-import type { ExpenseAuditDecision, ExpenseDocument, ExpenseRecord } from '../types/expenses';
+import type {
+  ExpenseAuditDecision,
+  ExpenseDocument,
+  ExpenseExportStatus,
+  ExpenseRecord,
+} from '../types/expenses';
 
 function normalizeAuditStatus(raw: Record<string, unknown>): ExpenseAuditDecision {
   const s = String(raw.auditStatus ?? raw.approval_status ?? '').trim();
   if (s === 'Approved' || s === 'Rejected') return s;
   return 'Pending';
+}
+
+function normalizeExportStatus(raw: Record<string, unknown>): ExpenseExportStatus | undefined {
+  const s = String(raw.exportStatus ?? '').trim();
+  if (s === 'Pending Export' || s === 'Exported' || s === 'Skipped') return s;
+  // Legacy approved rows without exportStatus behave as Pending Export at export time.
+  if (normalizeAuditStatus(raw) === 'Approved') return 'Pending Export';
+  return undefined;
 }
 
 export function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord {
@@ -24,6 +37,8 @@ export function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord
     const n = Number(kmRaw);
     kilometers = Number.isNaN(n) ? undefined : n;
   }
+
+  const exportStatus = normalizeExportStatus(raw);
 
   return {
     expenseId: String(raw.expenseId ?? raw.expense_id ?? raw.id ?? '').trim(),
@@ -66,6 +81,11 @@ export function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord
       const reason = String(raw.auditReason ?? raw.approval_comments ?? '').trim();
       return reason || undefined;
     })(),
+    exportStatus,
+    exportedAt: raw.exportedAt != null ? String(raw.exportedAt) : undefined,
+    exportBatch: raw.exportBatch != null ? String(raw.exportBatch) : undefined,
+    exportedMonth: raw.exportedMonth != null ? String(raw.exportedMonth) : undefined,
+    exportedYear: raw.exportedYear != null ? String(raw.exportedYear) : undefined,
     documents: (() => {
       if (Array.isArray(raw.documents) && raw.documents.length > 0) {
         return raw.documents as ExpenseDocument[];

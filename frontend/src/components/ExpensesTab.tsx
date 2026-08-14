@@ -19,10 +19,15 @@ import ExpenseImportModal from './ExpenseImportModal';
 import ExpenseRateSettingsModal, {
   type ExpenseTravelRateSettings,
 } from './ExpenseRateSettingsModal';
+import PendingPreviousExpensesModal from './PendingPreviousExpensesModal';
 import type { UserRole } from '../App';
 import { apiFetch } from '../services/api';
 import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
-import { fetchExpenseTravelRates } from '../hooks/expenses/expensesApi';
+import {
+  fetchExpenseTravelRates,
+  fetchPendingPreviousExportExpenses,
+  markExpenseExportStatuses,
+} from '../hooks/expenses/expensesApi';
 import {
   useExpenseTravelRatesQuery,
   useExpensesListRows,
@@ -156,6 +161,10 @@ export default function ExpensesTab({
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isRateSettingsOpen, setIsRateSettingsOpen] = useState(false);
+  const [pendingPreviousModalOpen, setPendingPreviousModalOpen] = useState(false);
+  const [pendingPreviousExpenses, setPendingPreviousExpenses] = useState<ExpenseRecord[]>([]);
+  const [pendingExportCurrentRows, setPendingExportCurrentRows] = useState<ExpenseRecord[]>([]);
+  const [isExportSubmitting, setIsExportSubmitting] = useState(false);
   const [searchTerm, setSearchTerm] = useState(() => peekMyExpenseViewState()?.searchTerm ?? '');
   const [selectedEmployee, setSelectedEmployee] = useState<string>(
     () => peekMyExpenseViewState()?.selectedEmployee ?? 'all',
@@ -373,19 +382,157 @@ export default function ExpensesTab({
       return;
     }
 
+    // 1) Resolve employee being exported — required; never guess or skip.
+    let exportEmployeeCode = '';
+    if (privileged) {
+      if (selectedEmployee === 'all') {
+        toast.error('Select an employee before exporting.');
+        return;
+      }
+      const match = (employeesQuery.data ?? []).find((u) => u.name === selectedEmployee);
+      exportEmployeeCode = String(match?.employee_code || match?.employeeCode || '').trim();
+    } else {
+      exportEmployeeCode = String(currentEmployeeCode || '').trim();
+    }
+    if (!exportEmployeeCode) {
+      toast.error('Unable to determine the employee for this export. Please try again.');
+      return;
+    }
+
+    // 2) Resolve export period from active filters only — required; never infer from rows.
+    if (selectedMonth === 'all' || selectedYear === 'all') {
+      toast.error('Select both Month and Year before exporting.');
+      return;
+    }
+    const exportMonth = String(selectedMonth).trim().padStart(2, '0');
+    const exportYear = String(selectedYear).trim();
+    if (
+      !/^\d{2}$/.test(exportMonth) ||
+      Number(exportMonth) < 1 ||
+      Number(exportMonth) > 12 ||
+      !/^\d{4}$/.test(exportYear)
+    ) {
+      toast.error('Select both Month and Year before exporting.');
+      return;
+    }
+
+    // 3) Always check previous approved-but-not-exported expenses before Excel.
     try {
-      const context = buildExpenseExportContext(rows, {
+      setIsExportSubmitting(true);
+      const pending = await fetchPendingPreviousExportExpenses({
+        month: exportMonth,
+        year: exportYear,
+        employeeCode: exportEmployeeCode,
+      });
+      if (pending.length > 0) {
+        setPendingExportCurrentRows(rows);
+        setPendingPreviousExpenses(pending);
+        setPendingPreviousModalOpen(true);
+        return;
+      }
+    } catch (error) {
+      console.error('Pending previous expenses fetch error:', error);
+      toast.error(getErrorMessage(error));
+      return;
+    } finally {
+      setIsExportSubmitting(false);
+    }
+
+    await runCurrentMonthExport(rows);
+  };
+
+  const runCurrentMonthExport = async (
+    currentRows: ExpenseRecord[],
+    includedPrevious: ExpenseRecord[] = [],
+  ) => {
+    const previousSorted = sortExpensesForExport(includedPrevious);
+    const exportRows =
+      previousSorted.length > 0 ? [...previousSorted, ...currentRows] : currentRows;
+
+    try {
+      setIsExportSubmitting(true);
+      const context = buildExpenseExportContext(currentRows, {
         privileged,
         selectedEmployee,
         selectedMonth,
         selectedYear,
         currentUserName,
       });
-      await exportExpensesToExcel(rows, context);
-      toast.success(`Exported ${rows.length} expense record(s)`);
+      await exportExpensesToExcel(exportRows, context);
+
+      const idsToMarkExported = [
+        ...new Set(
+          [...includedPrevious, ...currentRows]
+            .map((r) => r.expenseId)
+            .filter(Boolean),
+        ),
+      ];
+      if (idsToMarkExported.length > 0) {
+        try {
+          await markExpenseExportStatuses({
+            expenseIds: idsToMarkExported,
+            status: 'Exported',
+            exportedMonth: selectedMonth !== 'all' ? selectedMonth : undefined,
+            exportedYear: selectedYear !== 'all' ? selectedYear : undefined,
+            exportBatch: `export-${Date.now()}`,
+          });
+          void invalidateExpensesList();
+        } catch (markError) {
+          console.error('Mark exported status error:', markError);
+          toast.error(
+            `Excel downloaded, but export status could not be updated: ${getErrorMessage(markError)}`,
+          );
+          toast.success(`Exported ${exportRows.length} expense record(s)`);
+          return;
+        }
+      }
+
+      toast.success(`Exported ${exportRows.length} expense record(s)`);
     } catch (error) {
       console.error('Expense export error:', error);
       toast.error(getErrorMessage(error));
+    } finally {
+      setIsExportSubmitting(false);
+    }
+  };
+
+  const closePendingPreviousModal = () => {
+    if (isExportSubmitting) return;
+    setPendingPreviousModalOpen(false);
+    setPendingPreviousExpenses([]);
+    setPendingExportCurrentRows([]);
+  };
+
+  const handleIncludeSelectedPrevious = async (selected: ExpenseRecord[]) => {
+    setPendingPreviousModalOpen(false);
+    await runCurrentMonthExport(pendingExportCurrentRows, selected);
+    setPendingPreviousExpenses([]);
+    setPendingExportCurrentRows([]);
+  };
+
+  const handleSkipSelectedPrevious = async (selected: ExpenseRecord[]) => {
+    const ids = selected.map((r) => r.expenseId).filter(Boolean);
+    if (ids.length === 0) {
+      toast.info('Select at least one expense to skip.');
+      return;
+    }
+    try {
+      setIsExportSubmitting(true);
+      await markExpenseExportStatuses({
+        expenseIds: ids,
+        status: 'Skipped',
+      });
+      void invalidateExpensesList();
+      setPendingPreviousModalOpen(false);
+      const currentRows = pendingExportCurrentRows;
+      setPendingPreviousExpenses([]);
+      setPendingExportCurrentRows([]);
+      setIsExportSubmitting(false);
+      await runCurrentMonthExport(currentRows, []);
+    } catch (error) {
+      console.error('Skip previous expenses error:', error);
+      toast.error(getErrorMessage(error));
+      setIsExportSubmitting(false);
     }
   };
 
@@ -405,6 +552,7 @@ export default function ExpensesTab({
               onClick={handleDownloadTemplate}
               variant="outline"
               className="gap-2"
+              disabled={isExportSubmitting}
             >
               <Download className="w-4 h-4" />
               Export Data
@@ -446,9 +594,9 @@ export default function ExpensesTab({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Employees</SelectItem>
-                {employeeFilterOptions.map((user) => (
-                  <SelectItem key={user.employee_code} value={user.name}>
-                    {user.name}
+                {employeeFilterOptions.map((name) => (
+                  <SelectItem key={name} value={name}>
+                    {name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -746,6 +894,15 @@ export default function ExpensesTab({
           onSave={handleSaveTravelRates}
         />
       )}
+
+      <PendingPreviousExpensesModal
+        isOpen={pendingPreviousModalOpen}
+        expenses={pendingPreviousExpenses}
+        isSubmitting={isExportSubmitting}
+        onIncludeSelected={handleIncludeSelectedPrevious}
+        onSkipSelected={handleSkipSelectedPrevious}
+        onCancel={closePendingPreviousModal}
+      />
     </Card>
   );
 }

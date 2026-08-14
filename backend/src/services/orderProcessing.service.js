@@ -9,10 +9,37 @@ import { buildAuditFields } from '../utils/audit.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { isAdmin, isDeveloper, isOwnedByUser } from '../utils/accessControl.js';
 import log from '../utils/logger.js';
+import * as AuditTrailService from './auditTrail.service.js';
+import { AUDIT_ACTIONS, AUDIT_MODULES } from '../constants/auditTrail.js';
 
 function trimText(v) {
   if (v === undefined || v === null) return '';
   return String(v).trim();
+}
+
+function auditOrder(user, action, order, description, extra = {}) {
+  const id = String(order?.orderId || '').trim();
+  if (!id) return;
+  void AuditTrailService.log({
+    module: AUDIT_MODULES.ORDER_PROCESSING,
+    entityType: 'order',
+    entityId: id,
+    action,
+    description,
+    performedBy: trimText(user?.employeeCode),
+    performedByRole: user?.role || '',
+    employeeCode: trimText(user?.employeeCode),
+    employeeName:
+      trimText(user?.fullName) ||
+      `${trimText(user?.firstName)} ${trimText(user?.lastName)}`.trim(),
+    oldValues: extra.oldValues ?? null,
+    newValues: extra.newValues ?? null,
+    metadata: {
+      ownerEmployeeCode: order?.employeeCode || order?.created_by_employee_code || '',
+      ...(extra.metadata || {}),
+    },
+    reference: order?.spplReferenceNumber || '',
+  });
 }
 
 function normalizeAttachments(arr) {
@@ -105,6 +132,9 @@ export const createOrder = async (body, user) => {
 
   const order = await OrderModel.createOrder(data);
   log.info('Order created', { orderId: order.orderId, by: user?.employeeCode });
+  auditOrder(user, AUDIT_ACTIONS.CREATE, order, 'Order Created', {
+    newValues: { status: order.status, organizationName: order.organizationName },
+  });
   return order;
 };
 
@@ -145,6 +175,40 @@ export const updateOrder = async (orderId, body, user, effectiveRole) => {
 
   const order = await OrderModel.updateOrder(orderId, updates);
   log.info('Order updated', { orderId, by: user?.employeeCode });
+
+  const statusChanged =
+    updates.status !== undefined && String(updates.status) !== String(existing.status || '');
+  let action = AUDIT_ACTIONS.UPDATE;
+  let description = 'Order Updated';
+  if (statusChanged) {
+    const next = String(updates.status || '').toLowerCase();
+    if (next.includes('submit')) {
+      action = AUDIT_ACTIONS.WORKFLOW_CHANGE;
+      description = 'Order Submitted';
+    } else if (next.includes('approv')) {
+      action = AUDIT_ACTIONS.APPROVE;
+      description = 'Order Approved';
+    } else if (next.includes('close') || next.includes('closed')) {
+      action = AUDIT_ACTIONS.STATUS_CHANGE;
+      description = 'Order Closed';
+    } else {
+      action = AUDIT_ACTIONS.STATUS_CHANGE;
+      description = 'Order Status Updated';
+    }
+  }
+
+  const fieldDiff = AuditTrailService.diffChangedFields(existing, { ...existing, ...updates }, [
+    'status',
+    'organizationName',
+    'spplReferenceNumber',
+    'expectedDeliveryDate',
+    'importantPoints',
+  ]);
+  auditOrder(user, action, order, description, {
+    oldValues: fieldDiff.oldValues,
+    newValues: fieldDiff.newValues,
+  });
+
   return order;
 };
 
@@ -159,5 +223,9 @@ export const deleteOrder = async (orderId, user, effectiveRole) => {
 
   const result = await OrderModel.updateOrder(orderId, buildSoftDeleteFields(user));
   log.info('Order deleted', { orderId, by: user?.employeeCode });
+  auditOrder(user, AUDIT_ACTIONS.DELETE, existing, 'Order Deleted', {
+    oldValues: { status: existing.status },
+    newValues: { status: 'Deleted' },
+  });
   return result;
 };

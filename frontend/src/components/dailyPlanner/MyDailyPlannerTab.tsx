@@ -1,4 +1,5 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { Card } from '../ui/card';
@@ -12,6 +13,10 @@ import {
   usePlanningConfigQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
 import { createDailyPlannerTasks } from '../../hooks/dailyPlanner/dailyPlannerApi';
+import {
+  markRevisionParentHandledInCache,
+  upsertPlannerTasksInCache,
+} from '../../hooks/dailyPlanner/dailyPlannerCache';
 import type { DailyPlannerTask } from '../../types/dailyPlanner';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerDayTasksModal from './DailyPlannerDayTasksModal';
@@ -23,6 +28,7 @@ import {
   DAILY_STATUS_LEGEND,
   todayIso,
   tomorrowIso,
+  visibleEmployeePlannerTasks,
   WEEKDAY_LABELS,
   type DailyCalendarDayCell,
 } from './dailyPlannerUtils';
@@ -131,13 +137,18 @@ export default function MyDailyPlannerTab() {
   const { year, month } = view;
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
   const [createDate, setCreateDate] = useState<string | null>(null);
+  const [reviseTaskId, setReviseTaskId] = useState<string | null>(null);
   const [dayDate, setDayDate] = useState<string | null>(null);
 
   const monthQuery = useDailyPlannerMonthQuery(year, month);
   const planningConfigQuery = usePlanningConfigQuery();
   const planningProfileQuery = useMyPlanningProfileQuery();
   const invalidate = useInvalidateDailyPlannerQueries();
-  const tasks = monthQuery.data ?? [];
+  const queryClient = useQueryClient();
+  const tasks = useMemo(
+    () => visibleEmployeePlannerTasks(monthQuery.data ?? []),
+    [monthQuery.data],
+  );
   const grid = useMemo(
     () => buildDailyMonthGrid(year, month, tasks, employeeLocation),
     [year, month, tasks, employeeLocation],
@@ -152,11 +163,64 @@ export default function MyDailyPlannerTab() {
     return Array.from({ length: 11 }, (_, i) => base - 5 + i);
   }, [now]);
 
-  const refresh = () => invalidate();
+  const refresh = (patch?: { upsert?: DailyPlannerTask[]; hideRevisionParentId?: string }) => {
+    if (patch?.upsert?.length) {
+      upsertPlannerTasksInCache(queryClient, patch.upsert);
+    }
+    if (patch?.hideRevisionParentId) {
+      markRevisionParentHandledInCache(
+        queryClient,
+        patch.hideRevisionParentId,
+        'custom_revision',
+        patch.upsert?.[0]?.plannerTaskId,
+      );
+    }
+    invalidate();
+  };
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('sppl_notification_focus');
+      if (!raw) return;
+      const focus = JSON.parse(raw) as {
+        module?: string;
+        focus?: string;
+        actionId?: string;
+        plannerDate?: string;
+        at?: number;
+      };
+      if (focus.module && focus.module !== 'dailyPlanner') return;
+      if (focus.at && Date.now() - Number(focus.at) > 60_000) {
+        sessionStorage.removeItem('sppl_notification_focus');
+        return;
+      }
+      sessionStorage.removeItem('sppl_notification_focus');
+
+      if (focus.focus === 'planning-performance') {
+        window.requestAnimationFrame(() => {
+          document.getElementById('planning-performance')?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        });
+        return;
+      }
+
+      const date = String(focus.plannerDate || '').trim();
+      if (date) {
+        const [y, m] = date.split('-').map(Number);
+        if (y && m) setView({ year: y, month: m });
+        setDayDate(date);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const openCreate = (iso: string) => {
     try {
       assertCanPlanTasks(iso);
+      setReviseTaskId(null);
       setCreateDate(iso);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Cannot create task for this date');
@@ -172,6 +236,7 @@ export default function MyDailyPlannerTab() {
         return;
       }
       assertCanPlanTasks(tomorrow);
+      setReviseTaskId(null);
       setCreateDate(tomorrow);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Cannot plan tasks for this date');
@@ -190,10 +255,12 @@ export default function MyDailyPlannerTab() {
   return (
     <TooltipPrimitive.Provider delayDuration={200}>
       <div className="w-full space-y-4 pb-6">
-        <PlanningPerformanceDashboard
-          record={planningProfileQuery.data?.currentMonth}
-          loading={planningProfileQuery.isLoading}
-        />
+        <div id="planning-performance">
+          <PlanningPerformanceDashboard
+            record={planningProfileQuery.data?.currentMonth}
+            loading={planningProfileQuery.isLoading}
+          />
+        </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button type="button" variant="outline" onClick={() => openDay(todayIso())}>
@@ -350,13 +417,27 @@ export default function MyDailyPlannerTab() {
           open={!!createDate}
           date={createDate ?? ''}
           planningConfig={planningConfigQuery.data}
-          onClose={() => setCreateDate(null)}
+          onClose={() => {
+            setCreateDate(null);
+            setReviseTaskId(null);
+          }}
           onSave={async (drafts) => {
-            await createDailyPlannerTasks(drafts, planningConfigQuery.data);
+            const payload =
+              reviseTaskId && drafts.length > 0
+                ? drafts.map((draft, index) =>
+                    index === 0 ? { ...draft, revisesTaskId: reviseTaskId } : draft,
+                  )
+                : drafts;
+            const created = await createDailyPlannerTasks(payload, planningConfigQuery.data);
             toast.success(
               drafts.length === 1 ? 'Task created' : `${drafts.length} tasks created`,
             );
-            refresh();
+            const parentId = reviseTaskId;
+            setReviseTaskId(null);
+            refresh({
+              upsert: created,
+              hideRevisionParentId: parentId || undefined,
+            });
           }}
         />
 
@@ -367,10 +448,11 @@ export default function MyDailyPlannerTab() {
           planningConfig={planningConfigQuery.data}
           onClose={() => setDayDate(null)}
           onChanged={refresh}
-          onAddTask={() => {
+          onAddTask={(revisesTaskId) => {
             if (!dayDate) return;
             try {
               assertCanPlanTasks(dayDate);
+              setReviseTaskId(revisesTaskId || null);
               setCreateDate(dayDate);
             } catch (err) {
               toast.error(err instanceof Error ? err.message : 'Cannot create task for this date');

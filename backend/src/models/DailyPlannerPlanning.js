@@ -341,7 +341,18 @@ export async function saveMonthlyRecord(employeeCode, year, month, payload) {
     }
     throw err;
   }
-  return toMonthlyDto(item);
+
+  const savedDto = toMonthlyDto(item);
+  try {
+    const { emitPlanningScoreAndBadgeIfChanged } = await import(
+      '../services/notificationEmitters.js'
+    );
+    void emitPlanningScoreAndBadgeIfChanged(existingMonthly, savedDto);
+  } catch (err) {
+    log.warn('Planning notification emit skipped', { error: err?.message || err });
+  }
+
+  return savedDto;
 }
 
 export async function listMonthlyHistory(employeeCode, limit = 24) {

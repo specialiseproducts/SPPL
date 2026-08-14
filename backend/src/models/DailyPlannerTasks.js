@@ -88,6 +88,9 @@ export function toDailyPlannerTaskDto(row) {
     revisionRequestedBy: String(row.revisionRequestedBy || '').trim(),
     revisionRequestedByName: String(row.revisionRequestedByName || '').trim(),
     revisionRequestedAt: row.revisionRequestedAt || null,
+    revisionOutcome: String(row.revisionOutcome || '').trim(),
+    revisionHandledAt: row.revisionHandledAt || null,
+    revisedTaskId: row.revisedTaskId ? String(row.revisedTaskId).trim() : null,
     replacementTask: replacement,
     planningCategory: String(row.planningCategory || 'Regular').trim(),
     urgentReason: String(row.urgentReason || '').trim(),
@@ -248,9 +251,11 @@ export async function createTask(payload) {
     source: String(payload.source || 'MANUAL').trim(),
     salesPlannerId: payload.salesPlannerId ? String(payload.salesPlannerId).trim() : null,
     approved: Boolean(payload.approved),
+    approvalStatus: String(payload.approvalStatus || (payload.approved ? 'APPROVED' : '')).trim(),
     approvedBy: String(payload.approvedBy || '').trim(),
     approvedByName: String(payload.approvedByName || '').trim(),
-    approvedDate: payload.approvedDate || null,
+    approvedDate: payload.approvedDate || payload.approvedAt || null,
+    approvedAt: payload.approvedAt || payload.approvedDate || null,
     managerComments: String(payload.managerComments || '').trim(),
     planningCategory: String(payload.planningCategory || 'Regular').trim(),
     urgentReason: String(payload.urgentReason || '').trim(),
@@ -290,7 +295,7 @@ export async function createTask(payload) {
   return toDailyPlannerTaskDto(item);
 }
 
-export async function updateTask(plannerTaskId, patch) {
+export async function updateTask(plannerTaskId, patch, options = {}) {
   const id = String(plannerTaskId || '').trim();
   if (!id) {
     const err = new Error('plannerTaskId is required');
@@ -314,8 +319,8 @@ export async function updateTask(plannerTaskId, patch) {
   );
   if (entries.length === 0) return existing;
 
-  const expressionAttributeNames = {};
-  const expressionAttributeValues = {};
+  const expressionAttributeNames = { ...(options.expressionAttributeNames || {}) };
+  const expressionAttributeValues = { ...(options.expressionAttributeValues || {}) };
   const setExpressions = [];
 
   entries.forEach(([key, value], index) => {
@@ -327,18 +332,25 @@ export async function updateTask(plannerTaskId, patch) {
   });
 
   try {
-    const result = await dynamoDB
-      .update({
-        TableName: TABLE_NAME,
-        Key: { plannerTaskId: id },
-        UpdateExpression: `SET ${setExpressions.join(', ')}`,
-        ExpressionAttributeNames: expressionAttributeNames,
-        ExpressionAttributeValues: expressionAttributeValues,
-        ReturnValues: 'ALL_NEW',
-      })
-      .promise();
+    const params = {
+      TableName: TABLE_NAME,
+      Key: { plannerTaskId: id },
+      UpdateExpression: `SET ${setExpressions.join(', ')}`,
+      ExpressionAttributeNames: expressionAttributeNames,
+      ExpressionAttributeValues: expressionAttributeValues,
+      ReturnValues: 'ALL_NEW',
+    };
+    if (options.conditionExpression) {
+      params.ConditionExpression = options.conditionExpression;
+    }
+    const result = await dynamoDB.update(params).promise();
     return toDailyPlannerTaskDto(result.Attributes);
   } catch (err) {
+    if (err?.code === 'ConditionalCheckFailedException') {
+      const conflict = new Error('This revision request has already been processed');
+      conflict.statusCode = 409;
+      throw conflict;
+    }
     if (isTableMissingError(err)) {
       const missing = new Error(
         'Daily Planner storage is not provisioned. Run: node scripts/ensure-daily-planner-tables.js',

@@ -125,6 +125,15 @@ export function isPermanentlyClosedTask(task: DailyPlannerTask): boolean {
   return task.status === 'Terminated';
 }
 
+/** Original Needs Revision task after Accept Suggestion or Create Own Revised Task. */
+export function isHandledRevisionParent(task: DailyPlannerTask): boolean {
+  return Boolean(String(task.revisionOutcome || '').trim());
+}
+
+export function visibleEmployeePlannerTasks(tasks: DailyPlannerTask[]): DailyPlannerTask[] {
+  return tasks.filter((task) => !isHandledRevisionParent(task));
+}
+
 export function getDailyTaskDisplayLabel(task: DailyPlannerTask): string {
   const name = String(task.taskName || '').trim();
   return name || 'Unnamed Task';

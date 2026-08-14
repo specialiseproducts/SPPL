@@ -273,7 +273,11 @@ export default function SalesForecastingOpportunityFormModal({
 
   const payload = formToPayload(f);
   const grid2 = 'grid grid-cols-1 gap-4 md:grid-cols-2';
-  const showRef = editing?.workflowStatus === 'approved' && !!editing?.quotationRef?.trim();
+  const showRef =
+    !!editing?.quotationRef?.trim() &&
+    (editing?.workflowStatus === 'approved' ||
+      editing?.workflowStatus === 'in_progress' ||
+      editing?.workflowStatus === 'closed');
 
   return (
     <Dialog
@@ -389,18 +393,18 @@ export default function SalesForecastingOpportunityFormModal({
 
           <div className={grid2}>
             <SearchableCombobox
-              label="Principal"
+              label="Principle"
               value={f.principal}
               onChange={handlePrincipalChange}
               options={comboboxOptionsWithCurrent(masters.PRINCIPAL, f.principal)}
-              placeholder="Search or select principal…"
+              placeholder="Search or select principle…"
             />
             <SearchableCombobox
               label="Model Number"
               value={f.modelNumber}
               onChange={handleModelChange}
               options={modelOptionsForCombobox}
-              placeholder={principalId ? 'Search or select model…' : 'Select Principal First'}
+              placeholder={principalId ? 'Search or select model…' : 'Select Principle First'}
               disabled={!principalId}
             />
           </div>

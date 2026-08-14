@@ -247,9 +247,8 @@ export default function TeamDailyPlannerTab() {
     setWizardOpen(true);
   };
 
-  const refreshTasks = async () => {
+  const refreshTasks = () => {
     invalidate();
-    await Promise.all([monthQuery.refetch(), todayTasksQuery.refetch()]);
   };
 
   const yearOptions = useMemo(() => {

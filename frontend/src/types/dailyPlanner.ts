@@ -57,6 +57,9 @@ export interface DailyPlannerTask {
   revisionRequestedBy?: string;
   revisionRequestedByName?: string;
   revisionRequestedAt?: string | null;
+  revisionOutcome?: 'accepted_suggestion' | 'custom_revision' | '';
+  revisionHandledAt?: string | null;
+  revisedTaskId?: string | null;
   replacementTask?: DailyPlannerReplacementTask | null;
   planningCategory?: DailyPlannerPlanningCategory;
   urgentReason?: string;
@@ -102,4 +105,5 @@ export interface DailyPlannerTaskDraft {
   priority: DailyPlannerPriority;
   planningCategory?: DailyPlannerPlanningCategory;
   urgentReason?: string;
+  revisesTaskId?: string;
 }

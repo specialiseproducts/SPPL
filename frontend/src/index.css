@@ -1326,6 +1326,18 @@
     background-color: #007bff;
   }
 
+  .bg-\[\#EAB308\] {
+    background-color: #eab308;
+  }
+
+  .border-\[\#EAB308\] {
+    border-color: #eab308;
+  }
+
+  .text-\[\#422006\] {
+    color: #422006;
+  }
+
   .bg-\[\#F6F8FA\] {
     background-color: #f6f8fa;
   }
@@ -2159,6 +2171,18 @@
   @media (hover: hover) {
     .hover\:bg-\[\#0056b3\]:hover {
       background-color: #0056b3;
+    }
+  }
+
+  @media (hover: hover) {
+    .hover\:bg-\[\#CA8A04\]:hover {
+      background-color: #ca8a04;
+    }
+  }
+
+  @media (hover: hover) {
+    .hover\:border-\[\#CA8A04\]:hover {
+      border-color: #ca8a04;
     }
   }
 

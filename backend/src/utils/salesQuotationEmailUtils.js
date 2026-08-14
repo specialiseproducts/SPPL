@@ -11,7 +11,7 @@ export function resolveOwnerCode(quotation) {
 
 /**
  * Normalize workflow status for email rule comparisons.
- * Handles DB values like "Draft", "Pending approval", "Rejected", "Approved".
+ * Handles DB values like "Draft", "Pending approval", "Rejected", "Approved", "In Progress", "Closed".
  */
 export function normalizeWorkflowStatus(item) {
   if (!item) return 'draft';
@@ -27,6 +27,8 @@ export function normalizeWorkflowStatus(item) {
   if (normalized === 'approved') return 'approved';
   if (normalized === 'rejected') return 'rejected';
   if (normalized === 'draft') return 'draft';
+  if (normalized === 'in_progress' || normalized === 'inprogress') return 'in_progress';
+  if (normalized === 'closed') return 'closed';
 
   return normalized || 'draft';
 }

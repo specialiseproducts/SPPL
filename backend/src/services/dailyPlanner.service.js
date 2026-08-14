@@ -14,8 +14,34 @@ import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
 import { canAccessAllRecords } from '../utils/accessControl.js';
 import { notifyUser } from '../utils/notifications.js';
+import * as PlannerNotificationEmitters from './notificationEmitters.js';
+import * as AuditTrailService from './auditTrail.service.js';
+import { AUDIT_ACTIONS, AUDIT_MODULES } from '../constants/auditTrail.js';
 
 const PRIORITY_ORDER = { High: 0, Medium: 1, Low: 2 };
+
+function auditPlannerTask(authUser, action, task, description, extra = {}) {
+  const id = String(task?.plannerTaskId || task?.taskId || '').trim();
+  if (!id) return;
+  void AuditTrailService.log({
+    module: AUDIT_MODULES.DAILY_PLANNER,
+    entityType: 'plannerTask',
+    entityId: id,
+    action,
+    description,
+    performedBy: employeeCodeOf(authUser),
+    performedByRole: authUser?.role || '',
+    employeeCode: employeeCodeOf(authUser),
+    employeeName: employeeNameOf(authUser),
+    oldValues: extra.oldValues ?? null,
+    newValues: extra.newValues ?? null,
+    metadata: {
+      ownerEmployeeCode: task?.employeeCode || '',
+      taskName: task?.taskName || '',
+      ...(extra.metadata || {}),
+    },
+  });
+}
 
 function parseMonthQuery(year, month) {
   const y = Number.parseInt(String(year ?? '').trim(), 10);
@@ -48,6 +74,46 @@ function assertTaskNotPermanentlyClosed(task) {
     err.statusCode = 400;
     throw err;
   }
+}
+
+function revisionOutcomeOf(task) {
+  return String(task?.revisionOutcome || '').trim();
+}
+
+function isRevisionActionable(task) {
+  return String(task?.status || '').trim() === 'Needs Revision' && !revisionOutcomeOf(task);
+}
+
+function throwRevisionAlreadyProcessed() {
+  const err = new Error('This revision request has already been processed');
+  err.statusCode = 409;
+  throw err;
+}
+
+async function loadOwnedRevisionParent(taskId, authUser) {
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing || existing.employeeCode !== employeeCodeOf(authUser)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+  return existing;
+}
+
+async function markRevisionHandled(parentTaskId, outcome, revisedTaskId) {
+  return DailyPlannerTasksModel.updateTask(
+    parentTaskId,
+    {
+      revisionOutcome: outcome,
+      revisionHandledAt: new Date().toISOString(),
+      revisedTaskId: String(revisedTaskId || '').trim() || null,
+    },
+    {
+      conditionExpression: 'attribute_not_exists(#ro) OR #ro = :empty',
+      expressionAttributeNames: { '#ro': 'revisionOutcome' },
+      expressionAttributeValues: { ':empty': '' },
+    },
+  );
 }
 
 function assertCanModerateTeamTask(effectiveRole) {
@@ -248,6 +314,15 @@ export const createManualTask = async (body, authUser) => {
   const completionScore = 0;
   const finalScore = planningScore + completionScore;
 
+  const revisesTaskId = String(body.revisesTaskId || '').trim();
+  let revisionParent = null;
+  if (revisesTaskId) {
+    revisionParent = await loadOwnedRevisionParent(revisesTaskId, authUser);
+    if (!isRevisionActionable(revisionParent)) {
+      throwRevisionAlreadyProcessed();
+    }
+  }
+
   const task = await DailyPlannerTasksModel.createTask({
     employeeCode: code,
     employeeName: employeeNameOf(authUser),
@@ -267,7 +342,12 @@ export const createManualTask = async (body, authUser) => {
     planningScore,
     completionScore,
     finalScore,
+    parentTaskId: revisesTaskId || null,
   });
+
+  if (revisionParent) {
+    await markRevisionHandled(revisesTaskId, 'custom_revision', task.plannerTaskId);
+  }
 
   let planningAward = null;
   if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
@@ -284,6 +364,15 @@ export const createManualTask = async (body, authUser) => {
   }
 
   await maybeNotifyMinimumTasksShortfall(code, date, location);
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.CREATE, task, 'Task Created', {
+    newValues: {
+      taskName: task.taskName,
+      priority: task.priority,
+      date: task.date,
+      status: task.status,
+    },
+  });
 
   return { task, planningAward };
 };
@@ -359,6 +448,29 @@ export const updateManualTask = async (taskId, body, authUser) => {
     }
   }
 
+  const action =
+    patch.date && patch.date !== existing.date
+      ? AUDIT_ACTIONS.STATUS_CHANGE
+      : AUDIT_ACTIONS.UPDATE;
+  const fieldDiff = AuditTrailService.diffChangedFields(existing, task, [
+    'taskName',
+    'description',
+    'priority',
+    'currentPriority',
+    'date',
+    'status',
+  ]);
+  auditPlannerTask(
+    authUser,
+    action,
+    task,
+    patch.date && patch.date !== existing.date ? 'Task Rescheduled' : 'Task Edited',
+    {
+      oldValues: fieldDiff.oldValues,
+      newValues: fieldDiff.newValues,
+    },
+  );
+
   return { task };
 };
 
@@ -392,6 +504,10 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
       workingDayDateKey: existing.date,
     });
   }
+  auditPlannerTask(authUser, AUDIT_ACTIONS.STATUS_CHANGE, task, 'Task Closed', {
+    oldValues: { status: existing.status },
+    newValues: { status: task.status, reason: workDone },
+  });
   return { task };
 };
 
@@ -527,6 +643,10 @@ export const deleteManualTask = async (taskId, authUser) => {
       workingDayDateKey: existing.date,
     });
   }
+  auditPlannerTask(authUser, AUDIT_ACTIONS.DELETE, existing, 'Task Closed', {
+    oldValues: { status: existing.status },
+    newValues: { status: 'Deleted' },
+  });
   return { success: true };
 };
 
@@ -641,13 +761,15 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
 
   const task = await DailyPlannerTasksModel.updateTask(taskId, patch);
 
-  void notifyUser(
-    existing.employeeCode,
-    'Daily Planner task approved',
-    `Your task "${existing.taskName}" was approved.`,
-    'INFO',
-    { plannerTaskId: taskId },
+  void PlannerNotificationEmitters.emitPlannerTaskApproved(
+    { ...existing, ...task },
+    reviewerCode,
   );
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.APPROVE, task, 'Task Approved', {
+    oldValues: { status: existing.status, approvalStatus: existing.approvalStatus },
+    newValues: { status: task.status, approvalStatus: task.approvalStatus },
+  });
 
   return { task };
 };
@@ -711,13 +833,17 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
     verificationStatus: '',
   });
 
-  void notifyUser(
-    existing.employeeCode,
-    'Daily Planner task needs revision',
-    reason || `Your task "${existing.taskName}" needs revision.`,
-    'INFO',
-    { plannerTaskId: taskId },
+  void PlannerNotificationEmitters.emitPlannerTaskRejected(
+    { ...existing, ...task },
+    reason,
+    reviewerCode,
   );
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.REJECT, task, 'Task Rejected', {
+    oldValues: { status: existing.status },
+    newValues: { status: task.status, revisionReason: reason },
+    metadata: { remark: reason },
+  });
 
   return { task };
 };
@@ -756,17 +882,25 @@ export const verifyTaskCompletion = async (taskId, body, authUser, effectiveRole
     { plannerTaskId: taskId },
   );
 
+  auditPlannerTask(authUser, AUDIT_ACTIONS.VERIFY, task, 'Completion Verified', {
+    oldValues: { status: existing.status },
+    newValues: { status: task.status, verificationStatus: task.verificationStatus },
+  });
+
   return { task };
 };
 
 export const acceptRevisionSuggestion = async (taskId, authUser) => {
-  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
-  if (!existing || existing.employeeCode !== employeeCodeOf(authUser)) {
-    const err = new Error('Forbidden');
-    err.statusCode = 403;
-    throw err;
+  const existing = await loadOwnedRevisionParent(taskId, authUser);
+  const existingOutcome = revisionOutcomeOf(existing);
+  if (existingOutcome === 'accepted_suggestion' && existing.revisedTaskId) {
+    const already = await DailyPlannerTasksModel.getTaskById(existing.revisedTaskId);
+    if (already) {
+      return { task: existing, revisedTask: already };
+    }
   }
-  if (String(existing.status || '').trim() !== 'Needs Revision') {
+  if (!isRevisionActionable(existing)) {
+    if (existingOutcome) throwRevisionAlreadyProcessed();
     const err = new Error('Task is not awaiting revision');
     err.statusCode = 400;
     throw err;
@@ -779,6 +913,7 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
     throw err;
   }
 
+  const nowIso = new Date().toISOString();
   const priority = normalizePriorityValue(
     suggestion.priority,
     existing.currentPriority || existing.priority || 'Medium',
@@ -788,6 +923,9 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
   if (expected) {
     descriptionParts.push(`Expected Outcome: ${expected}`);
   }
+
+  const reviewerCode = String(existing.revisionRequestedBy || '').trim();
+  const reviewerName = String(existing.revisionRequestedByName || '').trim();
 
   const revisedTask = await DailyPlannerTasksModel.createTask({
     employeeCode: existing.employeeCode,
@@ -801,7 +939,14 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
     priorityEdited: false,
     taskType: 'Manual',
     source: 'MANUAL',
-    status: 'Pending',
+    status: 'Approved',
+    approved: true,
+    approvalStatus: 'APPROVED',
+    approvedBy: reviewerCode,
+    approvedByName: reviewerName,
+    approvedDate: nowIso,
+    approvedAt: nowIso,
+    managerComments: 'Approved — accepted manager suggestion',
     planningCategory:
       existing.planningCategory === PLANNING_CATEGORY_URGENT
         ? PLANNING_CATEGORY_URGENT
@@ -809,11 +954,17 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
     urgentReason: existing.urgentReason || '',
     parentTaskId: existing.plannerTaskId,
     planningWindowUsed: null,
-    planningTimestamp: new Date().toISOString(),
+    planningTimestamp: nowIso,
     planningScore: 0,
     completionScore: 0,
     finalScore: 0,
   });
+
+  const task = await markRevisionHandled(
+    existing.plannerTaskId,
+    'accepted_suggestion',
+    revisedTask.plannerTaskId,
+  );
 
   if (existing.planningCategory === PLANNING_CATEGORY_REGULAR) {
     await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
@@ -822,7 +973,7 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
     });
   }
 
-  return { task: existing, revisedTask };
+  return { task, revisedTask };
 };
 
 export const editTaskPriority = async (taskId, body, authUser, effectiveRole) => {
@@ -863,6 +1014,13 @@ export const editTaskPriority = async (taskId, body, authUser, effectiveRole) =>
     'INFO',
     { plannerTaskId: taskId, priority: newPriority },
   );
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.UPDATE, task, 'Priority Changed', {
+    oldValues: {
+      priority: existing.currentPriority || existing.priority,
+    },
+    newValues: { priority: newPriority },
+  });
 
   return { task };
 };

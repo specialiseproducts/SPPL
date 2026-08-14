@@ -1,5 +1,4 @@
 import type { SalesOpportunity } from '../types/salesForecast';
-import { isQuotationLocked } from './salesForecastCalculations';
 
 export type DeadlineStatusKind = 'NONE' | 'CLOSED' | 'ON_TRACK' | 'DUE_TODAY' | 'OVERDUE';
 
@@ -70,8 +69,8 @@ function formatOverdueLabel(days: number): string {
 }
 
 function isTrackingDisabled(quotation: DeadlineQuotation): boolean {
-  if (quotation.workflowStatus === 'approved') return true;
-  return isQuotationLocked(quotation);
+  // Deadline tracking ends only when the quotation lifecycle is Closed.
+  return quotation.workflowStatus === 'closed';
 }
 
 /**

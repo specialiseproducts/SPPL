@@ -1,5 +1,7 @@
 export type ExpenseAuditDecision = 'Pending' | 'Approved' | 'Rejected';
 
+export type ExpenseExportStatus = 'Pending Export' | 'Exported' | 'Skipped';
+
 export interface ExpenseDocument {
   documentId?: string;
   fileName: string;
@@ -39,4 +41,10 @@ export interface ExpenseRecord {
   auditStatus?: ExpenseAuditDecision;
   /** Admin rejection reason shown when employee edits a rejected expense */
   auditReason?: string;
+  /** Export tracking — set on approve / after Export Data actions */
+  exportStatus?: ExpenseExportStatus;
+  exportedAt?: string;
+  exportBatch?: string;
+  exportedMonth?: string;
+  exportedYear?: string;
 }

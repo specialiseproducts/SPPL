@@ -195,7 +195,7 @@ export default function Dashboard({
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
-      <Navbar user={user} onLogout={onLogout} onProfile={onProfile} />
+      <Navbar user={user} onLogout={onLogout} onProfile={onProfile} onModuleSelect={onModuleSelect} />
       <div className="flex flex-1 overflow-hidden">
         {!showModuleGrid && (
           <Sidebar

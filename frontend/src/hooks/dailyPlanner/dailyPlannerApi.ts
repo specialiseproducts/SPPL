@@ -61,6 +61,9 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     revisionRequestedBy: String(r.revisionRequestedBy ?? '').trim(),
     revisionRequestedByName: String(r.revisionRequestedByName ?? '').trim(),
     revisionRequestedAt: r.revisionRequestedAt ? String(r.revisionRequestedAt) : null,
+    revisionOutcome: String(r.revisionOutcome ?? '').trim() as DailyPlannerTask['revisionOutcome'],
+    revisionHandledAt: r.revisionHandledAt ? String(r.revisionHandledAt) : null,
+    revisedTaskId: r.revisedTaskId ? String(r.revisedTaskId).trim() : null,
     replacementTask: replacementRaw
       ? {
           taskName: String(replacementRaw.taskName ?? '').trim(),

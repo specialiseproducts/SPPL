@@ -17,6 +17,10 @@ export const GSI_NAMES = {
   DAILY_PLANNER_EMPLOYEE_DATE: 'GSI_EmployeeDate',
   DAILY_PLANNER_MANAGER_CODE: 'GSI_ManagerCode',
   DAILY_PLANNER_EMPLOYEE_PLANNING: 'GSI_EmployeePlanning',
+  NOTIFICATION_RECIPIENT_CREATED: 'GSI_RecipientCreated',
+  AUDIT_ENTITY_PERFORMED: 'GSI_EntityPerformedAt',
+  AUDIT_MODULE_PERFORMED: 'GSI_ModulePerformedAt',
+  AUDIT_EMPLOYEE_PERFORMED: 'GSI_EmployeePerformedAt',
 };
 
 /** Index definitions passed to UpdateTable */
@@ -159,6 +163,62 @@ export const TABLE_GSI_DEFINITIONS = {
         KeySchema: [
           { AttributeName: 'employeeCode', KeyType: 'HASH' },
           { AttributeName: 'recordKey', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
+  Notifications: {
+    tableEnv: 'DYNAMODB_TABLE_NOTIFICATIONS',
+    defaultName: 'Notifications',
+    attributeDefinitions: [
+      { AttributeName: 'notificationId', AttributeType: 'S' },
+      { AttributeName: 'recipientEmployeeCode', AttributeType: 'S' },
+      { AttributeName: 'createdAt', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.NOTIFICATION_RECIPIENT_CREATED,
+        KeySchema: [
+          { AttributeName: 'recipientEmployeeCode', KeyType: 'HASH' },
+          { AttributeName: 'createdAt', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
+  AuditTrail: {
+    tableEnv: 'DYNAMODB_TABLE_AUDIT_TRAIL',
+    defaultName: 'AuditTrail',
+    attributeDefinitions: [
+      { AttributeName: 'auditId', AttributeType: 'S' },
+      { AttributeName: 'entityKey', AttributeType: 'S' },
+      { AttributeName: 'module', AttributeType: 'S' },
+      { AttributeName: 'employeeCode', AttributeType: 'S' },
+      { AttributeName: 'performedAt', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.AUDIT_ENTITY_PERFORMED,
+        KeySchema: [
+          { AttributeName: 'entityKey', KeyType: 'HASH' },
+          { AttributeName: 'performedAt', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+      {
+        IndexName: GSI_NAMES.AUDIT_MODULE_PERFORMED,
+        KeySchema: [
+          { AttributeName: 'module', KeyType: 'HASH' },
+          { AttributeName: 'performedAt', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+      {
+        IndexName: GSI_NAMES.AUDIT_EMPLOYEE_PERFORMED,
+        KeySchema: [
+          { AttributeName: 'employeeCode', KeyType: 'HASH' },
+          { AttributeName: 'performedAt', KeyType: 'RANGE' },
         ],
         Projection: { ProjectionType: 'ALL' },
       },

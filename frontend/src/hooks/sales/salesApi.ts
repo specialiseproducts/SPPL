@@ -1,7 +1,11 @@
 import { apiFetch } from '../../services/api';
 import { fetchPaginatedList } from '../../utils/paginatedFetch';
 import type { PaginatedResponse } from '../paginationTypes';
-import type { ExchangeRatesMap, SalesOpportunity } from '../../types/salesForecast';
+import type {
+  ExchangeRatesMap,
+  QuotationEditRequest,
+  SalesOpportunity,
+} from '../../types/salesForecast';
 import type { MastersState } from '../../components/sales/SalesForecastingOpportunityFormModal';
 import { sanitizeSelectOptions } from '../../utils/sanitizeSelectOptions';
 
@@ -106,6 +110,88 @@ export async function fetchSalesForecastsPage(
 export async function fetchSalesOpportunityById(forecastId: string): Promise<SalesOpportunity> {
   const res = await apiFetch(`/api/sales-forecasts/${encodeURIComponent(forecastId)}`);
   return (res?.data || res) as SalesOpportunity;
+}
+
+export async function updateSalesOpportunityStatusProgress(
+  forecastId: string,
+  body: { keepCurrent: boolean; opportunityStatus?: string; remarks?: string },
+): Promise<SalesOpportunity> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/${encodeURIComponent(forecastId)}/status-progress`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )) as { success?: boolean; data?: SalesOpportunity; message?: string };
+  if (!res?.success || !res.data) {
+    throw new Error(res?.message || 'Failed to update quotation status');
+  }
+  return res.data;
+}
+
+export async function fetchPendingEditRequests(): Promise<QuotationEditRequest[]> {
+  const res = (await apiFetch('/api/sales-forecasts/edit-requests/pending')) as {
+    success?: boolean;
+    data?: QuotationEditRequest[];
+  };
+  return Array.isArray(res?.data) ? res.data : [];
+}
+
+export async function fetchEditRequestsForQuotation(
+  forecastId: string,
+): Promise<QuotationEditRequest[]> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/${encodeURIComponent(forecastId)}/edit-requests`,
+  )) as { success?: boolean; data?: QuotationEditRequest[] };
+  return Array.isArray(res?.data) ? res.data : [];
+}
+
+export async function createQuotationEditRequest(
+  forecastId: string,
+  body: { requestType: string; requestedValues: Record<string, unknown> },
+): Promise<QuotationEditRequest> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/${encodeURIComponent(forecastId)}/edit-requests`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )) as { success?: boolean; data?: QuotationEditRequest; message?: string };
+  if (!res?.success || !res.data) {
+    throw new Error(res?.message || 'Failed to submit edit request');
+  }
+  return res.data;
+}
+
+export async function approveQuotationEditRequest(requestId: string): Promise<unknown> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/edit-requests/${encodeURIComponent(requestId)}/approve`,
+    { method: 'POST' },
+  )) as { success?: boolean; data?: unknown; message?: string };
+  if (!res?.success) {
+    throw new Error(res?.message || 'Failed to approve edit request');
+  }
+  return res.data;
+}
+
+export async function rejectQuotationEditRequest(
+  requestId: string,
+  adminRemark: string,
+): Promise<QuotationEditRequest> {
+  const res = (await apiFetch(
+    `/api/sales-forecasts/edit-requests/${encodeURIComponent(requestId)}/reject`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminRemark }),
+    },
+  )) as { success?: boolean; data?: QuotationEditRequest; message?: string };
+  if (!res?.success || !res.data) {
+    throw new Error(res?.message || 'Failed to reject edit request');
+  }
+  return res.data;
 }
 
 /** @deprecated Use fetchSalesForecastsPage */

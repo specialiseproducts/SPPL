@@ -14,6 +14,8 @@ import {
   fetchSalesForecastsPage,
   fetchSalesMasters,
   fetchSalesRates,
+  fetchPendingEditRequests,
+  fetchEditRequestsForQuotation,
 } from './salesApi';
 import { queryDefaults } from '../queryDefaults';
 import { salesQueryKeys, type SalesBootstrapViewMode } from './salesQueryKeys';
@@ -222,9 +224,35 @@ export function useInvalidateSalesForecasts() {
   return () => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.forecasts() });
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.forecastsInfinite() });
+    void queryClient.invalidateQueries({ queryKey: [...salesQueryKeys.all, 'edit-requests'] });
     void queryClient.refetchQueries({ queryKey: salesQueryKeys.forecasts(), type: 'all' });
     void queryClient.refetchQueries({ queryKey: salesQueryKeys.forecastsInfinite(), type: 'all' });
+    void queryClient.refetchQueries({
+      queryKey: [...salesQueryKeys.all, 'edit-requests'],
+      type: 'all',
+    });
   };
+}
+
+export function usePendingEditRequestsQuery(enabled = true) {
+  return useQuery({
+    queryKey: salesQueryKeys.editRequestsPending(),
+    queryFn: () =>
+      measureAsync('query_fetch', 'edit-requests-pending', () => fetchPendingEditRequests()),
+    enabled,
+    ...queryDefaults.list,
+  });
+}
+
+export function useEditRequestsForQuotationQuery(forecastId: string, enabled = true) {
+  const id = String(forecastId || '').trim();
+  return useQuery({
+    queryKey: salesQueryKeys.editRequestsForQuotation(id),
+    queryFn: () =>
+      measureAsync('query_fetch', 'edit-requests-quotation', () => fetchEditRequestsForQuotation(id)),
+    enabled: enabled && !!id,
+    ...queryDefaults.list,
+  });
 }
 
 export function useInvalidateSalesRates() {

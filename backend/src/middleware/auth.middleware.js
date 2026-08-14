@@ -15,7 +15,13 @@ const DEFAULT_ACCESS_CONTROL = {
 
 export const authenticateToken = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization || '';
+    // EventSource cannot set Authorization headers — allow ?token= for SSE only when used.
+    const queryToken = String(req.query?.token || req.query?.access_token || '').trim();
+    let authHeader = req.headers.authorization || '';
+    if (!authHeader.startsWith('Bearer ') && queryToken) {
+      authHeader = `Bearer ${queryToken}`;
+    }
+
     if (!authHeader.startsWith('Bearer ')) {
       log.warn('Missing token on protected route:', req.path);
       return res.status(401).json({

@@ -57,6 +57,8 @@ router.put(
 router.get('/', ExpenseController.getExpenses);
 router.get('/audit/employees', ExpenseController.getAuditEmployeeDirectory);
 router.get('/audit', ExpenseController.getExpensesForAudit);
+router.get('/export/pending-previous', ExpenseController.getPendingPreviousExportExpenses);
+router.post('/export/mark-status', ExpenseController.markExpenseExportStatuses);
 router.post('/:id/approve', ExpenseController.approveExpense);
 router.post('/:id/reject', ExpenseController.rejectExpense);
 router.get('/:id/full', ExpenseController.getExpenseFullDetails);

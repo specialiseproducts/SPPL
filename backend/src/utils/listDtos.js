@@ -39,11 +39,18 @@ export function toSalesOpportunityListDto(row, normalizeFn) {
   if (!row) return null;
   const item = typeof normalizeFn === 'function' ? normalizeFn(row) : row;
   const ws = item.workflowStatus || 'draft';
-  const showRef = ws === 'approved' && String(item.quotationRef || '').trim() !== '';
+  const showRef =
+    (ws === 'approved' || ws === 'in_progress' || ws === 'closed') &&
+    String(item.quotationRef || '').trim() !== '';
   return {
     forecastId: item.forecastId,
     workflowStatus: ws,
     quotationRef: showRef ? String(item.quotationRef || '').trim() : '',
+    opportunityStatus: item.opportunityStatus || '',
+    revisionNumber:
+      item.revisionNumber != null && Number.isFinite(Number(item.revisionNumber))
+        ? Math.max(0, Math.floor(Number(item.revisionNumber)))
+        : 0,
     customerOrganization: item.customerOrganization || item.endCustomer || '',
     principal: item.principal || '',
     inrValueExclGst:

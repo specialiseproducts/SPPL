@@ -16,7 +16,7 @@ import { toast } from 'sonner';
 import type { DailyPlannerNotCompletedAction, DailyPlannerTask } from '../../types/dailyPlanner';
 import type { PlanningConfig } from '../../utils/planningRecognition';
 import { canUpdateTasksOnDate, TASK_UPDATES_READONLY_MESSAGE } from '../../utils/planningRecognition';
-import { getDailyTaskChipStyle, getDailyTaskStatusLabel, getDailyTaskVisualKey, isPermanentlyClosedTask } from './dailyPlannerUtils';
+import { getDailyTaskChipStyle, getDailyTaskStatusLabel, getDailyTaskVisualKey, isPermanentlyClosedTask, visibleEmployeePlannerTasks } from './dailyPlannerUtils';
 import {
   canCompleteTasksOnDate,
   canPlanTasksOnDate,
@@ -42,8 +42,11 @@ interface DailyPlannerDayTasksModalProps {
   tasks: DailyPlannerTask[];
   planningConfig?: PlanningConfig | null;
   onClose: () => void;
-  onChanged: () => void;
-  onAddTask: () => void;
+  onChanged: (patch?: {
+    upsert?: DailyPlannerTask[];
+    hideRevisionParentId?: string;
+  }) => void;
+  onAddTask: (revisesTaskId?: string) => void;
 }
 
 export default function DailyPlannerDayTasksModal({
@@ -57,6 +60,7 @@ export default function DailyPlannerDayTasksModal({
 }: DailyPlannerDayTasksModalProps) {
   const { user } = useAuth();
   const employeeLocation = user?.location || 'Office';
+  const visibleTasks = useMemo(() => visibleEmployeePlannerTasks(tasks), [tasks]);
   const [reasonTaskId, setReasonTaskId] = useState<string | null>(null);
   const [notCompletedAction, setNotCompletedAction] = useState<DailyPlannerNotCompletedAction>('terminate');
   const [rescheduleDate, setRescheduleDate] = useState('');
@@ -64,7 +68,6 @@ export default function DailyPlannerDayTasksModal({
   const [busyId, setBusyId] = useState<string | null>(null);
   const workDoneEditorRef = useRef<BulletPointEditorHandle>(null);
   const reasonEditorRef = useRef<BulletPointEditorHandle>(null);
-  const [revisionActionTaskId, setRevisionActionTaskId] = useState<string | null>(null);
 
   const dateMode = useMemo(() => getDailyPlannerDateMode(date), [date]);
   const isPastDate = dateMode === 'past';
@@ -96,9 +99,14 @@ export default function DailyPlannerDayTasksModal({
     const workDone = editor.getFormattedValue();
     setBusyId(completeTaskId);
     try {
-      await completeDailyPlannerTask(completeTaskId, workDone, task?.date ?? date, planningConfig ?? undefined);
+      const updated = await completeDailyPlannerTask(
+        completeTaskId,
+        workDone,
+        task?.date ?? date,
+        planningConfig ?? undefined,
+      );
       setCompleteTaskId(null);
-      onChanged();
+      onChanged({ upsert: [updated] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Update failed');
     } finally {
@@ -154,7 +162,7 @@ export default function DailyPlannerDayTasksModal({
     const reason = editor.getFormattedValue();
     setBusyId(reasonTaskId);
     try {
-      await notCompletedDailyPlannerTask(
+      const result = await notCompletedDailyPlannerTask(
         reasonTaskId,
         {
           reason,
@@ -165,7 +173,9 @@ export default function DailyPlannerDayTasksModal({
         planningConfig ?? undefined,
       );
       resetNotCompletedDialog();
-      onChanged();
+      onChanged({
+        upsert: [result.task, ...(result.rescheduledTask ? [result.rescheduledTask] : [])],
+      });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Update failed');
     } finally {
@@ -176,9 +186,12 @@ export default function DailyPlannerDayTasksModal({
   const acceptSuggestion = async (task: DailyPlannerTask) => {
     setBusyId(task.plannerTaskId);
     try {
-      await acceptDailyPlannerRevision(task.plannerTaskId);
+      const result = await acceptDailyPlannerRevision(task.plannerTaskId);
       toast.success('Manager suggestion accepted');
-      onChanged();
+      onChanged({
+        upsert: [result.task, result.revisedTask],
+        hideRevisionParentId: task.plannerTaskId,
+      });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Accept revision failed');
     } finally {
@@ -214,10 +227,10 @@ export default function DailyPlannerDayTasksModal({
               </div>
             ) : null}
             <div className="space-y-3">
-              {tasks.length === 0 ? (
+              {visibleTasks.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No tasks for this date.</p>
               ) : (
-                tasks.map((task) => {
+                visibleTasks.map((task) => {
                   const isClosed = isPermanentlyClosedTask(task);
                   return (
                   <div key={task.plannerTaskId} className="rounded-lg border border-gray-200 p-3">
@@ -278,7 +291,7 @@ export default function DailyPlannerDayTasksModal({
                         task.status !== 'Completed' &&
                         task.status !== 'Verified Complete' &&
                         task.status !== 'Not Completed' &&
-                        task.status !== 'Needs Revision' &&
+                        !(task.status === 'Needs Revision' && !task.revisionOutcome) &&
                         task.status !== 'Terminated' &&
                         task.status !== 'Rescheduled' ? (
                           <Button
@@ -320,7 +333,7 @@ export default function DailyPlannerDayTasksModal({
                             {task.reason ? <BulletPointList text={task.reason} /> : null}
                           </div>
                         ) : null}
-                        {task.status === 'Needs Revision' ? (
+                        {task.status === 'Needs Revision' && !task.revisionOutcome ? (
                           <div className="mt-3 space-y-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800">
                             <div>
                               <p className="font-medium">Needs Revision</p>
@@ -360,10 +373,8 @@ export default function DailyPlannerDayTasksModal({
                                 type="button"
                                 size="sm"
                                 variant="outline"
-                                onClick={() => {
-                                  setRevisionActionTaskId(task.plannerTaskId);
-                                  onAddTask();
-                                }}
+                                disabled={busyId === task.plannerTaskId}
+                                onClick={() => onAddTask(task.plannerTaskId)}
                               >
                                 Create Own Revised Task
                               </Button>
@@ -394,7 +405,7 @@ export default function DailyPlannerDayTasksModal({
             className={`shrink-0 gap-2 border-t border-gray-200 bg-white px-6 py-4 ${canPlan ? 'sm:justify-between' : 'sm:justify-end'}`}
           >
             {canPlan ? (
-              <Button type="button" variant="outline" onClick={onAddTask}>
+              <Button type="button" variant="outline" onClick={() => onAddTask()}>
                 + Add Task
               </Button>
             ) : null}

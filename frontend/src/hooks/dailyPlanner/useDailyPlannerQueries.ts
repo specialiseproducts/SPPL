@@ -27,7 +27,7 @@ export function useDailyPlannerMonthQuery(year: number, month: number, enabled =
     queryKey: dailyPlannerQueryKeys.month(year, month),
     queryFn: () => fetchDailyPlannerMonth(year, month),
     enabled: enabled && year > 0 && month >= 1 && month <= 12,
-    ...queryDefaults.reference,
+    ...queryDefaults.list,
   });
 }
 
@@ -36,7 +36,7 @@ export function useDailyPlannerDayQuery(date: string, enabled = true) {
     queryKey: dailyPlannerQueryKeys.day(date),
     queryFn: () => fetchDailyPlannerDay(date),
     enabled: enabled && !!date,
-    ...queryDefaults.reference,
+    ...queryDefaults.list,
   });
 }
 
@@ -167,7 +167,10 @@ export function useTeamPlanningHistoryQuery(enabled = true) {
 export function useInvalidateDailyPlannerQueries() {
   const queryClient = useQueryClient();
   return () => {
-    void queryClient.invalidateQueries({ queryKey: dailyPlannerQueryKeys.all });
-    void queryClient.refetchQueries({ queryKey: dailyPlannerQueryKeys.all, type: 'all' });
+    void queryClient.invalidateQueries({
+      queryKey: dailyPlannerQueryKeys.all,
+      refetchType: 'active',
+      predicate: (query) => query.queryKey[1] !== 'planningConfig',
+    });
   };
 }

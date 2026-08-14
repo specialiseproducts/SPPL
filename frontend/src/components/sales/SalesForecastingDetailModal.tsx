@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -14,6 +14,7 @@ import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import type { SalesOpportunity, SalesWorkflowStatus } from '../../types/salesForecast';
 import type { SalesForecastingViewScope } from '../SalesForecastingTab';
+import AuditHistoryModal from '../audit/AuditHistoryModal';
 
 const taRead = 'min-h-[72px] max-h-[100px] resize-none';
 
@@ -21,6 +22,18 @@ function workflowBadge(ws: SalesWorkflowStatus) {
   switch (ws) {
     case 'approved':
       return <Badge className="border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-900">Approved</Badge>;
+    case 'in_progress':
+      return (
+        <Badge className="border border-blue-200 bg-blue-100 px-2 py-0.5 text-xs font-medium text-[#0056b3]">
+          In Progress
+        </Badge>
+      );
+    case 'closed':
+      return (
+        <Badge className="border border-gray-300 bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800">
+          Closed
+        </Badge>
+      );
     case 'rejected':
       return <Badge className="border border-red-200 bg-red-100 px-2 py-0.5 text-xs font-medium text-red-900">Rejected</Badge>;
     case 'pending_approval':
@@ -81,6 +94,7 @@ export default function SalesForecastingDetailModal({
   canEdit,
   onEdit,
 }: SalesForecastingDetailModalProps) {
+  const [auditOpen, setAuditOpen] = useState(false);
   if (!record) return null;
 
   const isTeamView = viewScope === 'team';
@@ -91,6 +105,7 @@ export default function SalesForecastingDetailModal({
   const grid2 = 'grid grid-cols-1 gap-4 md:grid-cols-2';
 
   return (
+    <>
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
@@ -150,8 +165,8 @@ export default function SalesForecastingDetailModal({
             <div className="space-y-4">
               <SectionTitle>Product & commercial</SectionTitle>
               <div className={grid2}>
-                <ReadField label="Principal" value={record.principal} />
-                <ReadField label="Principal Short Code" value={record.principalShortCode} mono />
+                <ReadField label="Principle" value={record.principal} />
+                <ReadField label="Principle Short Code" value={record.principalShortCode} mono />
                 <ReadField label="Model Number" value={record.modelNumber} />
                 <ReadField label="Currency" value={record.currency} />
                 <ReadField label="Unit Price" value={record.unitPrice} mono />
@@ -194,6 +209,9 @@ export default function SalesForecastingDetailModal({
 
         <div className="shrink-0 border-t bg-background px-6 py-4">
           <DialogFooter className="gap-2 sm:justify-end">
+            <Button type="button" variant="outline" onClick={() => setAuditOpen(true)}>
+              Audit History
+            </Button>
             <Button type="button" variant="outline" onClick={onClose}>
               Close
             </Button>
@@ -206,5 +224,14 @@ export default function SalesForecastingDetailModal({
         </div>
       </DialogContent>
     </Dialog>
+    <AuditHistoryModal
+      open={auditOpen}
+      onOpenChange={setAuditOpen}
+      title="Quotation Audit History"
+      entityType="salesForecast"
+      entityId={record.forecastId}
+      module="salesForecasting"
+    />
+    </>
   );
 }

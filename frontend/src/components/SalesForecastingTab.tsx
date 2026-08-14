@@ -13,7 +13,7 @@ import { cn } from './ui/utils';
 import { toast } from 'sonner';
 import type { UserRole } from '../App';
 import { apiFetch } from '../services/api';
-import { fetchSalesOpportunityById } from '../hooks/sales/salesApi';
+import { fetchSalesOpportunityById, updateSalesOpportunityStatusProgress } from '../hooks/sales/salesApi';
 import { useSalesData } from '../hooks/sales/SalesDataContext';
 import {
   useInvalidateSalesForecasts,
@@ -22,11 +22,14 @@ import {
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { canCreate, canDelete, canEdit, canExport, isAdmin, isDeveloper, isSuperAdmin } from '../utils/accessControl';
 import type { SalesOpportunity, SalesWorkflowStatus } from '../types/salesForecast';
-import { isQuotationLocked } from '../utils/salesForecastCalculations';
+import { canUpdateQuotationProgress, isQuotationLocked } from '../utils/salesForecastCalculations';
 import { getDeadlineStatus } from '../utils/salesDeadlineStatus';
 import QuotationDeadlineBadge from './sales/QuotationDeadlineBadge';
 import SalesForecastingOpportunityFormModal from './sales/SalesForecastingOpportunityFormModal';
 import SalesForecastingDetailModal from './sales/SalesForecastingDetailModal';
+import SalesQuotationProgressModal from './sales/SalesQuotationProgressModal';
+import SalesQuotationEditRequestModal from './sales/SalesQuotationEditRequestModal';
+import SalesQuotationEditRequestsPanel from './sales/SalesQuotationEditRequestsPanel';
 
 export type SalesForecastingViewScope = 'self' | 'team';
 
@@ -43,6 +46,18 @@ function workflowBadge(ws: SalesWorkflowStatus) {
     case 'approved':
       return (
         <Badge className="border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-900">Approved</Badge>
+      );
+    case 'in_progress':
+      return (
+        <Badge className="border border-blue-200 bg-blue-100 px-2 py-0.5 text-xs font-medium text-[#0056b3]">
+          In Progress
+        </Badge>
+      );
+    case 'closed':
+      return (
+        <Badge className="border border-gray-300 bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800">
+          Closed
+        </Badge>
       );
     case 'rejected':
       return <Badge className="border border-red-200 bg-red-100 px-2 py-0.5 text-xs font-medium text-red-900">Rejected</Badge>;
@@ -104,6 +119,11 @@ export default function SalesForecastingTab({
 
   const [formOpen, setFormOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [progressRecord, setProgressRecord] = useState<SalesOpportunity | null>(null);
+  const [progressSubmitting, setProgressSubmitting] = useState(false);
+  const [editRequestOpen, setEditRequestOpen] = useState(false);
+  const [editRequestRecord, setEditRequestRecord] = useState<SalesOpportunity | null>(null);
   const [editing, setEditing] = useState<SalesOpportunity | null>(null);
   const [detailRecord, setDetailRecord] = useState<SalesOpportunity | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -311,9 +331,11 @@ export default function SalesForecastingTab({
   };
 
   const openEdit = async (r: SalesOpportunity) => {
-    const teamApprovedEdit = showTeamModerationActions && r.workflowStatus === 'approved';
-    if (isQuotationLocked(r) && !teamApprovedEdit) {
-      toast.error('Approved quotations cannot be edited');
+    const teamLifecycleEdit =
+      showTeamModerationActions &&
+      (r.workflowStatus === 'approved' || r.workflowStatus === 'in_progress');
+    if (isQuotationLocked(r) && !teamLifecycleEdit) {
+      toast.error('Issued quotations cannot be edited from the form. Use Quotation Ref to update Status.');
       return;
     }
     try {
@@ -338,15 +360,53 @@ export default function SalesForecastingTab({
     }
   };
 
+  const openProgressModal = async (r: SalesOpportunity) => {
+    if (!canUpdateQuotationProgress(r, currentEmployeeCode)) {
+      toast.error('Only the quotation owner can update status while In Progress.');
+      return;
+    }
+    try {
+      const full = await fetchSalesOpportunityById(r.forecastId);
+      setProgressRecord(full);
+      setProgressOpen(true);
+    } catch (e) {
+      console.error(e);
+      toast.error('Could not load quotation for status update');
+    }
+  };
+
+  const handleProgressSubmit = async (payload: {
+    keepCurrent: boolean;
+    opportunityStatus?: string;
+  }) => {
+    if (!progressRecord?.forecastId) return;
+    setProgressSubmitting(true);
+    try {
+      await updateSalesOpportunityStatusProgress(progressRecord.forecastId, payload);
+      toast.success(
+        payload.keepCurrent ? 'Progress confirmed' : 'Status updated',
+      );
+      setProgressOpen(false);
+      setProgressRecord(null);
+      void invalidateForecasts();
+    } catch (e) {
+      console.error(e);
+      toast.error(e instanceof Error ? e.message : 'Could not update status');
+    } finally {
+      setProgressSubmitting(false);
+    }
+  };
+
   const handleExport = () => {
     const headers = [
       'QuotationRef',
       'Workflow',
+      'Status',
       'Customer',
       'ContactTitle',
       'ContactName',
       'ContactEmail',
-      'Principal',
+      'Principle',
       'INRValue',
       'Probability',
       'Owner',
@@ -358,6 +418,7 @@ export default function SalesForecastingTab({
         [
           r.quotationRef,
           r.workflowStatus,
+          r.opportunityStatus,
           r.customerOrganization,
           r.contactTitle,
           r.contactFullName,
@@ -384,6 +445,7 @@ export default function SalesForecastingTab({
 
   return (
     <TooltipProvider>
+      {viewScope === 'team' && privileged ? <SalesQuotationEditRequestsPanel /> : null}
       <Card className="border-gray-200 p-6 shadow-sm">
         <div className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
           <div className="flex min-w-0 flex-[1_1_260px] items-center gap-3">
@@ -395,6 +457,8 @@ export default function SalesForecastingTab({
                     <SelectItem value="all">All workflow states</SelectItem>
                     <SelectItem value="draft">Draft</SelectItem>
                     <SelectItem value="pending_approval">Pending approval</SelectItem>
+                    <SelectItem value="in_progress">In Progress</SelectItem>
+                    <SelectItem value="closed">Closed</SelectItem>
                     <SelectItem value="approved">Approved</SelectItem>
                     <SelectItem value="rejected">Rejected</SelectItem>
                   </SelectContent>
@@ -403,7 +467,7 @@ export default function SalesForecastingTab({
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                   <Input
                     className="h-9 w-full min-w-0 border-gray-200 bg-white pl-10 sm:h-10 md:max-w-xl md:text-sm"
-                    placeholder="Search quotation ref, customer, principal, model, owner…"
+                    placeholder="Search quotation ref, customer, principle, model, owner…"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                   />
@@ -427,7 +491,7 @@ export default function SalesForecastingTab({
 
         <div className="overflow-hidden rounded-lg border">
           <div ref={tableScrollRef} className="overflow-auto max-h-[calc(100vh-320px)]">
-            <Table className="min-w-[1380px]">
+            <Table className="min-w-[1520px]">
               <TableHeader>
                 <TableRow className="border-b border-gray-200 bg-gray-50/90 hover:bg-gray-50/90">
                   <TableHead className="w-10 whitespace-nowrap px-3 py-3 text-xs font-semibold uppercase tracking-wide text-gray-600">#</TableHead>
@@ -435,8 +499,11 @@ export default function SalesForecastingTab({
                   <TableHead className="min-w-[132px] whitespace-nowrap px-3 py-3 text-xs font-semibold uppercase tracking-wide text-gray-600">
                     Quotation ref
                   </TableHead>
+                  <TableHead className="min-w-[140px] max-w-[200px] px-3 py-3 text-xs font-semibold uppercase tracking-wide text-gray-600">
+                    Status
+                  </TableHead>
                   <TableHead className="min-w-[150px] max-w-[220px] px-3 py-3 text-xs font-semibold uppercase tracking-wide text-gray-600">Customer</TableHead>
-                  <TableHead className="min-w-[110px] max-w-[180px] px-3 py-3 text-xs font-semibold uppercase tracking-wide text-gray-600">Principal</TableHead>
+                  <TableHead className="min-w-[110px] max-w-[180px] px-3 py-3 text-xs font-semibold uppercase tracking-wide text-gray-600">Principle</TableHead>
                   <TableHead className="w-[120px] whitespace-nowrap px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-gray-600">
                     INR (ex GST)
                   </TableHead>
@@ -459,7 +526,7 @@ export default function SalesForecastingTab({
               <VirtualizedTableBody
                 parentRef={tableScrollRef}
                 rows={filtered}
-                colSpan={11}
+                colSpan={12}
                 isLoading={isInitialLoading}
                 loadingMessage="Loading opportunities…"
                 emptyMessage="No opportunities match your filters."
@@ -469,12 +536,33 @@ export default function SalesForecastingTab({
                 }
                 renderCells={(r, i) => {
                     const deadline = getDeadlineStatus(r);
+                    const canProgress = canUpdateQuotationProgress(r, currentEmployeeCode);
                     return (
                     <>
                       <TableCell className="px-3 py-3 text-sm text-gray-600">{i + 1}</TableCell>
                       <TableCell className="px-3 py-3">{workflowBadge(r.workflowStatus)}</TableCell>
                       <TableCell className="px-3 py-3 font-mono text-sm font-semibold text-[#007BFF]">
-                        {r.quotationRef || <span className="font-sans font-normal text-gray-400">—</span>}
+                        {r.quotationRef ? (
+                          canProgress ? (
+                            <button
+                              type="button"
+                              className="text-left font-mono text-sm font-semibold text-[#007BFF] underline-offset-2 hover:underline"
+                              onClick={() => void openProgressModal(r)}
+                            >
+                              {r.quotationRef}
+                            </button>
+                          ) : (
+                            r.quotationRef
+                          )
+                        ) : (
+                          <span className="font-sans font-normal text-gray-400">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell
+                        className="max-w-[200px] truncate px-3 py-3 text-sm text-gray-700"
+                        title={r.opportunityStatus || undefined}
+                      >
+                        {r.opportunityStatus || '—'}
                       </TableCell>
                       <TableCell className="max-w-[220px] truncate px-3 py-3 text-sm text-[#212529]" title={r.customerOrganization || undefined}>
                         {r.customerOrganization || '—'}
@@ -546,7 +634,9 @@ export default function SalesForecastingTab({
                           )}
                           {canEditRecords &&
                             ((showEditAction && canEditRow(r, userRole, currentEmployeeCode)) ||
-                              (showTeamModerationActions && r.workflowStatus === 'approved')) && (
+                              (showTeamModerationActions &&
+                                r.workflowStatus === 'approved' &&
+                                !String(r.quotationRef || '').trim())) && (
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button variant="ghost" size="icon" className="h-9 w-9 text-gray-600 hover:text-[#007BFF]" onClick={() => openEdit(r)}>
@@ -629,6 +719,41 @@ export default function SalesForecastingTab({
           onEdit={() => {
             if (detailRecord) openEdit(detailRecord);
           }}
+      />
+
+      <SalesQuotationProgressModal
+        isOpen={progressOpen}
+        onClose={() => {
+          if (progressSubmitting) return;
+          setProgressOpen(false);
+          setProgressRecord(null);
+        }}
+        record={progressRecord}
+        statusOptions={masters.STATUS || []}
+        isSubmitting={progressSubmitting}
+        onSubmit={handleProgressSubmit}
+        onRequestEditPermission={() => {
+          if (!progressRecord) return;
+          void (async () => {
+            try {
+              const fresh = await fetchSalesOpportunityById(progressRecord.forecastId);
+              setEditRequestRecord(fresh);
+            } catch {
+              setEditRequestRecord(progressRecord);
+            }
+            setEditRequestOpen(true);
+          })();
+        }}
+      />
+
+      <SalesQuotationEditRequestModal
+        isOpen={editRequestOpen}
+        onClose={() => {
+          setEditRequestOpen(false);
+          setEditRequestRecord(null);
+        }}
+        record={editRequestRecord}
+        masters={masters}
       />
     </TooltipProvider>
   );

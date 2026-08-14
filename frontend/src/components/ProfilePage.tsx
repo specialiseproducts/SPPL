@@ -8,6 +8,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import type { UserMaster } from './UserCreationTab';
 import PlanningPerformanceCard from './dailyPlanner/PlanningPerformanceCard';
 import PlanningHistorySection from './dailyPlanner/PlanningHistorySection';
+import NotificationPreferencesPanel from './notifications/NotificationPreferencesPanel';
 import {
   useEmployeePlanningProfileQuery,
   useMyPlanningProfileQuery,
@@ -259,6 +260,8 @@ export default function ProfilePage({ onBack, employee, isSelfProfile = true }: 
           </div>
         </Card>
       ))}
+
+      {isSelfProfile ? <NotificationPreferencesPanel /> : null}
 
       {employeeCode && !planningProfileQuery.isError ? (
         <PlanningPerformanceCard

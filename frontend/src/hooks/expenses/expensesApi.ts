@@ -198,6 +198,47 @@ export async function approveExpenseAudit(expenseId: string): Promise<ExpenseRec
   return normalizeExpenseRow(res.data);
 }
 
+export async function fetchPendingPreviousExportExpenses(options: {
+  month: string;
+  year: string;
+  employeeCode?: string;
+}): Promise<ExpenseRecord[]> {
+  const params = new URLSearchParams({
+    month: options.month,
+    year: options.year,
+  });
+  if (options.employeeCode) {
+    params.set('employeeCode', options.employeeCode);
+  }
+  const res = (await apiFetch(`/api/expenses/export/pending-previous?${params.toString()}`)) as {
+    success?: boolean;
+    data?: Record<string, unknown>[];
+    message?: string;
+  };
+  if (!res?.success || !Array.isArray(res.data)) {
+    throw new Error(res?.message || 'Failed to load pending previous expenses');
+  }
+  return res.data.map((row) => normalizeExpenseRow(row));
+}
+
+export async function markExpenseExportStatuses(payload: {
+  expenseIds: string[];
+  status: 'Exported' | 'Skipped';
+  exportedMonth?: string;
+  exportedYear?: string;
+  exportBatch?: string;
+}): Promise<ExpenseRecord[]> {
+  const res = (await apiFetch('/api/expenses/export/mark-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })) as { success?: boolean; data?: Record<string, unknown>[]; message?: string };
+  if (!res?.success || !Array.isArray(res.data)) {
+    throw new Error(res?.message || 'Failed to update export status');
+  }
+  return res.data.map((row) => normalizeExpenseRow(row));
+}
+
 export async function rejectExpenseAudit(expenseId: string, reason?: string): Promise<ExpenseRecord> {
   const res = (await apiFetch(`/api/expenses/${encodeURIComponent(expenseId)}/reject`, {
     method: 'POST',

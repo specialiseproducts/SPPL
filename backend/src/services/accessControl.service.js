@@ -1,5 +1,7 @@
 import * as AccessModel from '../models/UserAccessControl.js';
 import { logActivity } from '../utils/activityLogger.js';
+import * as UserNotificationEmitters from './notificationEmitters.js';
+import { diffChangedFields } from '../utils/auditTrailDiff.js';
 
 const GLOBAL_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User']);
 const OVERRIDE_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User', 'None']);
@@ -46,6 +48,7 @@ export const createAccessControl = async (payload, actor) => {
     targetId: item.employeeCode,
     newValue: item,
   });
+  void UserNotificationEmitters.emitRoleUpdated(item.employeeCode, actor?.employeeCode);
   return item;
 };
 
@@ -58,6 +61,9 @@ export const updateAccessControl = async (employeeCode, payload, actor) => {
     updatedBy: actor?.employeeCode || 'system',
     updatedByName: actor?.fullName || '',
   });
+  const diff = diffChangedFields(prev || {}, item, ['globalRole', 'moduleOverrides']);
+  const roleChanged =
+    String(prev?.globalRole || '') !== String(item?.globalRole || '');
   await logActivity({
     actorEmployeeCode: actor?.employeeCode || '',
     actorName: actor?.fullName || '',
@@ -66,9 +72,14 @@ export const updateAccessControl = async (employeeCode, payload, actor) => {
     actionType: 'UPDATE',
     targetEntity: 'accessControl',
     targetId: item.employeeCode,
-    oldValue: prev || {},
-    newValue: item,
+    oldValue: diff.oldValues,
+    newValue: diff.newValues,
+    metadata: {
+      action: roleChanged ? 'role_change' : 'permission_change',
+      description: roleChanged ? 'Role Changed' : 'Permission Changed',
+    },
   });
+  void UserNotificationEmitters.emitRoleUpdated(item.employeeCode, actor?.employeeCode);
   return item;
 };
 

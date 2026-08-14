@@ -23,6 +23,7 @@ import {
 import { withApprovalDefaults } from '../utils/approval.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { logActivity } from '../utils/activityLogger.js';
+import * as ExpenseNotificationEmitters from './notificationEmitters.js';
 import { DEFAULT_QUERY_LIMIT, parsePaginationOptions, toPaginatedResponse } from '../utils/dynamoPagination.js';
 import { toExpenseListDto } from '../utils/listDtos.js';
 import { sortExpensesDesc } from '../utils/dynamoSort.js';
@@ -35,6 +36,11 @@ import { computeTravelCarBikeRupeeAmount } from '../utils/expenseTravelAmount.js
 import * as ExpenseTravelRateSettingsService from './expenseTravelRateSettings.service.js';
 import { resolveLocationFieldsFromRow } from '../utils/expenseLocationFields.js';
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy.js';
+import {
+  EXPENSE_EXPORT_STATUS,
+  isApprovedExpense,
+  resolveExportStatus,
+} from '../constants/expenseExportStatus.js';
 import log from '../utils/logger.js';
 
 const SUB_OR_HEAD_KEYS = ['expenseHead', 'subCategory'];
@@ -477,6 +483,15 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       actionType: 'CREATE',
       targetEntity: 'expense',
       targetId: expense.expenseId,
+      newValue: {
+        approval_status: expense.approval_status || expense.auditStatus || 'Pending',
+        amount: expense.amount,
+      },
+      metadata: {
+        description: 'Expense Created',
+        ownerEmployeeCode:
+          expense.created_by_employee_code || authUser?.employeeCode || '',
+      },
     });
 
     const mergedDocuments = [];
@@ -510,6 +525,8 @@ export const createExpense = async (expenseData, documents = [], authUser = null
 
       savedDocuments.push(saved);
     }
+
+    void ExpenseNotificationEmitters.emitExpenseSubmitted(expense, authUser?.employeeCode);
 
     return {
       ...enrichExpenseRow(expense),
@@ -795,6 +812,11 @@ export const approveExpense = async (expenseId, authUser, effectiveRole) => {
     updated_at: now,
   };
 
+  // Default export tracking: Pending Export unless already Exported.
+  if (resolveExportStatus(existing) !== EXPENSE_EXPORT_STATUS.EXPORTED) {
+    patch.exportStatus = EXPENSE_EXPORT_STATUS.PENDING;
+  }
+
   const updated = await ExpenseModel.updateExpense(existing.expenseId, patch);
   await logActivity({
     actorEmployeeCode: authUser?.employeeCode || '',
@@ -804,9 +826,178 @@ export const approveExpense = async (expenseId, authUser, effectiveRole) => {
     actionType: 'UPDATE',
     targetEntity: 'expense',
     targetId: existing.expenseId,
-    metadata: { action: 'audit_approve' },
+    oldValue: {
+      approval_status: existing.approval_status || existing.auditStatus || '',
+    },
+    newValue: {
+      approval_status: 'Approved',
+    },
+    metadata: {
+      action: 'audit_approve',
+      description: 'Expense Approved',
+      ownerEmployeeCode: existing.created_by_employee_code || '',
+      approvalRemark: '',
+    },
   });
+  void ExpenseNotificationEmitters.emitExpenseApproved(updated, authUser?.employeeCode);
   return enrichExpenseRow(updated);
+};
+
+/**
+ * Approved + Pending Export expenses from months before the selected MM-YYYY.
+ * Scoped to a single employee (own records, or admin selecting one employee).
+ */
+export const getPendingPreviousExportExpenses = async (
+  { month, year, employeeCode: requestedCode } = {},
+  authUser,
+  effectiveRole
+) => {
+  const mm = String(month ?? '').trim().padStart(2, '0');
+  const yyyy = String(year ?? '').trim();
+  if (!/^\d{2}$/.test(mm) || Number(mm) < 1 || Number(mm) > 12 || !/^\d{4}$/.test(yyyy)) {
+    const err = new Error('month and year are required (MM and YYYY)');
+    err.statusCode = 400;
+    throw err;
+  }
+  const beforeMonthYear = `${mm}-${yyyy}`;
+
+  const selfCode = String(authUser?.employeeCode || '').trim();
+  let targetCode = selfCode;
+  const requested = String(requestedCode || '').trim();
+
+  if (canAccessAllExpenseRecords(effectiveRole) && requested) {
+    targetCode = requested;
+  } else if (requested && requested !== selfCode) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  if (!targetCode) {
+    const err = new Error('employeeCode is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const rows = await ExpenseModel.queryPendingExportPreviousMonths(targetCode, beforeMonthYear);
+  return rows.map((row) => toExpenseListDto(row, enrichExpenseRow));
+};
+
+/**
+ * Mark expenses Exported or Skipped after a successful export (or intentional skip).
+ * Status updates happen only when the client confirms Excel succeeded for Exported.
+ */
+export const markExpenseExportStatuses = async (body, authUser, effectiveRole) => {
+  const status = String(body?.status ?? '').trim();
+  if (status !== EXPENSE_EXPORT_STATUS.EXPORTED && status !== EXPENSE_EXPORT_STATUS.SKIPPED) {
+    const err = new Error('status must be Exported or Skipped');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const ids = Array.isArray(body?.expenseIds)
+    ? [...new Set(body.expenseIds.map((id) => String(id || '').trim()).filter(Boolean))]
+    : [];
+  if (ids.length === 0) {
+    const err = new Error('expenseIds is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  const exportBatch =
+    status === EXPENSE_EXPORT_STATUS.EXPORTED
+      ? String(body?.exportBatch || '').trim() || `export-${now}`
+      : '';
+  const exportedMonth =
+    status === EXPENSE_EXPORT_STATUS.EXPORTED ? String(body?.exportedMonth || '').trim() : '';
+  const exportedYear =
+    status === EXPENSE_EXPORT_STATUS.EXPORTED ? String(body?.exportedYear || '').trim() : '';
+
+  const updated = [];
+  for (const expenseId of ids) {
+    const existing = await ExpenseModel.getExpenseById(expenseId);
+    if (!existing) {
+      const err = new Error(`Expense not found: ${expenseId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (
+      !canAccessAllExpenseRecords(effectiveRole) &&
+      !isOwnedByUser(existing, authUser)
+    ) {
+      const err = new Error('Forbidden');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    if (!isApprovedExpense(existing)) {
+      const err = new Error(`Expense ${expenseId} is not Approved`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (status === EXPENSE_EXPORT_STATUS.SKIPPED) {
+      if (resolveExportStatus(existing) === EXPENSE_EXPORT_STATUS.EXPORTED) {
+        continue;
+      }
+      if (resolveExportStatus(existing) === EXPENSE_EXPORT_STATUS.SKIPPED) {
+        updated.push(enrichExpenseRow(existing));
+        continue;
+      }
+    }
+
+    const patch = {
+      exportStatus: status,
+      updatedAt: now,
+      updated_at: now,
+    };
+
+    if (status === EXPENSE_EXPORT_STATUS.EXPORTED) {
+      patch.exportedAt = now;
+      patch.exportBatch = exportBatch;
+      if (exportedMonth) patch.exportedMonth = exportedMonth;
+      if (exportedYear) patch.exportedYear = exportedYear;
+    }
+
+    const row = await ExpenseModel.updateExpense(existing.expenseId, patch);
+    updated.push(enrichExpenseRow(row));
+  }
+
+  await logActivity({
+    actorEmployeeCode: authUser?.employeeCode || '',
+    actorName: authUser?.fullName || '',
+    actorRole: authUser?.role || '',
+    module: 'expenses',
+    actionType: 'UPDATE',
+    targetEntity: 'expense',
+    targetId: ids.join(','),
+    metadata: {
+      action: status === EXPENSE_EXPORT_STATUS.EXPORTED ? 'export_mark_exported' : 'export_mark_skipped',
+      count: updated.length,
+      exportBatch: exportBatch || undefined,
+    },
+  });
+
+  if (status === EXPENSE_EXPORT_STATUS.EXPORTED && updated.length > 0) {
+    const owners = [
+      ...new Set(
+        updated
+          .map((r) => String(r.created_by_employee_code || r.employeeCode || '').trim())
+          .filter(Boolean),
+      ),
+    ];
+    for (const owner of owners) {
+      void ExpenseNotificationEmitters.emitExpenseExportCompleted(
+        owner,
+        exportBatch,
+        authUser?.employeeCode,
+      );
+    }
+  }
+
+  return updated;
 };
 
 export const rejectExpense = async (expenseId, body, authUser, effectiveRole) => {
@@ -845,8 +1036,22 @@ export const rejectExpense = async (expenseId, body, authUser, effectiveRole) =>
     actionType: 'UPDATE',
     targetEntity: 'expense',
     targetId: existing.expenseId,
-    metadata: { action: 'audit_reject', reason },
+    oldValue: {
+      approval_status: existing.approval_status || existing.auditStatus || '',
+    },
+    newValue: {
+      approval_status: 'Rejected',
+      auditReason: reason,
+    },
+    metadata: {
+      action: 'audit_reject',
+      reason,
+      description: 'Expense Rejected',
+      ownerEmployeeCode: existing.created_by_employee_code || '',
+      approvalRemark: reason,
+    },
   });
+  void ExpenseNotificationEmitters.emitExpenseRejected(updated, reason, authUser?.employeeCode);
   return enrichExpenseRow(updated);
 };
 

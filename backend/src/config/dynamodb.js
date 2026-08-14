@@ -39,6 +39,8 @@ export const TABLES = {
   ACCESS_RULES: process.env.DYNAMODB_TABLE_ACCESS_RULES || 'AccessRules',
   USER_ACCESS_CONTROL: process.env.DYNAMODB_TABLE_USER_ACCESS_CONTROL || 'UserAccessControl',
   ACTIVITY_LOGS: process.env.DYNAMODB_TABLE_ACTIVITY_LOGS || 'ActivityLogs',
+  AUDIT_TRAIL: process.env.DYNAMODB_TABLE_AUDIT_TRAIL || 'AuditTrail',
+  SALES_HISTORY: process.env.DYNAMODB_TABLE_SALES_HISTORY || 'SalesHistory',
   NOTIFICATIONS: process.env.DYNAMODB_TABLE_NOTIFICATIONS || 'Notifications',
   EXPENSES: process.env.DYNAMODB_TABLE_EXPENSES || 'Expenses',
   EXPENSE_DOCUMENTS: process.env.DYNAMODB_TABLE_EXPENSE_DOCUMENTS || 'ExpenseDocuments',

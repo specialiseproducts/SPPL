@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Button } from '../ui/button';
 import {
@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from '../ui/dialog';
 import type { OrderProcessingRecord, OrderAttachment } from '../../types/orderProcessing';
+import AuditHistoryModal from '../audit/AuditHistoryModal';
 
 function displayCell(value: string | number | undefined | null): string {
   if (value === undefined || value === null) return '—';
@@ -67,9 +68,11 @@ interface Props {
 }
 
 export default function OrderViewModal({ open, order, onClose }: Props) {
+  const [auditOpen, setAuditOpen] = useState(false);
   if (!order) return null;
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent
         className="!flex !h-[92vh] !max-h-[92vh] !w-[min(96vw,1100px)] !max-w-[1100px] !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-[1100px]"
@@ -209,12 +212,24 @@ export default function OrderViewModal({ open, order, onClose }: Props) {
           </ViewSection>
         </div>
 
-        <DialogFooter className="shrink-0 border-t border-gray-200 bg-white px-6 py-4 sm:justify-end">
+        <DialogFooter className="shrink-0 border-t border-gray-200 bg-white px-6 py-4 sm:justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => setAuditOpen(true)}>
+            Audit History
+          </Button>
           <Button type="button" variant="outline" onClick={onClose}>
             Close
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <AuditHistoryModal
+      open={auditOpen}
+      onOpenChange={setAuditOpen}
+      title="Order Audit History"
+      entityType="order"
+      entityId={order.orderId}
+      module="orderProcessing"
+    />
+    </>
   );
 }

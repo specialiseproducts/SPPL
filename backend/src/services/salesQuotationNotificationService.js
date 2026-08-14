@@ -17,8 +17,6 @@ import {
   todayIstDateKey,
   parseDateKey,
   normalizeDateKey,
-  buildFollowUpIntervals,
-  timestampInDateRange,
   calendarDayDiff,
 } from '../utils/salesQuotationDates.js';
 import {
@@ -26,10 +24,18 @@ import {
   normalizeWorkflowStatus,
   sanitizeRejectionReason,
 } from '../utils/salesQuotationEmailUtils.js';
+import { effectiveLifecycleWorkflow } from '../utils/salesQuotationLifecycle.js';
 import log from '../utils/logger.js';
+import * as SalesNotificationEmitters from './notificationEmitters.js';
 
-const FOLLOW_UP_WORKFLOWS = new Set(['draft', 'rejected']);
-const DEADLINE_OVERDUE_WORKFLOWS = new Set(['draft', 'pending_approval', 'rejected']);
+const DEADLINE_OVERDUE_WORKFLOWS = new Set([
+  'draft',
+  'pending_approval',
+  'rejected',
+  'in_progress',
+  'approved',
+]);
+const CLOSED_WORKFLOWS = new Set(['closed']);
 
 const ownerEmailCache = new Map();
 let scheduledEmailRunInProgress = false;
@@ -227,19 +233,27 @@ async function markNotificationSent(forecastId, patch) {
 
 function isFollowUpCandidate(quotation, todayKey) {
   const ws = normalizeWorkflowStatus(quotation);
-  if (!FOLLOW_UP_WORKFLOWS.has(ws)) return false;
+  const lifecycleWs = effectiveLifecycleWorkflow(ws);
+  if (CLOSED_WORKFLOWS.has(ws) || lifecycleWs !== 'in_progress') return false;
 
-  const quotationDate = normalizeDateKey(quotation.quotationDate);
   const decisionExpectedBy = normalizeDateKey(quotation.decisionExpectedBy);
-  if (!quotationDate || !decisionExpectedBy) return false;
+  if (decisionExpectedBy && todayKey > decisionExpectedBy) return false;
 
-  const intervals = buildFollowUpIntervals(quotationDate, decisionExpectedBy);
-  return intervals.some((iv) => iv.endKey === todayKey);
+  const lastStatusKey = normalizeDateKey(
+    quotation.lastStatusUpdatedAt || quotation.approved_at || quotation.approvedAt || ''
+  );
+  const lastStatusDate = parseDateKey(lastStatusKey);
+  const todayDate = parseDateKey(todayKey);
+  if (!lastStatusDate || !todayDate) return false;
+
+  return calendarDayDiff(lastStatusDate, todayDate) >= 15;
 }
 
 function isDeadlineCandidate(quotation, todayKey) {
   const ws = normalizeWorkflowStatus(quotation);
-  if (!DEADLINE_OVERDUE_WORKFLOWS.has(ws)) return false;
+  if (CLOSED_WORKFLOWS.has(ws)) return false;
+  // Deadline-day mails remain for pre-issuance workflows only.
+  if (!new Set(['draft', 'pending_approval', 'rejected']).has(ws)) return false;
 
   const decisionExpectedBy = normalizeDateKey(quotation.decisionExpectedBy);
   return Boolean(decisionExpectedBy && decisionExpectedBy === todayKey);
@@ -247,6 +261,7 @@ function isDeadlineCandidate(quotation, todayKey) {
 
 function isOverdueCandidate(quotation, todayKey) {
   const ws = normalizeWorkflowStatus(quotation);
+  if (CLOSED_WORKFLOWS.has(ws)) return false;
   if (!DEADLINE_OVERDUE_WORKFLOWS.has(ws)) return false;
 
   const decisionExpectedBy = normalizeDateKey(quotation.decisionExpectedBy);
@@ -256,53 +271,37 @@ function isOverdueCandidate(quotation, todayKey) {
 }
 
 /**
- * Process 15-day follow-up reminders for a single quotation on the given IST date.
+ * Process 15-day follow-up reminders for In Progress quotations.
+ * Timer resets ONLY on business status progress updates (lastStatusUpdatedAt).
+ * Field edits must not affect this timer.
  */
 export async function processFollowUpReminder(quotation, todayKey) {
   const forecastId = quotation?.forecastId;
   const originalWorkflow = quotation?.workflowStatus ?? quotation?.approval_status ?? '';
   const workflow = normalizeWorkflowStatus(quotation);
+  const lifecycleWs = effectiveLifecycleWorkflow(workflow);
 
   log.info('processFollowUpReminder: entered', {
     forecastId,
     originalWorkflow,
     normalizedWorkflow: workflow,
+    lifecycleWorkflow: lifecycleWs,
     todayKey,
   });
 
-  if (!FOLLOW_UP_WORKFLOWS.has(workflow)) {
+  if (CLOSED_WORKFLOWS.has(workflow) || lifecycleWs !== 'in_progress') {
     log.info('Skipped follow-up reminder: workflow not eligible', {
       forecastId,
       originalWorkflow,
       normalizedWorkflow: workflow,
+      lifecycleWorkflow: lifecycleWs,
     });
     return skippedResult('workflow_not_eligible');
   }
 
-  const quotationDate = normalizeDateKey(quotation.quotationDate);
   const decisionExpectedBy = normalizeDateKey(quotation.decisionExpectedBy);
-
-  if (!quotationDate || !decisionExpectedBy) {
-    log.info('Skipped follow-up reminder: missing dates', {
-      forecastId,
-      quotationDate,
-      decisionExpectedBy,
-    });
-    return skippedResult('missing_dates');
-  }
-
-  const intervals = buildFollowUpIntervals(quotationDate, decisionExpectedBy);
-  const currentInterval = intervals.find((iv) => iv.endKey === todayKey);
-
-  log.info('processFollowUpReminder: intervals', {
-    forecastId,
-    intervalsGenerated: intervals,
-    currentInterval: currentInterval || null,
-    todayKey,
-  });
-
-  if (!currentInterval) {
-    log.info('Skipped follow-up reminder: no interval ending today', {
+  if (decisionExpectedBy && todayKey > decisionExpectedBy) {
+    log.info('Skipped follow-up reminder: past decision expected by (overdue path applies)', {
       forecastId,
       todayKey,
       decisionExpectedBy,
@@ -310,36 +309,42 @@ export async function processFollowUpReminder(quotation, todayKey) {
     return skippedResult('date_mismatch');
   }
 
-  const sentKeys = Array.isArray(quotation.emailFollowUpRemindersSent)
-    ? quotation.emailFollowUpRemindersSent.map((k) => normalizeDateKey(k)).filter(Boolean)
-    : [];
-
-  if (sentKeys.includes(currentInterval.endKey)) {
-    log.info('Skipped follow-up reminder: reminder already sent for interval', {
-      forecastId,
-      intervalEndKey: currentInterval.endKey,
-      emailFollowUpRemindersSent: quotation.emailFollowUpRemindersSent,
-    });
-    return skippedResult('already_sent');
+  const lastStatusKey = normalizeDateKey(
+    quotation.lastStatusUpdatedAt || quotation.approved_at || quotation.approvedAt || ''
+  );
+  if (!lastStatusKey) {
+    log.info('Skipped follow-up reminder: missing lastStatusUpdatedAt', { forecastId });
+    return skippedResult('missing_dates');
   }
 
-  const updatedAt = quotation.updatedAt || quotation.updated_at;
-  const insideInterval = timestampInDateRange(updatedAt, currentInterval.startKey, currentInterval.endKey);
+  const lastStatusDate = parseDateKey(lastStatusKey);
+  const todayDate = parseDateKey(todayKey);
+  if (!lastStatusDate || !todayDate) {
+    return skippedResult('missing_dates');
+  }
 
-  log.info('processFollowUpReminder: update check', {
-    forecastId,
-    updatedAt,
-    insideInterval,
-    intervalStart: currentInterval.startKey,
-    intervalEnd: currentInterval.endKey,
-  });
-
-  if (insideInterval) {
-    log.info('Skipped follow-up reminder: quotation updated during current interval', {
+  const daysSince = calendarDayDiff(lastStatusDate, todayDate);
+  if (daysSince < 15) {
+    log.info('Skipped follow-up reminder: status updated within 15 days', {
       forecastId,
-      updatedAt,
+      lastStatusKey,
+      daysSince,
     });
-    return skippedResult('updated_in_interval');
+    return skippedResult('date_mismatch');
+  }
+
+  const cycle = Math.floor(daysSince / 15);
+  const periodKey = `status:${lastStatusKey}:c${cycle}`;
+  const sentKeys = Array.isArray(quotation.emailFollowUpRemindersSent)
+    ? quotation.emailFollowUpRemindersSent.map((k) => String(k || '').trim()).filter(Boolean)
+    : [];
+
+  if (sentKeys.includes(periodKey)) {
+    log.info('Skipped follow-up reminder: already sent for status period', {
+      forecastId,
+      periodKey,
+    });
+    return skippedResult('already_sent');
   }
 
   const ownerResult = await sendOwnerEmail(quotation, (q, name) => buildFollowUpReminderEmail(q, name));
@@ -355,9 +360,10 @@ export async function processFollowUpReminder(quotation, todayKey) {
 
   if (ownerResult.ok) {
     await markNotificationSent(forecastId, {
-      emailFollowUpRemindersSent: [...sentKeys, currentInterval.endKey],
+      emailFollowUpRemindersSent: [...sentKeys, periodKey],
     });
-    log.info('15-day follow-up reminder sent', { forecastId });
+    log.info('15-day status follow-up reminder sent', { forecastId, periodKey, daysSince });
+    void SalesNotificationEmitters.emitFifteenDayFollowUpReminder(quotation);
   }
 
   return result;
@@ -600,6 +606,7 @@ export async function processOverdueReminder(quotation, todayKey) {
     ownerSkipped = true;
   } else if (ownerResult.ok) {
     ownerSuccess = true;
+    void SalesNotificationEmitters.emitQuotationOverdueReminder(quotation, overdueDays);
   } else {
     ownerFailed = true;
   }

@@ -22,12 +22,11 @@ import {
   countPlannedTasksForDate,
   countPendingEveningReviewTasks,
   MIN_PLANNED_TASKS_PER_WORKING_DAY,
-  buildMinimumTasksWarningMessage,
 } from '../utils/planningRecognition.js';
 import { parseDateKey, todayIstDateKey } from '../utils/salesQuotationDates.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
-import { notifyUser } from '../utils/notifications.js';
+import * as PlannerNotificationEmitters from './notificationEmitters.js';
 
 function monthBounds(year, month) {
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -362,13 +361,13 @@ export async function runMorningMinimumTasksValidationJob(reference = new Date()
       const plannedCount = countPlannedTasksForDate(tasks, today);
       if (plannedCount >= MIN_PLANNED_TASKS_PER_WORKING_DAY) continue;
 
-      await notifyUser(
-        employee.employeeCode,
-        'Minimum daily tasks required',
-        buildMinimumTasksWarningMessage(plannedCount),
-        'WARNING',
-        { date: today, plannedCount, minRequired: MIN_PLANNED_TASKS_PER_WORKING_DAY },
-      );
+      await PlannerNotificationEmitters.emitPlanningReminder(employee.employeeCode, {
+        plannerDate: today,
+        date: today,
+        reminderType: 'morning_minimum_tasks',
+        plannedCount,
+        minRequired: MIN_PLANNED_TASKS_PER_WORKING_DAY,
+      });
       notified += 1;
     } catch (err) {
       errors.push({
@@ -403,14 +402,12 @@ export async function runEveningTaskReviewValidationJob(reference = new Date()) 
       const pendingCount = countPendingEveningReviewTasks(tasks, today);
       if (pendingCount <= 0) continue;
 
-      await notifyUser(
-        employee.employeeCode,
-        'Evening task review required',
-        `You have ${pendingCount} planned task(s) for today that are not yet Completed or Closed.\n\n` +
-          'Please review every planned task and mark each as Completed or Not Completed before the day ends.',
-        'WARNING',
-        { date: today, pendingCount },
-      );
+      await PlannerNotificationEmitters.emitPlanningReminder(employee.employeeCode, {
+        plannerDate: today,
+        date: today,
+        reminderType: 'evening_review',
+        pendingCount,
+      });
       notified += 1;
     } catch (err) {
       errors.push({

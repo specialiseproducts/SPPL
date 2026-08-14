@@ -24,8 +24,12 @@ import accessControlRoutes from './src/routes/accessControl.routes.js';
 import metricsRoutes from './src/routes/metrics.routes.js';
 import dailyPlannerRoutes from './src/routes/dailyPlanner.routes.js';
 import orderProcessingRoutes from './src/routes/orderProcessing.routes.js';
+import notificationRoutes from './src/routes/notification.routes.js';
+import auditTrailRoutes from './src/routes/auditTrail.routes.js';
 import { initSalesMasterOnStartup } from './src/utils/salesMasterInit.js';
 import { initDailyPlannerStorageOnStartup } from './src/utils/dailyPlannerStorageInit.js';
+import { initAuditTrailStorageOnStartup } from './src/utils/auditTrailStorageInit.js';
+import { initSalesHistoryStorageOnStartup } from './src/utils/salesHistoryStorageInit.js';
 import {
   initSalesQuotationScheduler,
   stopSalesQuotationScheduler,
@@ -63,7 +67,16 @@ app.use(
     credentials: true,
   })
 );
-app.use(compression({ threshold: 1024 }));
+app.use(
+  compression({
+    threshold: 1024,
+    // SSE must not be gzip-buffered — breaks long-lived event streams.
+    filter: (req, res) => {
+      if (String(req.path || '').includes('/notifications/stream')) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(requestMetricsMiddleware);
@@ -88,6 +101,8 @@ app.use('/api/access-control', accessControlRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/daily-planner', dailyPlannerRoutes);
 app.use('/api/order-processing', orderProcessingRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/audit-trail', auditTrailRoutes);
 
 // 404 handler (must be after all routes)
 app.use(notFoundHandler);
@@ -102,6 +117,8 @@ app.listen(PORT, () => {
   log.info(`Health check: http://localhost:${PORT}/health`);
   initSalesMasterOnStartup();
   initDailyPlannerStorageOnStartup();
+  initAuditTrailStorageOnStartup();
+  initSalesHistoryStorageOnStartup();
   initEmailService()
     .catch((err) => {
       log.error('Email service startup verification error', err?.message || err);

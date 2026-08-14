@@ -7,6 +7,12 @@
 
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
 import { ENTITY_TYPE_EXPENSE, GSI_NAMES } from '../config/dynamodbIndexes.js';
+import {
+  EXPENSE_EXPORT_STATUS,
+  isApprovedExpense,
+  isMonthYearBefore,
+  resolveExportStatus,
+} from '../constants/expenseExportStatus.js';
 import { isGsiMissingError, warnGsiFallback } from '../utils/dynamoGsi.js';
 import {
   runQueryPage,
@@ -147,6 +153,55 @@ export const queryExpensesByEmployeeCodePage = async (employeeCode, pagination =
 
 /** @deprecated Prefer queryExpensesByEmployeeCode */
 export const getExpensesByEmployeeId = queryExpensesByEmployeeCode;
+
+/**
+ * Approved + Pending Export expenses for an employee whose monthYear is before
+ * the given MM-YYYY. Uses employee GSI + filter (not a full table scan).
+ */
+export const queryPendingExportPreviousMonths = async (employeeCode, beforeMonthYear) => {
+  const code = String(employeeCode ?? '').trim();
+  const before = String(beforeMonthYear ?? '').trim();
+  if (!code || !before) return [];
+
+  let params = applyNotDeletedFilter({
+    ...employeeExpenseQuery(code),
+  });
+  params = appendFilterExpression(
+    params,
+    '(auditStatus = :approved OR approval_status = :approved) AND (exportStatus = :pending OR attribute_not_exists(exportStatus))',
+    {
+      ':approved': 'Approved',
+      ':pending': EXPENSE_EXPORT_STATUS.PENDING,
+    }
+  );
+
+  let items;
+  try {
+    items = await queryAllPages(dynamoDB, params, notDeletedFilter);
+  } catch (err) {
+    if (!isGsiMissingError(err)) throw err;
+    warnGsiFallback('Expenses.queryPendingExportPreviousMonths', err);
+    const scanned = await scanExpensesFallback(code);
+    items = scanned.filter((row) => {
+      if (!isApprovedExpense(row)) return false;
+      return resolveExportStatus(row) === EXPENSE_EXPORT_STATUS.PENDING;
+    });
+  }
+
+  return items
+    .filter((row) => {
+      if (!isApprovedExpense(row)) return false;
+      if (resolveExportStatus(row) !== EXPENSE_EXPORT_STATUS.PENDING) return false;
+      return isMonthYearBefore(row.monthYear, before);
+    })
+    .sort((a, b) => {
+      const dateA = a?.date ? new Date(a.date).getTime() : Number.POSITIVE_INFINITY;
+      const dateB = b?.date ? new Date(b.date).getTime() : Number.POSITIVE_INFINITY;
+      const safeA = Number.isNaN(dateA) ? Number.POSITIVE_INFINITY : dateA;
+      const safeB = Number.isNaN(dateB) ? Number.POSITIVE_INFINITY : dateB;
+      return safeA - safeB;
+    });
+};
 
 /**
  * Admin / full-table list (scan — sort in memory before pagination).

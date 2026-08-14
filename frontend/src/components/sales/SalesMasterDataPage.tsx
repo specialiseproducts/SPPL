@@ -2,14 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../services/api';
-import type {
-  ExchangeRatesMap,
-  SalesMasterAdminItem,
-  SalesOrganizationAdminRow,
-  SalesOrganizationPartRow,
-  SalesPrincipalAdminRow,
-  SalesPrincipalModelRow,
-} from '../../types/salesForecast';
 import { DEFAULT_EXCHANGE_RATES } from '../../hooks/sales/salesApi';
 import { salesQueryKeys } from '../../hooks/sales/salesQueryKeys';
 import {
@@ -18,10 +10,17 @@ import {
   useMasterAdminListQuery,
   useMasterAdminModelsQuery,
   useMasterAdminOrganizationsQuery,
-  useMasterAdminPartsQuery,
   useMasterAdminPrincipalsQuery,
   useSalesRatesQuery,
 } from '../../hooks/sales/useSalesQueries';
+import type {
+  ExchangeRatesMap,
+  SalesMasterAdminItem,
+  SalesOrganizationAdminRow,
+  SalesPrincipalAdminRow,
+  SalesPrincipalModelRow,
+} from '../../types/salesForecast';
+import SalesHistoryTab from './SalesHistoryTab';
 import { Button } from '../ui/button';
 import { Card } from '../ui/card';
 import { Input } from '../ui/input';
@@ -75,12 +74,6 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
   const [oActive, setOActive] = useState(true);
   const [oPrevSk, setOPrevSk] = useState<string | null>(null);
 
-  const [selectedOrganizationId, setSelectedOrganizationId] = useState('');
-  const [ptNumber, setPtNumber] = useState('');
-  const [ptDesc, setPtDesc] = useState('');
-  const [ptActive, setPtActive] = useState(true);
-  const [ptEditPartId, setPtEditPartId] = useState<string | null>(null);
-
   const [selectedPrincipalId, setSelectedPrincipalId] = useState('');
   const [mNumber, setMNumber] = useState('');
   const [mDesc, setMDesc] = useState('');
@@ -91,10 +84,6 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
   const listQuery = useMasterAdminListQuery(listCat, sectionTab === 'lists');
   const organizationsQuery = useMasterAdminOrganizationsQuery(true);
   const principalsQuery = useMasterAdminPrincipalsQuery(true);
-  const partsQuery = useMasterAdminPartsQuery(
-    selectedOrganizationId,
-    sectionTab === 'parts' && !!selectedOrganizationId,
-  );
   const modelsQuery = useMasterAdminModelsQuery(
     selectedPrincipalId,
     sectionTab === 'models' && !!selectedPrincipalId,
@@ -103,18 +92,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
   const items = listQuery.data ?? [];
   const organizations = organizationsQuery.data ?? [];
   const principals = principalsQuery.data ?? [];
-  const parts = partsQuery.data ?? [];
   const models = modelsQuery.data ?? [];
-
-  const activeOrganizations = useMemo(
-    () =>
-      organizations
-        .filter((o) => o.isActive)
-        .sort((a, b) =>
-          a.organizationName.localeCompare(b.organizationName, undefined, { sensitivity: 'base' }),
-        ),
-    [organizations],
-  );
 
   const activePrincipals = useMemo(
     () =>
@@ -140,7 +118,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
 
   useEffect(() => {
     if (principalsQuery.isError && !principalsQuery.data) {
-      toast.error('Failed to load principals');
+      toast.error('Failed to load principles');
     }
   }, [principalsQuery.isError, principalsQuery.data]);
 
@@ -171,13 +149,6 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
 
   const invalidateOrganizations = () => {
     void queryClient.invalidateQueries({ queryKey: salesQueryKeys.masterAdminOrganizations() });
-  };
-
-  const invalidateParts = () => {
-    if (!selectedOrganizationId) return;
-    void queryClient.invalidateQueries({
-      queryKey: salesQueryKeys.masterAdminParts(selectedOrganizationId),
-    });
   };
 
   const invalidateModels = () => {
@@ -237,7 +208,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
       });
     },
     onSuccess: async () => {
-      toast.success('Principal saved');
+      toast.success('Principle saved');
       setPName('');
       setPCode('');
       setPActive(true);
@@ -368,59 +339,6 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
     onError: () => toast.error('Update failed'),
   });
 
-  const savePartMutation = useMutation({
-    mutationFn: async (body: {
-      organizationId: string;
-      organizationName: string;
-      partNumber: string;
-      itemDescription: string;
-      isActive: boolean;
-      partId?: string;
-    }) => {
-      await apiFetch('/api/sales-forecasts/master-admin/parts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-    },
-    onSuccess: async () => {
-      toast.success('Part number saved');
-      setPtNumber('');
-      setPtDesc('');
-      setPtActive(true);
-      setPtEditPartId(null);
-      invalidateParts();
-      await notifyMastersChanged();
-    },
-    onError: (err: unknown) => {
-      const msg = err instanceof Error ? err.message : 'Save failed';
-      toast.error(msg);
-    },
-  });
-
-  const togglePartMutation = useMutation({
-    mutationFn: async (row: SalesOrganizationPartRow) => {
-      await apiFetch('/api/sales-forecasts/master-admin/parts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          organizationId: row.organizationId,
-          organizationName: row.organizationName,
-          partNumber: row.partNumber,
-          itemDescription: row.itemDescription,
-          isActive: !row.isActive,
-          partId: row.partId,
-        }),
-      });
-    },
-    onSuccess: async () => {
-      toast.success('Updated');
-      invalidateParts();
-      await notifyMastersChanged();
-    },
-    onError: () => toast.error('Update failed'),
-  });
-
   const saveRatesMutation = useMutation({
     mutationFn: async (payload: ExchangeRatesMap) => {
       const data = await apiFetch('/api/sales-forecasts/rates', {
@@ -462,7 +380,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
     const name = pName.trim();
     const code = pCode.trim().toUpperCase();
     if (!name || !code) {
-      toast.error('Principal name and short code are required');
+      toast.error('Principle name and short code are required');
       return;
     }
     setBusy(true);
@@ -530,60 +448,6 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
     }
   };
 
-  const resetPartForm = () => {
-    setPtNumber('');
-    setPtDesc('');
-    setPtActive(true);
-    setPtEditPartId(null);
-  };
-
-  const savePart = async () => {
-    if (!selectedOrganizationId) {
-      toast.error('Select a customer organization first');
-      return;
-    }
-    const num = ptNumber.trim();
-    const desc = ptDesc.trim();
-    if (!num || !desc) {
-      toast.error('Part number and item description are required');
-      return;
-    }
-    const organization = organizations.find((o) => o.sk === selectedOrganizationId);
-    if (!organization) {
-      toast.error('Customer organization not found');
-      return;
-    }
-    setBusy(true);
-    try {
-      await savePartMutation.mutateAsync({
-        organizationId: selectedOrganizationId,
-        organizationName: organization.organizationName,
-        partNumber: num,
-        itemDescription: desc,
-        isActive: ptActive,
-        partId: ptEditPartId || undefined,
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const editPart = (row: SalesOrganizationPartRow) => {
-    setPtNumber(row.partNumber);
-    setPtDesc(row.itemDescription);
-    setPtActive(row.isActive);
-    setPtEditPartId(row.partId);
-  };
-
-  const togglePart = async (row: SalesOrganizationPartRow) => {
-    setBusy(true);
-    try {
-      await togglePartMutation.mutateAsync(row);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const resetModelForm = () => {
     setMNumber('');
     setMDesc('');
@@ -593,7 +457,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
 
   const saveModel = async () => {
     if (!selectedPrincipalId) {
-      toast.error('Select a principal first');
+      toast.error('Select a principle first');
       return;
     }
     const num = mNumber.trim();
@@ -604,7 +468,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
     }
     const principal = principals.find((p) => p.sk === selectedPrincipalId);
     if (!principal) {
-      toast.error('Principal not found');
+      toast.error('Principle not found');
       return;
     }
     setBusy(true);
@@ -666,8 +530,8 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
             <TabsList className="!grid h-auto min-h-9 w-full max-w-4xl grid-cols-3 gap-1 sm:grid-cols-6 sm:gap-0">
               <TabsTrigger value="lists">Lists</TabsTrigger>
               <TabsTrigger value="organizations">Organizations</TabsTrigger>
-              <TabsTrigger value="parts">Part No.</TabsTrigger>
-              <TabsTrigger value="principals">Principals</TabsTrigger>
+              <TabsTrigger value="sales-history">Sales History</TabsTrigger>
+              <TabsTrigger value="principals">Principles</TabsTrigger>
               <TabsTrigger value="models">Models</TabsTrigger>
               <TabsTrigger value="rates">FX rates</TabsTrigger>
             </TabsList>
@@ -833,121 +697,10 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
           </TabsContent>
 
           <TabsContent
-            value="parts"
+            value="sales-history"
             className="mt-0 space-y-6 p-4 outline-none data-[state=inactive]:hidden sm:p-6"
           >
-            <div className="max-w-md space-y-2">
-              <Label htmlFor="parts-organization">Customer Organization</Label>
-              <select
-                id="parts-organization"
-                className="border-input bg-background h-10 w-full rounded-md border px-3 text-sm"
-                value={selectedOrganizationId}
-                onChange={(e) => {
-                  setSelectedOrganizationId(e.target.value);
-                  resetPartForm();
-                }}
-              >
-                <option value="">Select Customer Organization…</option>
-                {activeOrganizations.map((o) => (
-                  <option key={o.sk} value={o.sk}>
-                    {o.organizationName}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {selectedOrganizationId ? (
-              <>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-                  <div className="space-y-2 md:col-span-1">
-                    <Label htmlFor="part-number">Part Number</Label>
-                    <Input
-                      id="part-number"
-                      value={ptNumber}
-                      onChange={(e) => setPtNumber(e.target.value)}
-                      placeholder="e.g. AHI-100"
-                      className="font-mono uppercase"
-                    />
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="part-desc">Item Description</Label>
-                    <Input
-                      id="part-desc"
-                      value={ptDesc}
-                      onChange={(e) => setPtDesc(e.target.value)}
-                      placeholder="e.g. Precision Measuring Instrument"
-                    />
-                  </div>
-                  <div className="flex flex-wrap items-end gap-3">
-                    <div className="flex items-center gap-2 pb-2">
-                      <Switch checked={ptActive} onCheckedChange={setPtActive} id="pt-act" />
-                      <Label htmlFor="pt-act" className="font-normal">
-                        Active
-                      </Label>
-                    </div>
-                    <Button type="button" onClick={() => void savePart()} disabled={busy}>
-                      {ptEditPartId ? 'Update' : 'Add'}
-                    </Button>
-                    {ptEditPartId ? (
-                      <Button type="button" variant="outline" onClick={resetPartForm}>
-                        Cancel edit
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto rounded-md border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-gray-50/90 hover:bg-gray-50/90">
-                        <TableHead>Part Number</TableHead>
-                        <TableHead>Item Description</TableHead>
-                        <TableHead className="w-[120px] text-center">Active</TableHead>
-                        <TableHead className="w-[140px] text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {partsQuery.isPending ? (
-                        <TableRow>
-                          <TableCell colSpan={4} className="text-muted-foreground py-10 text-center">
-                            Loading part numbers…
-                          </TableCell>
-                        </TableRow>
-                      ) : parts.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={4} className="text-muted-foreground py-10 text-center">
-                            No part numbers for this customer organization yet.
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        parts.map((row: SalesOrganizationPartRow) => (
-                          <TableRow key={row.partId}>
-                            <TableCell className="font-mono text-sm">{row.partNumber}</TableCell>
-                            <TableCell>{row.itemDescription}</TableCell>
-                            <TableCell className="text-center">
-                              <Switch
-                                checked={row.isActive}
-                                disabled={busy}
-                                onCheckedChange={() => void togglePart(row)}
-                              />
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <Button type="button" variant="outline" size="sm" onClick={() => editPart(row)}>
-                                Edit
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Select a customer organization to manage part numbers.
-              </p>
-            )}
+            <SalesHistoryTab />
           </TabsContent>
 
           <TabsContent
@@ -956,7 +709,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
           >
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
               <div className="space-y-2 md:col-span-2">
-                <Label>Principal name</Label>
+                <Label>Principle name</Label>
                 <Input value={pName} onChange={(e) => setPName(e.target.value)} placeholder="e.g. Vortran" />
               </div>
               <div className="space-y-2">
@@ -994,7 +747,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
               <Table>
                 <TableHeader>
                   <TableRow className="bg-gray-50/90 hover:bg-gray-50/90">
-                    <TableHead>Principal</TableHead>
+                    <TableHead>Principle</TableHead>
                     <TableHead className="w-[120px]">Code</TableHead>
                     <TableHead className="w-[120px] text-center">Active</TableHead>
                     <TableHead className="w-[140px] text-right">Actions</TableHead>
@@ -1004,7 +757,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
                   {principals.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={4} className="text-muted-foreground py-10 text-center">
-                        No principals defined yet.
+                        No principles defined yet.
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -1033,7 +786,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
             className="mt-0 space-y-6 p-4 outline-none data-[state=inactive]:hidden sm:p-6"
           >
             <div className="max-w-md space-y-2">
-              <Label htmlFor="models-principal">Principal</Label>
+              <Label htmlFor="models-principal">Principle</Label>
               <select
                 id="models-principal"
                 className="border-input bg-background h-10 w-full rounded-md border px-3 text-sm"
@@ -1043,7 +796,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
                   resetModelForm();
                 }}
               >
-                <option value="">Select principal…</option>
+                <option value="">Select principle…</option>
                 {activePrincipals.map((p) => (
                   <option key={p.sk} value={p.sk}>
                     {p.principalName}
@@ -1112,7 +865,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
                       ) : models.length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={4} className="text-muted-foreground py-10 text-center">
-                            No models for this principal yet.
+                            No models for this principle yet.
                           </TableCell>
                         </TableRow>
                       ) : (
@@ -1140,7 +893,7 @@ export default function SalesMasterDataPage({ onMastersChanged }: SalesMasterDat
                 </div>
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">Select a principal to manage models.</p>
+              <p className="text-sm text-muted-foreground">Select a principle to manage models.</p>
             )}
           </TabsContent>
 

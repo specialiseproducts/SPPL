@@ -34,6 +34,8 @@ import {
 } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
+import * as AuditTrailService from './auditTrail.service.js';
+import { AUDIT_ACTIONS, AUDIT_MODULES } from '../constants/auditTrail.js';
 
 export async function getPlanningConfig(reference = new Date(), employeeCode) {
   const location = employeeCode ? await getEmployeeLocation(employeeCode) : undefined;
@@ -71,6 +73,7 @@ export async function recomputeMonthlyPlanningScore(
   location,
 ) {
   const resolvedLocation = location ?? (await getEmployeeLocation(employeeCode));
+  const previous = await DailyPlannerPlanningModel.getMonthlyRecord(employeeCode, year, month);
   const [dailyLogs, counters] = await Promise.all([
     DailyPlannerPlanningModel.listDailyLogsForMonth(employeeCode, year, month),
     loadMonthlyCounters(employeeCode, year, month),
@@ -82,7 +85,7 @@ export async function recomputeMonthlyPlanningScore(
   const rawScore = dailyLogs.reduce((sum, row) => sum + (Number(row.dayScore) || 0), 0);
   const today = todayIstDateKey();
   const asOfDateKey = yearMonthKey(year, month) === today.slice(0, 7) ? today : undefined;
-  return DailyPlannerPlanningModel.saveMonthlyRecord(employeeCode, year, month, {
+  const saved = await DailyPlannerPlanningModel.saveMonthlyRecord(employeeCode, year, month, {
     ...merged,
     rawScore,
     dailyLogs,
@@ -90,6 +93,43 @@ export async function recomputeMonthlyPlanningScore(
     employeeLocation: resolvedLocation,
     lastCalculatedAt: new Date().toISOString(),
   });
+
+  const prevScore = Number(previous?.planningScore ?? previous?.normalizedScore);
+  const nextScore = Number(saved?.planningScore ?? saved?.normalizedScore);
+  const prevBadge = String(previous?.badge || '');
+  const nextBadge = String(saved?.badge || '');
+  const entityId = `${employeeCode}#${year}-${String(month).padStart(2, '0')}`;
+
+  if (Number.isFinite(prevScore) && Number.isFinite(nextScore) && prevScore !== nextScore) {
+    void AuditTrailService.log({
+      module: AUDIT_MODULES.DAILY_PLANNER,
+      entityType: 'planningRecord',
+      entityId,
+      action: AUDIT_ACTIONS.UPDATE,
+      description: 'Planning Score Updated',
+      performedBy: employeeCode,
+      employeeCode,
+      oldValues: { planningScore: prevScore },
+      newValues: { planningScore: nextScore },
+      metadata: { ownerEmployeeCode: employeeCode, year, month },
+    });
+  }
+  if (nextBadge && nextBadge !== prevBadge) {
+    void AuditTrailService.log({
+      module: AUDIT_MODULES.DAILY_PLANNER,
+      entityType: 'planningRecord',
+      entityId,
+      action: AUDIT_ACTIONS.CUSTOM,
+      description: 'Badge Earned',
+      performedBy: employeeCode,
+      employeeCode,
+      oldValues: prevBadge ? { badge: prevBadge } : null,
+      newValues: { badge: nextBadge },
+      metadata: { ownerEmployeeCode: employeeCode, year, month },
+    });
+  }
+
+  return saved;
 }
 
 export async function recomputePlanningScoreForWorkingDay({

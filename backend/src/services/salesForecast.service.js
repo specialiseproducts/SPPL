@@ -13,9 +13,16 @@ import log from '../utils/logger.js';
 import { ensureSalesMasterReady } from '../utils/salesMasterInit.js';
 import { sendRejectionNotification } from './salesQuotationNotificationService.js';
 import { resolveOwnerCode, sanitizeRejectionReason } from '../utils/salesQuotationEmailUtils.js';
+import {
+  buildStatusHistoryEntry,
+  isIssuedQuotationLocked,
+  isTerminalOpportunityStatus,
+  workflowShowsQuotationRef,
+} from '../utils/salesQuotationLifecycle.js';
 import { parsePaginationOptions, toPaginatedResponse } from '../utils/dynamoPagination.js';
 import { toSalesOpportunityListDto } from '../utils/listDtos.js';
 import { sortSalesForecastsDesc } from '../utils/dynamoSort.js';
+import * as SalesNotificationEmitters from './notificationEmitters.js';
 
 const BOOTSTRAP_MASTER_CATEGORIES = [
   'STATUS',
@@ -122,15 +129,15 @@ function normalizeLegacyWorkflow(item) {
 }
 
 function isQuotationLocked(row) {
-  const ws = row?.workflowStatus || 'draft';
-  return ws === 'approved' && String(row?.quotationRef || '').trim() !== '';
+  return isIssuedQuotationLocked(row?.workflowStatus || 'draft', row?.quotationRef);
 }
 
 export function toPublicOpportunity(item) {
   if (!item) return null;
   const row = normalizeLegacyWorkflow(item);
   const ws = row.workflowStatus || 'draft';
-  const showRef = ws === 'approved' && String(row.quotationRef || '').trim() !== '';
+  const showRef = workflowShowsQuotationRef(ws) && String(row.quotationRef || '').trim() !== '';
+  const statusHistory = Array.isArray(row.statusHistory) ? row.statusHistory : [];
   return {
     forecastId: row.forecastId,
     workflowStatus: ws,
@@ -143,6 +150,13 @@ export function toPublicOpportunity(item) {
     quotationDate: row.quotationDate || '',
     decisionExpectedBy: row.decisionExpectedBy || '',
     opportunityStatus: row.opportunityStatus || '',
+    lastStatusUpdatedAt: row.lastStatusUpdatedAt || '',
+    statusHistory,
+    revisionNumber:
+      row.revisionNumber != null && Number.isFinite(Number(row.revisionNumber))
+        ? Math.max(0, Math.floor(Number(row.revisionNumber)))
+        : 0,
+    editAuditLog: Array.isArray(row.editAuditLog) ? row.editAuditLog : [],
     customerOrganization: row.customerOrganization || row.endCustomer || '',
     contactPersonDetails: row.contactPersonDetails || '',
     contactTitle: row.contactTitle || '',
@@ -245,6 +259,10 @@ const BODY_BLOCKLIST = new Set([
   'ownerEmployeeName',
   'technicalSalesPerson',
   'contactPersonDetails',
+  'lastStatusUpdatedAt',
+  'statusHistory',
+  'revisionNumber',
+  'editAuditLog',
 ]);
 
 function sanitizeOpportunityBody(body = {}) {
@@ -273,7 +291,7 @@ function mergeOpportunityFields(existing, body, rateMap) {
 }
 
 function workflowToApprovalStatus(ws) {
-  if (ws === 'approved') return 'Approved';
+  if (ws === 'approved' || ws === 'in_progress' || ws === 'closed') return 'Approved';
   if (ws === 'rejected') return 'Rejected';
   if (ws === 'pending_approval') return 'Pending';
   return 'Pending';
@@ -312,6 +330,8 @@ export const createOpportunity = async (body, authUser, effectiveRole) => {
     createdAt: ts,
     updatedAt: ts,
     is_deleted: false,
+    revisionNumber: 0,
+    editAuditLog: [],
     principalShortCode: '',
     technicalSalesPerson: ownerEmployeeName,
     quotationDate: body.quotationDate ?? '',
@@ -492,6 +512,8 @@ export const submitOpportunity = async (forecastId, authUser, effectiveRole) => 
     metadata: { action: 'submit' },
   });
 
+  void SalesNotificationEmitters.emitQuotationSubmitted(updated, authUser?.employeeCode);
+
   return toPublicOpportunity(updated);
 };
 
@@ -517,8 +539,19 @@ export const approveOpportunity = async (forecastId, authUser, effectiveRole) =>
   const quotationRef = buildQuotationRef(fy, shortCode, serial);
 
   const now = new Date().toISOString();
+  const currentStatus = String(existing.opportunityStatus || '').trim();
+  const historyEntry = buildStatusHistoryEntry({
+    previousStatus: currentStatus,
+    newStatus: currentStatus,
+    updatedByEmployeeCode: authUser?.employeeCode || '',
+    updatedByName: authUser?.fullName || authUser?.employeeCode || '',
+    remarks: 'Quotation approved — lifecycle started',
+    updatedAt: now,
+  });
+  const priorHistory = Array.isArray(existing.statusHistory) ? existing.statusHistory : [];
+
   const patch = {
-    workflowStatus: 'approved',
+    workflowStatus: 'in_progress',
     quotationRef,
     quotationFy: fy,
     quotationSerial: serial,
@@ -529,6 +562,8 @@ export const approveOpportunity = async (forecastId, authUser, effectiveRole) =>
     approved_at: now,
     rejected_by: '',
     rejected_at: '',
+    lastStatusUpdatedAt: now,
+    statusHistory: [...priorHistory, historyEntry],
     updatedAt: now,
   };
 
@@ -542,8 +577,115 @@ export const approveOpportunity = async (forecastId, authUser, effectiveRole) =>
     actionType: 'UPDATE',
     targetEntity: 'salesForecast',
     targetId: forecastId,
-    metadata: { action: 'approve' },
+    oldValue: { workflowStatus: existing.workflowStatus, quotationRef: existing.quotationRef || '' },
+    newValue: { workflowStatus: 'in_progress', quotationRef },
+    metadata: {
+      action: 'approve',
+      workflowStatus: 'in_progress',
+      description: 'Quotation Approved',
+      quotationRef,
+      reference: quotationRef,
+      ownerEmployeeCode: existing.ownerEmployeeCode || '',
+    },
   });
+
+  void SalesNotificationEmitters.emitQuotationApproved(updated, authUser?.employeeCode);
+
+  return toPublicOpportunity(updated);
+};
+
+/**
+ * Owner progress check-in / status change for In Progress quotations.
+ * Body: { keepCurrent: true } | { keepCurrent: false, opportunityStatus, remarks? }
+ */
+export const updateOpportunityStatusProgress = async (forecastId, body, authUser, effectiveRole) => {
+  const existing = await getExistingOrThrow(forecastId);
+  if (authUser && !canAccessAllRecords(effectiveRole) && !isOwnedByUser(existing, authUser)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+  if (!isOwnedByUser(existing, authUser)) {
+    const err = new Error('Only the quotation owner can update progress status');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const ws = existing.workflowStatus || 'draft';
+  const lifecycleWs = ws === 'approved' ? 'in_progress' : ws;
+  if (lifecycleWs !== 'in_progress') {
+    const err = new Error('Status can only be updated while the quotation is In Progress');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!String(existing.quotationRef || '').trim()) {
+    const err = new Error('Quotation reference is required before updating status');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const keepCurrent = body?.keepCurrent === true || body?.keepCurrent === 'true';
+  const previousStatus = String(existing.opportunityStatus || '').trim();
+  let newStatus = previousStatus;
+
+  if (!keepCurrent) {
+    newStatus = String(body?.opportunityStatus || '').trim();
+    if (!newStatus) {
+      const err = new Error('opportunityStatus is required when changing status');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  const now = new Date().toISOString();
+  const historyEntry = buildStatusHistoryEntry({
+    previousStatus,
+    newStatus,
+    updatedByEmployeeCode: authUser?.employeeCode || '',
+    updatedByName: authUser?.fullName || authUser?.employeeCode || '',
+    remarks: String(body?.remarks || '').trim(),
+    updatedAt: now,
+  });
+  const priorHistory = Array.isArray(existing.statusHistory) ? existing.statusHistory : [];
+
+  const patch = {
+    opportunityStatus: newStatus,
+    lastStatusUpdatedAt: now,
+    statusHistory: [...priorHistory, historyEntry],
+    updatedAt: now,
+  };
+
+  // Migrate legacy approved → in_progress on first status touch if needed.
+  if (ws === 'approved') {
+    patch.workflowStatus = 'in_progress';
+  }
+
+  if (isTerminalOpportunityStatus(newStatus)) {
+    patch.workflowStatus = 'closed';
+  }
+
+  const updated = await SalesForecastsModel.updateSalesForecast(forecastId, patch);
+
+  await logActivity({
+    actorEmployeeCode: authUser?.employeeCode || '',
+    actorName: authUser?.fullName || '',
+    actorRole: authUser?.role || '',
+    module: 'salesForecasting',
+    actionType: 'UPDATE',
+    targetEntity: 'salesForecast',
+    targetId: forecastId,
+    metadata: {
+      action: 'status_progress',
+      keepCurrent,
+      previousStatus,
+      newStatus,
+      workflowStatus: updated?.workflowStatus,
+    },
+  });
+
+  if (updated?.workflowStatus === 'closed' && (existing.workflowStatus || '') !== 'closed') {
+    void SalesNotificationEmitters.emitQuotationClosed(updated, authUser?.employeeCode);
+  }
 
   return toPublicOpportunity(updated);
 };
@@ -607,6 +749,12 @@ export const rejectOpportunity = async (forecastId, body, authUser, effectiveRol
     targetId: forecastId,
     metadata: { action: 'reject' },
   });
+
+  void SalesNotificationEmitters.emitQuotationRejected(
+    updated,
+    rejectionReason,
+    authUser?.employeeCode,
+  );
 
   return toPublicOpportunity(updated);
 };

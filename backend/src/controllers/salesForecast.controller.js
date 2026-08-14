@@ -3,6 +3,7 @@
  */
 
 import * as SalesForecastService from '../services/salesForecast.service.js';
+import * as QuotationEditRequestService from '../services/quotationEditRequest.service.js';
 import { DEFAULT_QUERY_LIMIT } from '../utils/dynamoPagination.js';
 import log from '../utils/logger.js';
 
@@ -99,6 +100,92 @@ export const rejectOpportunity = async (req, res, next) => {
     res.status(200).json({ success: true, data: row });
   } catch (error) {
     log.error('Reject opportunity error:', error);
+    next(error);
+  }
+};
+
+export const updateOpportunityStatusProgress = async (req, res, next) => {
+  try {
+    const row = await SalesForecastService.updateOpportunityStatusProgress(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data: row });
+  } catch (error) {
+    log.error('Update opportunity status progress error:', error);
+    next(error);
+  }
+};
+
+export const listPendingEditRequests = async (req, res, next) => {
+  try {
+    const data = await QuotationEditRequestService.listPendingEditRequests(
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List pending edit requests error:', error);
+    next(error);
+  }
+};
+
+export const listEditRequestsForQuotation = async (req, res, next) => {
+  try {
+    const data = await QuotationEditRequestService.listEditRequestsForQuotation(
+      req.params.id,
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List quotation edit requests error:', error);
+    next(error);
+  }
+};
+
+export const createEditRequest = async (req, res, next) => {
+  try {
+    const data = await QuotationEditRequestService.createEditRequest(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole
+    );
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Create edit request error:', error);
+    next(error);
+  }
+};
+
+export const approveEditRequest = async (req, res, next) => {
+  try {
+    const data = await QuotationEditRequestService.approveEditRequest(
+      req.params.requestId,
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Approve edit request error:', error);
+    next(error);
+  }
+};
+
+export const rejectEditRequest = async (req, res, next) => {
+  try {
+    const data = await QuotationEditRequestService.rejectEditRequest(
+      req.params.requestId,
+      req.body || {},
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Reject edit request error:', error);
     next(error);
   }
 };

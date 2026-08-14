@@ -265,6 +265,9 @@ export const createEmployee = async (employeeData, authUser) => {
       targetId: created.employeeId,
       newValue: { employeeCode: created.employeeCode },
     });
+    void import('./notificationEmitters.js').then((m) =>
+      m.emitNewUserCreated(created, authUser?.employeeCode),
+    );
     return { ...created, password };
   } catch (error) {
     log.error('Error creating employee:', error);

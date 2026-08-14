@@ -6,9 +6,11 @@
  * Charts: swap placeholder blocks for recharts / echarts when requirements are fixed.
  */
 
-import type { ComponentType } from 'react';
+import { useState, type ComponentType } from 'react';
 import { Card } from '../ui/card';
+import { Button } from '../ui/button';
 import { TrendingUp, Users, Wallet, XCircle, Clock, PieChart } from 'lucide-react';
+import AuditHistoryModal from '../audit/AuditHistoryModal';
 
 function KpiCard({
   title,
@@ -38,6 +40,8 @@ function KpiCard({
 }
 
 export default function ExpensesAdminDashboardTab() {
+  const [auditOpen, setAuditOpen] = useState(false);
+
   return (
     <div className="space-y-6">
       <div>
@@ -72,11 +76,23 @@ export default function ExpensesAdminDashboardTab() {
       </div>
 
       <Card className="p-4 border border-gray-200">
-        <h3 className="text-sm font-medium text-[#212529] mb-3">Recent activity</h3>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h3 className="text-sm font-medium text-[#212529]">Recent activity</h3>
+          <Button type="button" variant="outline" size="sm" onClick={() => setAuditOpen(true)}>
+            Audit History
+          </Button>
+        </div>
         <div className="rounded-lg bg-gray-50 border border-gray-100 p-6 text-center text-sm text-gray-500">
-          Activity feed placeholder — e.g. recent submissions & approvals from audit API
+          Open Audit History for recent expense submissions and approvals.
         </div>
       </Card>
+
+      <AuditHistoryModal
+        open={auditOpen}
+        onOpenChange={setAuditOpen}
+        title="Expenses Audit History"
+        listParams={{ module: 'expenses', limit: 40 }}
+      />
     </div>
   );
 }
