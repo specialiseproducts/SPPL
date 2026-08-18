@@ -37,17 +37,21 @@ export async function createSalesHistoryRecord(body: SalesHistoryInput) {
 }
 
 export async function updateSalesHistoryRecord(recordId: string, body: Partial<SalesHistoryInput>) {
-  const res = (await apiFetch(`/api/sales-forecasts/sales-history/${encodeURIComponent(recordId)}`, {
+  const id = String(recordId || '').trim();
+  const res = (await apiFetch(`/api/sales-forecasts/sales-history/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, recordId: id }),
   })) as { success?: boolean; data?: SalesHistoryRecord; message?: string };
   if (!res?.success || !res.data) throw new Error(res?.message || 'Failed to update record');
   return res.data;
 }
 
 export async function deleteSalesHistoryRecord(recordId: string) {
-  await apiFetch(`/api/sales-forecasts/sales-history/${encodeURIComponent(recordId)}`, {
+  const id = String(recordId || '').trim();
+  await apiFetch(`/api/sales-forecasts/sales-history/${encodeURIComponent(id)}`, {
     method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recordId: id }),
   });
 }

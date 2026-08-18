@@ -9,13 +9,27 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { dynamoDB, TABLES } from '../config/dynamodb.js';
-import { encodeCursor, decodeCursor } from '../utils/dynamoPagination.js';
 
 const TABLE_NAME = TABLES.SALES_HISTORY;
 
 function trim(v) {
   if (v === undefined || v === null) return '';
   return String(v).trim();
+}
+
+/** Decode percent-encoding; ignore a truncated "HIST" left when `#uuid` is stripped as a URL fragment. */
+export function normalizeRecordId(recordId) {
+  let id = trim(recordId);
+  if (!id) return '';
+  if (id.includes('%')) {
+    try {
+      id = decodeURIComponent(id);
+    } catch {
+      // keep the trimmed original
+    }
+  }
+  if (id === 'HIST') return '';
+  return id;
 }
 
 export function toPublicRecord(item) {
@@ -83,12 +97,13 @@ export async function createRecord(data, audit = {}) {
 }
 
 export async function getRecordById(recordId) {
-  const id = trim(recordId);
+  const id = normalizeRecordId(recordId);
   if (!id) return null;
   const result = await dynamoDB
     .get({
       TableName: TABLE_NAME,
       Key: { recordId: id },
+      ConsistentRead: true,
     })
     .promise();
   const item = result.Item || null;
@@ -168,10 +183,10 @@ export async function softDeleteRecord(recordId) {
 }
 
 /**
- * Scan-based list (no GSIs yet). Filters applied in memory after fetch pages.
+ * Scan-based list (no GSIs). Walks every DynamoDB page via LastEvaluatedKey,
+ * then applies search/filters in memory so the UI receives the full matching set.
  */
-export async function listRecords(filters = {}, options = {}) {
-  const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 200);
+export async function listRecords(filters = {}) {
   const customer = trim(filters.customer).toLowerCase();
   const principal = trim(filters.principal).toLowerCase();
   const year = trim(filters.year);
@@ -180,16 +195,13 @@ export async function listRecords(filters = {}, options = {}) {
   const q = trim(filters.q || filters.search).toLowerCase();
 
   const collected = [];
-  let exclusiveStartKey = decodeCursor(options.cursor);
-  let lastKey = null;
+  let exclusiveStartKey;
 
-  // Walk pages until we have enough matching rows or table ends (cap pages to protect latency).
-  for (let page = 0; page < 20 && collected.length < limit; page += 1) {
+  do {
     const result = await dynamoDB
       .scan({
         TableName: TABLE_NAME,
         ExclusiveStartKey: exclusiveStartKey,
-        Limit: 100,
       })
       .promise();
 
@@ -225,18 +237,15 @@ export async function listRecords(filters = {}, options = {}) {
       }
 
       collected.push(row);
-      if (collected.length >= limit) break;
     }
 
-    lastKey = result.LastEvaluatedKey || null;
-    exclusiveStartKey = lastKey || undefined;
-    if (!lastKey) break;
-  }
+    exclusiveStartKey = result.LastEvaluatedKey || undefined;
+  } while (exclusiveStartKey);
 
   collected.sort((a, b) => String(b.invoiceDate || '').localeCompare(String(a.invoiceDate || '')));
 
   return {
-    data: collected.slice(0, limit),
-    nextCursor: lastKey ? encodeCursor(lastKey) : null,
+    data: collected,
+    nextCursor: null,
   };
 }

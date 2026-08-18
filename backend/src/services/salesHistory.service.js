@@ -52,20 +52,14 @@ function validatePayload(body = {}, { partial = false } = {}) {
 
 export async function listRecords(authUser, effectiveRole, query = {}) {
   assertCanManage(effectiveRole);
-  return SalesHistoryModel.listRecords(
-    {
+  return SalesHistoryModel.listRecords({
       customer: query.customer,
       principal: query.principal,
       year: query.year,
       invoiceNumber: query.invoiceNumber,
       partNumber: query.partNumber,
       q: query.q || query.search,
-    },
-    {
-      limit: query.limit,
-      cursor: query.cursor,
-    },
-  );
+    });
 }
 
 export async function getRecord(recordId, effectiveRole) {

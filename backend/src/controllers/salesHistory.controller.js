@@ -3,7 +3,18 @@
  */
 
 import * as SalesHistoryService from '../services/salesHistory.service.js';
+import { normalizeRecordId } from '../models/SalesHistory.js';
 import log from '../utils/logger.js';
+
+/**
+ * PK is `HIST#uuid`. A raw `#` in the URL is treated as a fragment, so params.id
+ * can arrive as `HIST`. Prefer the recordId sent in the JSON body when present.
+ */
+function resolveHistoryRecordId(req) {
+  const fromBody = normalizeRecordId(req.body?.recordId);
+  if (fromBody) return fromBody;
+  return normalizeRecordId(req.params.id);
+}
 
 export const listSalesHistory = async (req, res, next) => {
   try {
@@ -21,7 +32,7 @@ export const listSalesHistory = async (req, res, next) => {
 
 export const getSalesHistory = async (req, res, next) => {
   try {
-    const data = await SalesHistoryService.getRecord(req.params.id, req.effectiveRole);
+    const data = await SalesHistoryService.getRecord(resolveHistoryRecordId(req), req.effectiveRole);
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Get sales history error:', error);
@@ -41,9 +52,13 @@ export const createSalesHistory = async (req, res, next) => {
 
 export const updateSalesHistory = async (req, res, next) => {
   try {
+    const recordId = resolveHistoryRecordId(req);
+    const body = { ...(req.body || {}) };
+    delete body.recordId;
+    log.info('Update sales history', recordId);
     const data = await SalesHistoryService.updateRecord(
-      req.params.id,
-      req.body || {},
+      recordId,
+      body,
       req.user,
       req.effectiveRole,
     );
@@ -56,7 +71,10 @@ export const updateSalesHistory = async (req, res, next) => {
 
 export const deleteSalesHistory = async (req, res, next) => {
   try {
-    const data = await SalesHistoryService.deleteRecord(req.params.id, req.effectiveRole);
+    const data = await SalesHistoryService.deleteRecord(
+      resolveHistoryRecordId(req),
+      req.effectiveRole,
+    );
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Delete sales history error:', error);

@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type ReactNode,
 } from 'react';
@@ -66,7 +67,35 @@ const COL = {
 } as const;
 
 const HISTORY_TABLE_MIN_WIDTH = 2630;
-const HEAD_STICKY = 'sticky top-0 z-20 bg-gray-50';
+/** Matches COL.invoiceDate. Inline `left` is required: compiled CSS has `left-0` but not `left-[140px]`. */
+const INVOICE_DATE_WIDTH_PX = 140;
+const INVOICE_NUMBER_WIDTH_PX = 170;
+const HEAD_STICKY = 'sticky top-0 bg-gray-50';
+const HEAD_STICKY_DATE =
+  `${COL.invoiceDate} sticky left-0 top-0 z-40 bg-gray-50 whitespace-nowrap text-center`;
+const HEAD_STICKY_INVOICE =
+  `${COL.invoiceNumber} sticky top-0 z-40 bg-gray-50 whitespace-nowrap`;
+const CELL_STICKY_DATE =
+  `${COL.invoiceDate} sticky left-0 z-10 bg-white text-center text-sm`;
+const CELL_STICKY_INVOICE =
+  `${COL.invoiceNumber} sticky z-10 overflow-hidden bg-white font-mono text-sm`;
+
+const STICKY_DATE_STYLE: CSSProperties = {
+  position: 'sticky',
+  left: 0,
+  width: INVOICE_DATE_WIDTH_PX,
+  minWidth: INVOICE_DATE_WIDTH_PX,
+  maxWidth: INVOICE_DATE_WIDTH_PX,
+};
+const STICKY_INVOICE_STYLE: CSSProperties = {
+  position: 'sticky',
+  left: INVOICE_DATE_WIDTH_PX,
+  width: INVOICE_NUMBER_WIDTH_PX,
+  minWidth: INVOICE_NUMBER_WIDTH_PX,
+  maxWidth: INVOICE_NUMBER_WIDTH_PX,
+};
+const STICKY_DATE_HEAD_STYLE: CSSProperties = { ...STICKY_DATE_STYLE, top: 0 };
+const STICKY_INVOICE_HEAD_STYLE: CSSProperties = { ...STICKY_INVOICE_STYLE, top: 0 };
 
 function displayCell(value: string | number | null | undefined): string {
   if (value === undefined || value === null) return '—';
@@ -144,7 +173,6 @@ export default function SalesHistoryTab() {
   const listParams = useMemo(
     () => ({
       q: debouncedSearch || undefined,
-      limit: 100,
     }),
     [debouncedSearch],
   );
@@ -313,10 +341,10 @@ export default function SalesHistoryTab() {
         >
           <TableHeader>
             <TableRow className="bg-gray-50 hover:bg-gray-50">
-              <TableHead className={`${COL.invoiceDate} ${HEAD_STICKY} whitespace-nowrap text-center`}>
+              <TableHead className={HEAD_STICKY_DATE} style={STICKY_DATE_HEAD_STYLE}>
                 Invoice Date
               </TableHead>
-              <TableHead className={`${COL.invoiceNumber} ${HEAD_STICKY} whitespace-nowrap`}>
+              <TableHead className={HEAD_STICKY_INVOICE} style={STICKY_INVOICE_HEAD_STYLE}>
                 Invoice Number
               </TableHead>
               <TableHead className={`${COL.customerOrg} ${HEAD_STICKY} whitespace-nowrap`}>
@@ -374,11 +402,11 @@ export default function SalesHistoryTab() {
               </TableRow>
             ) : (
               rows.map((row) => (
-                <TableRow key={row.recordId}>
-                  <TableCell className={`${COL.invoiceDate} text-center text-sm`}>
+                <TableRow key={row.recordId} className="group">
+                  <TableCell className={CELL_STICKY_DATE} style={STICKY_DATE_STYLE}>
                     {formatDate(row.invoiceDate)}
                   </TableCell>
-                  <TableCell className={`${COL.invoiceNumber} overflow-hidden font-mono text-sm`}>
+                  <TableCell className={CELL_STICKY_INVOICE} style={STICKY_INVOICE_STYLE}>
                     <TruncatedText value={row.invoiceNumber} />
                   </TableCell>
                   <TableCell className={`${COL.customerOrg} overflow-hidden text-sm`}>
