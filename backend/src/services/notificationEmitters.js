@@ -121,6 +121,83 @@ export async function emitExpenseExportCompleted(employeeCode, exportBatch, acto
   });
 }
 
+export async function emitExpenseEditRequestSubmitted(request, actorCode) {
+  const requestId = request?.requestId || '';
+  await NotificationService.notifyModuleAdmins(
+    M.EXPENSES,
+    {
+      title: 'Expense Edit Request',
+      message: `${request?.employeeName || 'Employee'} requested edit permission on an approved expense.`,
+      category: NOTIFICATION_CATEGORIES.APPROVALS,
+      priority: NOTIFICATION_PRIORITIES.HIGH,
+      section: NOTIFICATION_SECTIONS.ACTION_REQUIRED,
+      actionType: 'Action',
+      actionId: requestId,
+      actionUrl: '',
+      createdBy: actorCode || '',
+      metadata: {
+        requestId,
+        expenseId: request?.expenseId || '',
+        requestType: request?.requestType || '',
+        oldValues: request?.oldValues || {},
+        requestedValues: request?.requestedValues || {},
+      },
+    },
+    { excludeEmployeeCode: actorCode },
+  );
+
+  await NotificationService.create({
+    recipientEmployeeCode: request?.employeeCode || actorCode,
+    module: M.EXPENSES,
+    title: 'Edit Request Submitted',
+    message: 'Your expense edit request is pending approval.',
+    category: NOTIFICATION_CATEGORIES.EXPENSES,
+    priority: NOTIFICATION_PRIORITIES.NORMAL,
+    section: NOTIFICATION_SECTIONS.ACTIVITY,
+    actionType: 'View',
+    actionId: requestId,
+    createdBy: actorCode || '',
+    metadata: { requestId, expenseId: request?.expenseId || '' },
+  });
+}
+
+export async function emitExpenseEditRequestApproved(request, actorCode) {
+  await NotificationService.create({
+    recipientEmployeeCode: request?.employeeCode || '',
+    module: M.EXPENSES,
+    title: 'Expense Edit Request Approved',
+    message: 'Your expense edit request has been approved.',
+    category: NOTIFICATION_CATEGORIES.APPROVALS,
+    priority: NOTIFICATION_PRIORITIES.NORMAL,
+    section: NOTIFICATION_SECTIONS.ACTIVITY,
+    actionType: 'View',
+    actionId: request?.expenseId || '',
+    createdBy: actorCode || '',
+    metadata: { requestId: request?.requestId || '', expenseId: request?.expenseId || '' },
+  });
+}
+
+export async function emitExpenseEditRequestRejected(request, remark, actorCode) {
+  const adminRemark = String(remark || '').trim();
+  await NotificationService.create({
+    recipientEmployeeCode: request?.employeeCode || '',
+    module: M.EXPENSES,
+    title: 'Expense Edit Request Rejected',
+    message: appendReason('Your expense edit request has been rejected.', adminRemark),
+    category: NOTIFICATION_CATEGORIES.APPROVALS,
+    priority: NOTIFICATION_PRIORITIES.HIGH,
+    section: NOTIFICATION_SECTIONS.ACTIVITY,
+    actionType: 'View',
+    actionId: request?.expenseId || '',
+    createdBy: actorCode || '',
+    metadata: {
+      requestId: request?.requestId || '',
+      expenseId: request?.expenseId || '',
+      reason: adminRemark,
+    },
+  });
+}
+
 export async function emitQuotationSubmitted(quotation, actorCode) {
   const id = quotation?.forecastId || '';
   await NotificationService.notifyModuleAdmins(

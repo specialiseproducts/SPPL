@@ -20,6 +20,7 @@ export interface DailyPlannerReplacementTask {
   taskName: string;
   description: string;
   priority: DailyPlannerPriority;
+  hoursRequired?: number | null;
   expectedOutcome?: string;
 }
 
@@ -37,6 +38,13 @@ export interface DailyPlannerTask {
   priorityEditedBy?: string;
   priorityEditedByName?: string;
   priorityEditedAt?: string | null;
+  /** Estimated hours required to complete this task (effective / reviewed value). */
+  hoursRequired?: number | null;
+  originalHoursRequired?: number | null;
+  hoursRequiredEdited?: boolean;
+  hoursRequiredEditedBy?: string;
+  hoursRequiredEditedByName?: string;
+  hoursRequiredEditedAt?: string | null;
   status: DailyPlannerStatus;
   reason: string;
   taskType: DailyPlannerTaskType;
@@ -103,6 +111,7 @@ export interface DailyPlannerTaskDraft {
   taskName: string;
   description: string;
   priority: DailyPlannerPriority;
+  hoursRequired: number;
   planningCategory?: DailyPlannerPlanningCategory;
   urgentReason?: string;
   revisesTaskId?: string;

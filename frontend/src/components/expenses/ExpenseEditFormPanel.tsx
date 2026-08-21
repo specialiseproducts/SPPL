@@ -19,6 +19,7 @@ import {
 } from '../../utils/expenseAmountCalculation';
 import { parseTravelRatesApiData } from '../../utils/expenseTravelRatesFromApi';
 import { apiFetch } from '../../services/api';
+import { computeOutstationDuration, computeOutstationTravelAllowanceAmount } from '../../utils/expenseOutstation';
 
 const SUB_CATEGORY_UNSET = '__unset__';
 const FUEL_TYPE_UNSET = '__fuel_unset__';
@@ -56,6 +57,11 @@ const emptyForm = {
   stayDateTo: '',
   supportingDocument: 'No' as 'Yes' | 'No',
   fuelType: FUEL_TYPE_UNSET,
+  outStation: 'No' as 'Yes' | 'No',
+  arrivalDate: '',
+  arrivalTime: '',
+  departureDate: '',
+  departureTime: '',
 };
 
 interface ExpenseEditFormPanelProps {
@@ -122,6 +128,11 @@ export default function ExpenseEditFormPanel({
       stayDateTo: toDateInputValue(expense.stayDateTo),
       supportingDocument,
       fuelType,
+      outStation: expense.outStation === 'Yes' ? 'Yes' : 'No',
+      arrivalDate: toDateInputValue(expense.arrivalDate),
+      arrivalTime: expense.arrivalTime ?? '',
+      departureDate: toDateInputValue(expense.departureDate),
+      departureTime: expense.departureTime ?? '',
     });
     setSelectedFile(expense.selectedFile ?? null);
     prevShowTravelRef.current = null;
@@ -160,12 +171,15 @@ export default function ExpenseEditFormPanel({
     formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
   const showTravelDetail =
     isTravelCarOrBike(formData.expenseHead, effectiveSubCategory) && Boolean(effectiveSubCategory);
+  const isOutstationTravel = formData.expenseHead === 'Travel' && formData.outStation === 'Yes';
   const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
-  const isAutoAmount = showTravelDetail;
+  const isAutoAmount = showTravelDetail && !isOutstationTravel;
 
   useEffect(() => {
     let src = '';
-    if (showHotelStay) {
+    if (isOutstationTravel) {
+      src = (formData.arrivalDate || formData.departureDate || '').trim();
+    } else if (showHotelStay) {
       src = (formData.stayDateFrom || formData.stayDateTo || '').trim();
     } else if (formData.date) {
       src = formData.date.trim();
@@ -183,7 +197,36 @@ export default function ExpenseEditFormPanel({
       if (prev.monthYear === nextMonthYear) return prev;
       return { ...prev, monthYear: nextMonthYear };
     });
-  }, [showHotelStay, formData.date, formData.stayDateFrom, formData.stayDateTo]);
+  }, [
+    isOutstationTravel,
+    showHotelStay,
+    formData.date,
+    formData.stayDateFrom,
+    formData.stayDateTo,
+    formData.arrivalDate,
+    formData.departureDate,
+  ]);
+
+  useEffect(() => {
+    if (!isOutstationTravel) return;
+    const duration = computeOutstationDuration(
+      formData.arrivalDate,
+      formData.arrivalTime,
+      formData.departureDate,
+      formData.departureTime,
+    );
+    const allowance = duration
+      ? computeOutstationTravelAllowanceAmount(duration.durationHours)
+      : null;
+    const nextAmount = allowance != null ? String(allowance) : '';
+    setFormData((prev) => (prev.amount === nextAmount ? prev : { ...prev, amount: nextAmount }));
+  }, [
+    isOutstationTravel,
+    formData.arrivalDate,
+    formData.arrivalTime,
+    formData.departureDate,
+    formData.departureTime,
+  ]);
 
   useEffect(() => {
     if (!showHotelStay) return;
@@ -225,28 +268,45 @@ export default function ExpenseEditFormPanel({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!formData.location.trim()) {
+    if (isOutstationTravel) {
+      if (!formData.arrivalDate || !formData.arrivalTime || !formData.departureDate || !formData.departureTime) {
+        toast.error('Arrival and departure date/time are required');
+        return;
+      }
+      const duration = computeOutstationDuration(
+        formData.arrivalDate,
+        formData.arrivalTime,
+        formData.departureDate,
+        formData.departureTime,
+      );
+      if (!duration) {
+        toast.error('Departure datetime cannot be earlier than arrival datetime');
+        return;
+      }
+    }
+
+    if (!isOutstationTravel && !formData.location.trim()) {
       toast.error('Please enter location');
       return;
     }
-    if (!formData.purpose.trim()) {
+    if (!isOutstationTravel && !formData.purpose.trim()) {
       toast.error('Please enter purpose');
       return;
     }
-    if (!showTravelDetail && !formData.serviceProvider.trim()) {
+    if (!isOutstationTravel && !showTravelDetail && !formData.serviceProvider.trim()) {
       toast.error('Please enter service provider name');
       return;
     }
-    if (!showTravelDetail && !formData.billNumber.trim()) {
+    if (!isOutstationTravel && !showTravelDetail && !formData.billNumber.trim()) {
       toast.error('Please enter bill number or "NA"');
       return;
     }
-    if (!showHotelStay && !formData.date) {
+    if (!isOutstationTravel && !showHotelStay && !formData.date) {
       toast.error('Please select a date');
       return;
     }
 
-    if (isCanonicalExpenseHead(formData.expenseHead)) {
+    if (isCanonicalExpenseHead(formData.expenseHead) && !isOutstationTravel) {
       const sub = formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
       if (!sub) {
         toast.error('Please select a sub category');
@@ -286,7 +346,10 @@ export default function ExpenseEditFormPanel({
       }
     }
 
-    if (!showTravelDetail && formData.supportingDocument === 'Yes') {
+    if (
+      (isOutstationTravel || (!isOutstationTravel && !showTravelDetail)) &&
+      formData.supportingDocument === 'Yes'
+    ) {
       const attachedFile = selectedFile || expense.selectedFile || null;
       const hasNewFile = Boolean(attachedFile);
       const hasExistingDoc = documents.length > 0;
@@ -300,7 +363,7 @@ export default function ExpenseEditFormPanel({
       }
     }
 
-    if (showHotelStay) {
+    if (!isOutstationTravel && showHotelStay) {
       if (!formData.stayDateFrom) {
         toast.error('Please select date (from)');
         return;
@@ -316,7 +379,22 @@ export default function ExpenseEditFormPanel({
     }
 
     let amountNum: number;
-    if (isAutoAmount) {
+    if (isOutstationTravel) {
+      const duration = computeOutstationDuration(
+        formData.arrivalDate,
+        formData.arrivalTime,
+        formData.departureDate,
+        formData.departureTime,
+      );
+      const allowance = duration
+        ? computeOutstationTravelAllowanceAmount(duration.durationHours)
+        : null;
+      if (allowance == null) {
+        toast.error('Unable to calculate Travel Allowance amount');
+        return;
+      }
+      amountNum = allowance;
+    } else if (isAutoAmount) {
       if (!travelRates) {
         toast.error('Travel rates could not be loaded. Please try again.');
         return;
@@ -346,19 +424,31 @@ export default function ExpenseEditFormPanel({
 
     const subCategoryResolved =
       formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
-    const submissionDate = showHotelStay
+    const submissionDate = isOutstationTravel
+      ? formData.arrivalDate.trim()
+      : showHotelStay
       ? (formData.stayDateFrom || formData.stayDateTo || '').trim()
       : formData.date.trim();
-    const wantsSupportingFile = !showTravelDetail && formData.supportingDocument === 'Yes';
+    const wantsSupportingFile =
+      (isOutstationTravel || (!showTravelDetail && formData.supportingDocument === 'Yes')) &&
+      formData.supportingDocument === 'Yes';
+    const outstationDuration = isOutstationTravel
+      ? computeOutstationDuration(
+          formData.arrivalDate,
+          formData.arrivalTime,
+          formData.departureDate,
+          formData.departureTime,
+        )
+      : null;
 
     const updated: ExpenseRecord = {
       expenseId: expense.expenseId,
       expenseHead: formData.expenseHead,
       subCategory: subCategoryResolved || undefined,
-      location: formData.location.trim(),
-      purpose: formData.purpose.trim(),
-      serviceProvider: showTravelDetail ? '' : formData.serviceProvider.trim(),
-      billNumber: showTravelDetail ? '' : formData.billNumber.trim(),
+      location: isOutstationTravel ? '' : formData.location.trim(),
+      purpose: isOutstationTravel ? '' : formData.purpose.trim(),
+      serviceProvider: showTravelDetail || isOutstationTravel ? '' : formData.serviceProvider.trim(),
+      billNumber: showTravelDetail || isOutstationTravel ? '' : formData.billNumber.trim(),
       date: submissionDate,
       amount: amountNum,
       employeeName: expense.employeeName || currentUserName,
@@ -367,11 +457,11 @@ export default function ExpenseEditFormPanel({
       monthYear: formData.monthYear,
       createdAt: expense.createdAt,
       updatedAt: new Date().toISOString(),
-      supportingDocument: showTravelDetail ? 'No' : formData.supportingDocument,
+      supportingDocument: showTravelDetail && !isOutstationTravel ? 'No' : formData.supportingDocument,
       selectedFile: wantsSupportingFile
         ? selectedFile || expense.selectedFile || undefined
         : undefined,
-      documents: showTravelDetail
+      documents: showTravelDetail && !isOutstationTravel
         ? []
         : !wantsSupportingFile
           ? []
@@ -380,7 +470,7 @@ export default function ExpenseEditFormPanel({
             : documents,
       auditStatus: expense.auditStatus,
       auditReason: expense.auditReason,
-      ...(showTravelDetail
+      ...(showTravelDetail && !isOutstationTravel
         ? {
             fromLocation: formData.fromLocation.trim(),
             toLocation: formData.toLocation.trim(),
@@ -389,9 +479,23 @@ export default function ExpenseEditFormPanel({
             fuelType: formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType : undefined,
           }
         : {}),
-      ...(showHotelStay
+      ...(showHotelStay && !isOutstationTravel
         ? { stayDateFrom: formData.stayDateFrom, stayDateTo: formData.stayDateTo }
         : {}),
+      ...(isOutstationTravel
+        ? {
+            outStation: 'Yes' as const,
+            arrivalDate: formData.arrivalDate,
+            arrivalTime: formData.arrivalTime,
+            departureDate: formData.departureDate,
+            departureTime: formData.departureTime,
+            durationHours: outstationDuration?.durationHours,
+            durationDays: outstationDuration?.durationDays,
+            travelAllowanceAmount: amountNum,
+          }
+        : {
+            outStation: formData.expenseHead === 'Travel' ? ('No' as const) : undefined,
+          }),
     };
 
     onSubmit(updated);
@@ -440,6 +544,11 @@ export default function ExpenseEditFormPanel({
                 stayDateFrom: '',
                 stayDateTo: '',
                 fuelType: FUEL_TYPE_UNSET,
+                outStation: value === 'Travel' ? formData.outStation : ('No' as const),
+                arrivalDate: '',
+                arrivalTime: '',
+                departureDate: '',
+                departureTime: '',
                 amount: isTravelCarOrBike(value, '') ? '0' : formData.amount,
               })
             }
@@ -513,6 +622,120 @@ export default function ExpenseEditFormPanel({
           </Select>
         </div>
 
+        {formData.expenseHead === 'Travel' ? (
+          <div className="space-y-2">
+            <Label htmlFor="out_station">OutStation (more than 100km) *</Label>
+            <Select
+              value={formData.outStation}
+              onValueChange={(value: 'Yes' | 'No') =>
+                setFormData({
+                  ...formData,
+                  outStation: value,
+                  amount: value === 'Yes' ? '0' : formData.amount,
+                })
+              }
+            >
+              <SelectTrigger id="out_station">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Yes">Yes</SelectItem>
+                <SelectItem value="No">No</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
+
+        {isOutstationTravel ? (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="arrival_date">Arrival Date *</Label>
+              <Input
+                id="arrival_date"
+                type="date"
+                value={formData.arrivalDate}
+                onChange={(e) => setFormData({ ...formData, arrivalDate: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="arrival_time">Arrival Time *</Label>
+              <Input
+                id="arrival_time"
+                type="time"
+                value={formData.arrivalTime}
+                onChange={(e) => setFormData({ ...formData, arrivalTime: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="departure_date">Departure Date (last) *</Label>
+              <Input
+                id="departure_date"
+                type="date"
+                value={formData.departureDate}
+                onChange={(e) => setFormData({ ...formData, departureDate: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="departure_time">Departure Time *</Label>
+              <Input
+                id="departure_time"
+                type="time"
+                value={formData.departureTime}
+                onChange={(e) => setFormData({ ...formData, departureTime: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="outstation_supporting_doc_choice">Supporting Document *</Label>
+              <Select
+                value={formData.supportingDocument}
+                onValueChange={(value: 'Yes' | 'No') =>
+                  setFormData({ ...formData, supportingDocument: value })
+                }
+              >
+                <SelectTrigger id="outstation_supporting_doc_choice">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Yes">Yes</SelectItem>
+                  <SelectItem value="No">No</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {formData.supportingDocument === 'Yes' ? (
+              <div className="min-h-[5.5rem] space-y-2 sm:col-span-2">
+                <Label htmlFor="outstation_supporting_file">Upload supporting document *</Label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="outstation_supporting_file"
+                    type="file"
+                    accept=".doc,.docx,.pdf,.jpg,.jpeg,.png,.xls,.xlsx"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] ?? null;
+                      if (f && !SUPPORTING_FILE_EXT.test(f.name)) {
+                        toast.error(
+                          'Invalid file type. Allowed: DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX',
+                        );
+                        e.target.value = '';
+                        setSelectedFile(null);
+                        return;
+                      }
+                      setSelectedFile(f);
+                    }}
+                    className="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-sm file:font-medium"
+                  />
+                  <Upload className="h-5 w-5 shrink-0 text-gray-400" />
+                </div>
+                <p className="text-xs text-gray-500">DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX</p>
+                {selectedFile ? <p className="text-xs text-green-600">✓ {selectedFile.name}</p> : null}
+                {documents.length > 0 && !selectedFile ? (
+                  <p className="text-xs text-gray-600">Current: {documents[0]?.fileName || 'document'}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+        {!isOutstationTravel ? (
         <div className="space-y-2">
           <Label htmlFor="date">Date *</Label>
           <Input
@@ -522,6 +745,7 @@ export default function ExpenseEditFormPanel({
             onChange={(e) => setFormData({ ...formData, date: e.target.value })}
           />
         </div>
+        ) : null}
 
         <div className="space-y-2">
           <Label htmlFor="amount">Amount (Rs) *</Label>
@@ -529,19 +753,22 @@ export default function ExpenseEditFormPanel({
             id="amount"
             type="number"
             step="0.01"
-            placeholder={isAutoAmount ? 'Auto calculated' : '0.00'}
+            placeholder={isOutstationTravel || isAutoAmount ? 'Auto calculated' : '0.00'}
             value={formData.amount}
             onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-            disabled={isAutoAmount}
-            readOnly={isAutoAmount}
-            className={isAutoAmount ? 'bg-gray-50' : ''}
+            disabled={isAutoAmount || isOutstationTravel}
+            readOnly={isAutoAmount || isOutstationTravel}
+            className={isAutoAmount || isOutstationTravel ? 'bg-gray-50' : ''}
           />
           {isAutoAmount ? (
             <p className="text-xs text-gray-500">Auto-calculated using configured travel rates.</p>
+          ) : isOutstationTravel ? (
+            <p className="text-xs text-gray-500">Auto-calculated as Total Hours × ₹20.</p>
           ) : null}
         </div>
       </div>
 
+      {!isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2 sm:col-span-2">
           <Label htmlFor="fuel_type">Fuel Type *</Label>
@@ -601,7 +828,9 @@ export default function ExpenseEditFormPanel({
           />
         </div>
       </div>
+      ) : null}
 
+      {!isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="stay_from">Date (from) *</Label>
@@ -622,7 +851,9 @@ export default function ExpenseEditFormPanel({
           />
         </div>
       </div>
+      ) : null}
 
+      {!isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="location">Location *</Label>
@@ -643,7 +874,9 @@ export default function ExpenseEditFormPanel({
           />
         </div>
       </div>
+      ) : null}
 
+      {!isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="service_provider">Service Provider Name *</Label>
@@ -664,7 +897,9 @@ export default function ExpenseEditFormPanel({
           />
         </div>
       </div>
+      ) : null}
 
+      {!isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="monthYear">Month-Year (Auto-detected)</Label>
@@ -688,8 +923,9 @@ export default function ExpenseEditFormPanel({
           </Select>
         </div>
       </div>
+      ) : null}
 
-      {formData.supportingDocument === 'Yes' ? (
+      {!isOutstationTravel && formData.supportingDocument === 'Yes' ? (
         <div className="min-h-[5.5rem] space-y-2">
           <Label htmlFor="supporting_file">Upload supporting document *</Label>
           <div className="flex items-center gap-3">

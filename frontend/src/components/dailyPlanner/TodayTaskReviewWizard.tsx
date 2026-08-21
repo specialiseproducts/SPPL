@@ -159,6 +159,8 @@ export default function TodayTaskReviewWizard({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [editingPriority, setEditingPriority] = useState(false);
   const [stagedPriority, setStagedPriority] = useState<DailyPlannerPriority>('Medium');
+  const [editingHours, setEditingHours] = useState(false);
+  const [stagedHours, setStagedHours] = useState('');
   const [managerComments, setManagerComments] = useState('');
   const [busy, setBusy] = useState(false);
   const [savePhase, setSavePhase] = useState<'idle' | 'saved' | 'loading-next'>('idle');
@@ -167,6 +169,7 @@ export default function TodayTaskReviewWizard({
   const [replacementName, setReplacementName] = useState('');
   const [replacementDescription, setReplacementDescription] = useState('');
   const [replacementPriority, setReplacementPriority] = useState<DailyPlannerPriority>('Medium');
+  const [replacementHours, setReplacementHours] = useState('');
   const [replacementOutcome, setReplacementOutcome] = useState('');
 
   const sortedTasks = useMemo(
@@ -186,6 +189,7 @@ export default function TodayTaskReviewWizard({
     setCurrentIndex(safeIndex);
     setSavePhase('idle');
     setEditingPriority(false);
+    setEditingHours(false);
     setManagerComments('');
     setRevisionOpen(false);
   }, [open, initialTaskIndex, total, employee.employeeCode]);
@@ -194,12 +198,19 @@ export default function TodayTaskReviewWizard({
     if (!task) return;
     setEditingPriority(false);
     setStagedPriority((task.currentPriority || task.priority || 'Medium') as DailyPlannerPriority);
+    setEditingHours(false);
+    setStagedHours(
+      task.hoursRequired != null && Number.isFinite(Number(task.hoursRequired))
+        ? String(task.hoursRequired)
+        : '',
+    );
     setManagerComments('');
     setRevisionOpen(false);
     setRevisionReason('');
     setReplacementName('');
     setReplacementDescription('');
     setReplacementPriority('Medium');
+    setReplacementHours('');
     setReplacementOutcome('');
     setSavePhase('idle');
   }, [task?.plannerTaskId]);
@@ -209,10 +220,22 @@ export default function TodayTaskReviewWizard({
     : 'Medium';
   const displayPriority = editingPriority ? stagedPriority : currentPriority;
   const priorityChanged = editingPriority && stagedPriority !== currentPriority;
+  const currentHours =
+    task?.hoursRequired != null && Number.isFinite(Number(task.hoursRequired))
+      ? Number(task.hoursRequired)
+      : null;
+  const stagedHoursNumber = Number(stagedHours);
+  const hoursChanged =
+    editingHours &&
+    Number.isFinite(stagedHoursNumber) &&
+    stagedHoursNumber > 0 &&
+    stagedHoursNumber !== currentHours;
   const awaitingVerification =
     task?.status === 'Awaiting Verification' || task?.status === 'Completed';
   const showApprove =
-    task?.status === 'Pending' || (editingPriority && priorityChanged);
+    task?.status === 'Pending' ||
+    (editingPriority && priorityChanged) ||
+    (editingHours && hoursChanged);
   const showVerify = awaitingVerification;
   const showRequestRevision =
     task?.status === 'Pending' ||
@@ -247,12 +270,25 @@ export default function TodayTaskReviewWizard({
 
   const handleApprove = () => {
     if (!task) return;
+    if (editingHours) {
+      const hoursValue = Number(stagedHours);
+      if (!String(stagedHours).trim() || !Number.isFinite(hoursValue) || hoursValue <= 0) {
+        toast.error('Hours Required to Complete must be a number greater than 0');
+        return;
+      }
+    }
     void runSaveFlow(async () => {
+      const hoursValue = Number(stagedHours);
       await approveDailyPlannerTask(task.plannerTaskId, {
         comments: managerComments.trim(),
         priority: priorityChanged || editingPriority ? stagedPriority : undefined,
+        hoursRequired:
+          editingHours && Number.isFinite(hoursValue) && hoursValue > 0
+            ? Math.round(hoursValue * 100) / 100
+            : undefined,
       });
       setEditingPriority(false);
+      setEditingHours(false);
     });
   };
 
@@ -277,6 +313,11 @@ export default function TodayTaskReviewWizard({
       toast.error('Replacement task description is required');
       return;
     }
+    const hoursValue = Number(replacementHours);
+    if (!String(replacementHours).trim() || !Number.isFinite(hoursValue) || hoursValue <= 0) {
+      toast.error('Hours Required to Complete must be a number greater than 0');
+      return;
+    }
     void runSaveFlow(async () => {
       await requestNeedsRevisionDailyPlannerTask(task.plannerTaskId, {
         reason: revisionReason.trim(),
@@ -284,6 +325,7 @@ export default function TodayTaskReviewWizard({
           taskName: replacementName.trim(),
           description: replacementDescription.trim(),
           priority: replacementPriority,
+          hoursRequired: Math.round(hoursValue * 100) / 100,
           expectedOutcome: replacementOutcome.trim(),
         },
       });
@@ -412,6 +454,49 @@ export default function TodayTaskReviewWizard({
                   {priorityChanged ? (
                     <p className="text-xs text-amber-700">
                       Priority change will be saved when you click Approve Task.
+                    </p>
+                  ) : null}
+                </div>
+                <div className="min-w-0 space-y-1.5">
+                  <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                    Hours Required to Complete
+                  </p>
+                  <div className="flex items-center gap-2">
+                    {editingHours ? (
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0.25}
+                        step={0.25}
+                        className="w-[160px]"
+                        value={stagedHours}
+                        onChange={(e) => setStagedHours(e.target.value)}
+                      />
+                    ) : (
+                      <div className="text-sm text-[#212529]">
+                        {displayCell(currentHours)}
+                      </div>
+                    )}
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      title="Edit hours required"
+                      className="h-8 w-8"
+                      disabled={busy}
+                      onClick={() => {
+                        setEditingHours((v) => !v);
+                        setStagedHours(
+                          currentHours != null ? String(currentHours) : '',
+                        );
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  {hoursChanged ? (
+                    <p className="text-xs text-amber-700">
+                      Hours change will be saved when you click Approve Task.
                     </p>
                   ) : null}
                 </div>
@@ -616,6 +701,19 @@ export default function TodayTaskReviewWizard({
                   <SelectItem value="Low">Low</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="replacement-hours">Hours Required To Complete *</Label>
+              <Input
+                id="replacement-hours"
+                type="number"
+                inputMode="decimal"
+                min={0.25}
+                step={0.25}
+                placeholder="e.g. 1.5"
+                value={replacementHours}
+                onChange={(e) => setReplacementHours(e.target.value)}
+              />
             </div>
             <div className="space-y-1">
               <Label htmlFor="replacement-outcome">Expected Outcome (optional)</Label>

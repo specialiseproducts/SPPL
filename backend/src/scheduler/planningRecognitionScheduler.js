@@ -1,6 +1,6 @@
 /**
  * Planning Recognition schedulers:
- * - Morning validation: 11:05 AM IST — min 10 tasks warning
+ * - Morning validation: 11:05 AM IST — min 7 hours warning
  * - Evening review: 5:35 PM IST — pending completion reminder
  * - Daily: 8:00 PM IST — finalize day + refresh monthly summary
  * - Monthly: 12:05 AM IST on the 1st — finalize previous month

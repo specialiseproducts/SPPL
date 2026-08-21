@@ -31,6 +31,9 @@ import {
   validateExpenseBusinessRules,
   isTravelCarOrBike,
   isHotelBookingSelf,
+  isTravelOutstationAllowance,
+  computeOutstationDuration,
+  computeOutstationTravelAllowanceAmount,
 } from '../utils/expenseValidation.js';
 import { computeTravelCarBikeRupeeAmount } from '../utils/expenseTravelAmount.js';
 import * as ExpenseTravelRateSettingsService from './expenseTravelRateSettings.service.js';
@@ -129,6 +132,9 @@ async function attachDocumentsForListRows(rows) {
 }
 
 function validateMergedSubCategoryOnUpdate(merged, updateData) {
+  if (isTravelOutstationAllowance(merged)) {
+    return;
+  }
   if (!isCanonicalExpenseHead(merged.expenseHead)) {
     return;
   }
@@ -312,12 +318,13 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     let date = trimText(raw.date);
     const monthYear = trimText(raw.monthYear);
     const travelCarBike = isTravelCarOrBike(expenseHead, subCategory || '');
+  const travelOutstation = isTravelOutstationAllowance(raw);
     const hotelSelf = isHotelBookingSelf(expenseHead, subCategory || '');
 
     if (!expenseHead) {
       throw new Error('expenseHead is required');
     }
-    if (!travelCarBike) {
+    if (!travelCarBike && !travelOutstation) {
       if (!serviceProvider) {
         throw new Error('serviceProvider is required');
       }
@@ -327,6 +334,9 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     }
     if (!date && hotelSelf) {
       date = trimText(raw.stayDateFrom) || trimText(raw.stayDateTo);
+    }
+    if (!date && travelOutstation) {
+      date = trimText(raw.arrivalDate);
     }
     if (!date) {
       throw new Error('date is required');
@@ -341,14 +351,16 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (!purpose && legacyCombined) {
       purpose = legacyCombined;
     }
-    if (!location) {
+    if (!location && !travelOutstation) {
       throw new Error('location is required');
     }
-    if (!purpose) {
+    if (!purpose && !travelOutstation) {
       throw new Error('purpose is required');
     }
 
-    validateSubCategoryForHead(expenseHead, subCategory || undefined);
+    if (!travelOutstation) {
+      validateSubCategoryForHead(expenseHead, subCategory || undefined);
+    }
 
     const employeeRow = await EmployeeModel.getEmployeeByCode(authUser.employeeCode);
     const employeeEmail =
@@ -393,7 +405,17 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     }
 
     let amountNum;
-    if (travelCarBike) {
+    const outstationDuration = travelOutstation ? computeOutstationDuration(raw) : null;
+    if (travelOutstation) {
+      if (!outstationDuration) {
+        throw new Error('Departure datetime cannot be earlier than arrival datetime');
+      }
+      const allowance = computeOutstationTravelAllowanceAmount(outstationDuration.durationHours);
+      if (allowance == null) {
+        throw new Error('Unable to calculate Travel Allowance amount');
+      }
+      amountNum = allowance;
+    } else if (travelCarBike) {
       const rates = await ExpenseTravelRateSettingsService.getTravelRateSettingsForApi();
       amountNum = computeTravelCarBikeRupeeAmount({
         expenseHead,
@@ -437,16 +459,22 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     const documentsForItem =
       supportingDocument === 'No' || travelCarBike ? [] : documents || [];
 
+    if (travelOutstation && !outstationDuration) {
+      throw new Error('Departure datetime cannot be earlier than arrival datetime');
+    }
+
     const basePayload = {
       expenseHead,
       ...(subCategory ? { subCategory } : {}),
       ...(travelCarBike
         ? { serviceProvider: '', billNumber: '' }
-        : { serviceProvider, billNumber }),
+        : travelOutstation
+          ? { serviceProvider: '', billNumber: '' }
+          : { serviceProvider, billNumber }),
       date,
       ...(monthYear ? { monthYear } : {}),
-      location,
-      purpose,
+      location: travelOutstation ? '' : location,
+      purpose: travelOutstation ? '' : purpose,
       employeeId: String(authUser.employeeCode || '').trim(),
       employeeName,
       employeeEmail,
@@ -454,6 +482,20 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       supportingDocument,
       ...travelExtras,
       ...hotelExtras,
+      ...(travelOutstation
+        ? {
+            outStation: 'Yes',
+            arrivalDate: trimText(raw.arrivalDate),
+            arrivalTime: trimText(raw.arrivalTime),
+            departureDate: trimText(raw.departureDate),
+            departureTime: trimText(raw.departureTime),
+            durationHours: outstationDuration?.durationHours,
+            durationDays: outstationDuration?.durationDays,
+            travelAllowanceAmount: amountNum,
+          }
+        : {
+            outStation: expenseHead === 'Travel' ? 'No' : undefined,
+          }),
     };
 
     validateExpenseBusinessRules(basePayload);
@@ -598,11 +640,35 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
         ? updatePayload.subCategory
         : existing.subCategory;
     const nextSub = nextSubRaw != null ? String(nextSubRaw).trim() : '';
+    const travelOutstation = isTravelOutstationAllowance({
+      ...existing,
+      ...updatePayload,
+      expenseHead: nextHead,
+      subCategory: nextSub,
+    });
 
     if (isTravelCarOrBike(nextHead, nextSub)) {
       updatePayload.serviceProvider = '';
       updatePayload.billNumber = '';
       updatePayload.supportingDocument = 'No';
+    }
+    if (travelOutstation) {
+      updatePayload.serviceProvider = '';
+      updatePayload.billNumber = '';
+      updatePayload.location = '';
+      updatePayload.purpose = '';
+      const outstationDuration = computeOutstationDuration({ ...existing, ...updatePayload });
+      if (!outstationDuration) {
+        throw new Error('Departure datetime cannot be earlier than arrival datetime');
+      }
+      updatePayload.durationHours = outstationDuration.durationHours;
+      updatePayload.durationDays = outstationDuration.durationDays;
+      const allowance = computeOutstationTravelAllowanceAmount(outstationDuration.durationHours);
+      if (allowance == null) {
+        throw new Error('Unable to calculate Travel Allowance amount');
+      }
+      updatePayload.amount = allowance;
+      updatePayload.travelAllowanceAmount = allowance;
     }
 
     const sdUpdate = trimText(updatePayload.supportingDocument);
@@ -625,16 +691,23 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     };
 
     const resolvedLp = resolveLocationFieldsFromRow(merged);
-    if (!resolvedLp.location) {
-      throw new Error('location is required');
+    if (!travelOutstation) {
+      if (!resolvedLp.location) {
+        throw new Error('location is required');
+      }
+      if (!resolvedLp.purpose) {
+        throw new Error('purpose is required');
+      }
+      merged.location = resolvedLp.location;
+      merged.purpose = resolvedLp.purpose;
+      updatePayload.location = resolvedLp.location;
+      updatePayload.purpose = resolvedLp.purpose;
+    } else {
+      merged.location = '';
+      merged.purpose = '';
+      updatePayload.location = '';
+      updatePayload.purpose = '';
     }
-    if (!resolvedLp.purpose) {
-      throw new Error('purpose is required');
-    }
-    merged.location = resolvedLp.location;
-    merged.purpose = resolvedLp.purpose;
-    updatePayload.location = resolvedLp.location;
-    updatePayload.purpose = resolvedLp.purpose;
 
     const mergedSub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
 

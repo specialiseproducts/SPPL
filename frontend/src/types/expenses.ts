@@ -47,4 +47,44 @@ export interface ExpenseRecord {
   exportBatch?: string;
   exportedMonth?: string;
   exportedYear?: string;
+  /** Travel-only outstation allowance flow */
+  outStation?: 'Yes' | 'No';
+  arrivalDate?: string;
+  arrivalTime?: string;
+  departureDate?: string;
+  departureTime?: string;
+  durationHours?: number;
+  durationDays?: number;
+  travelAllowanceAmount?: number | null;
+}
+
+export type ExpenseEditRequestStatus = 'Pending' | 'Approved' | 'Rejected';
+
+export type ExpenseEditRequestType =
+  | 'Amount'
+  | 'Date'
+  | 'Location'
+  | 'Purpose'
+  | 'Service Provider'
+  | 'Bill Number';
+
+export interface ExpenseEditRequest {
+  requestId: string;
+  expenseId: string;
+  expenseRef: string;
+  revisionNumber: number;
+  employeeCode: string;
+  employeeName: string;
+  employeeOfficialEmail: string;
+  requestType: ExpenseEditRequestType | string;
+  oldValues: Record<string, unknown>;
+  requestedValues: Record<string, unknown>;
+  status: ExpenseEditRequestStatus | string;
+  adminRemark: string;
+  requestedAt: string;
+  reviewedAt: string;
+  reviewedBy: string;
+  reviewedByEmployeeCode: string;
+  createdAt: string;
+  updatedAt: string;
 }

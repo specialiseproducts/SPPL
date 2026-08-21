@@ -39,6 +39,7 @@ import {
   stopPlanningRecognitionScheduler,
 } from './src/scheduler/planningRecognitionScheduler.js';
 import { initEmailService } from './src/services/emailService.js';
+import { initPasswordResetOtpStorageOnStartup } from './src/utils/passwordResetOtpStorageInit.js';
 
 // Load environment variables
 dotenv.config();
@@ -119,6 +120,7 @@ app.listen(PORT, () => {
   initDailyPlannerStorageOnStartup();
   initAuditTrailStorageOnStartup();
   initSalesHistoryStorageOnStartup();
+  initPasswordResetOtpStorageOnStartup();
   initEmailService()
     .catch((err) => {
       log.error('Email service startup verification error', err?.message || err);

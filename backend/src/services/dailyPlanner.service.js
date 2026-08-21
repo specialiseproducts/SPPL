@@ -8,7 +8,7 @@ import * as SalesPlannerEventsModel from '../models/SalesPlannerEvents.js';
 import * as PlanningRecognitionService from './planningRecognition.service.js';
 import * as TeamPerformanceService from './teamPerformance.service.js';
 import * as PlanningAnalyticsService from './planningAnalytics.service.js';
-import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, computeTaskPlanningContribution, computeTaskCompletionContribution, countPlannedTasksForDate, MIN_PLANNED_TASKS_PER_WORKING_DAY, buildMinimumTasksWarningMessage, isMorningPlanningWindow } from '../utils/planningRecognition.js';
+import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, MIN_PLANNED_HOURS_PER_WORKING_DAY, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow } from '../utils/planningRecognition.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
@@ -17,6 +17,8 @@ import { notifyUser } from '../utils/notifications.js';
 import * as PlannerNotificationEmitters from './notificationEmitters.js';
 import * as AuditTrailService from './auditTrail.service.js';
 import { AUDIT_ACTIONS, AUDIT_MODULES } from '../constants/auditTrail.js';
+import * as NotificationService from './notification.service.js';
+import { NOTIFICATION_MODULES } from '../constants/notifications.js';
 
 const PRIORITY_ORDER = { High: 0, Medium: 1, Low: 2 };
 
@@ -301,6 +303,7 @@ export const createManualTask = async (body, authUser) => {
   const location = await getEmployeeLocation(code);
   const planningMeta = PlanningRecognitionService.validateTaskPlanningPayload(body, now, location);
   const priority = String(body.priority || 'Medium').trim();
+  const hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
 
   let planningScore = 0;
   if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
@@ -332,6 +335,9 @@ export const createManualTask = async (body, authUser) => {
     priority,
     originalPriority: priority,
     currentPriority: priority,
+    hoursRequired,
+    originalHoursRequired: hoursRequired,
+    hoursRequiredEdited: false,
     taskType: 'Manual',
     source: 'MANUAL',
     status: 'Pending',
@@ -363,12 +369,13 @@ export const createManualTask = async (body, authUser) => {
     });
   }
 
-  await maybeNotifyMinimumTasksShortfall(code, date, location);
+  await maybeNotifyMinimumHoursShortfall(code, date, location, employeeNameOf(authUser));
 
   auditPlannerTask(authUser, AUDIT_ACTIONS.CREATE, task, 'Task Created', {
     newValues: {
       taskName: task.taskName,
       priority: task.priority,
+      hoursRequired: task.hoursRequired,
       date: task.date,
       status: task.status,
     },
@@ -377,26 +384,120 @@ export const createManualTask = async (body, authUser) => {
   return { task, planningAward };
 };
 
-async function maybeNotifyMinimumTasksShortfall(employeeCode, dateKey, location) {
+async function listActiveManagersForEmployee(employeeCode) {
+  const code = String(employeeCode || '').trim();
+  if (!code) return [];
+  const mappings = await DailyPlannerTeamMappingsModel.listAllMappings();
+  return mappings
+    .filter((m) => m.status === 'Active' && String(m.employeeCode || '').trim() === code)
+    .map((m) => ({
+      managerCode: String(m.managerCode || '').trim(),
+      managerName: String(m.managerName || '').trim(),
+    }))
+    .filter((m) => m.managerCode);
+}
+
+function formatPlannerDateLabel(dateKey) {
+  const key = String(dateKey || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return key || 'today';
+  const [y, m, d] = key.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+async function maybeNotifyMinimumHoursShortfall(
+  employeeCode,
+  dateKey,
+  location,
+  employeeName = '',
+) {
   const today = todayIstDateKey();
-  if (dateKey !== today) return;
+  const targetDate = String(dateKey || '').trim().slice(0, 10);
+  if (targetDate !== today) return;
   if (!isCompanyWorkingDayDateKey(today, location)) return;
   if (isMorningPlanningWindow(new Date())) return;
 
+  await notifyHoursShortfallForDate(employeeCode, today, employeeName);
+}
+
+async function notifyHoursShortfallForDate(employeeCode, dateKey, employeeName = '') {
+  const targetDate = String(dateKey || '').trim().slice(0, 10);
   const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
     employeeCode,
-    today,
-    today,
+    targetDate,
+    targetDate,
   );
-  const plannedCount = countPlannedTasksForDate(tasks, today);
-  if (plannedCount >= MIN_PLANNED_TASKS_PER_WORKING_DAY) return;
+  const plannedHours = sumPlannedHoursForDate(tasks, targetDate);
+  if (plannedHours >= MIN_PLANNED_HOURS_PER_WORKING_DAY) return;
+
+  const remaining =
+    Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - plannedHours) * 100) / 100;
+  const dayLabel = formatPlannerDateLabel(targetDate);
+  const name =
+    String(employeeName || '').trim() ||
+    String(tasks[0]?.employeeName || '').trim() ||
+    employeeCode;
 
   void notifyUser(
     employeeCode,
-    'Minimum daily tasks required',
-    buildMinimumTasksWarningMessage(plannedCount),
+    'Minimum daily hours required',
+    buildMinimumHoursWarningMessage(plannedHours, dayLabel),
     'WARNING',
-    { date: today, plannedCount, minRequired: MIN_PLANNED_TASKS_PER_WORKING_DAY },
+    {
+      date: targetDate,
+      plannedHours,
+      remainingHours: remaining,
+      minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+      reminderType: 'minimum_hours',
+    },
+  );
+
+  const managerMessage = buildMinimumHoursManagerWarningMessage(name, plannedHours, dayLabel);
+  const managers = await listActiveManagersForEmployee(employeeCode);
+  for (const manager of managers) {
+    if (manager.managerCode === employeeCode) continue;
+    void notifyUser(
+      manager.managerCode,
+      'Team member below daily hours minimum',
+      managerMessage,
+      'WARNING',
+      {
+        date: targetDate,
+        employeeCode,
+        employeeName: name,
+        plannedHours,
+        remainingHours: remaining,
+        minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+        reminderType: 'minimum_hours_manager',
+      },
+    );
+  }
+
+  void NotificationService.notifyModuleAdmins(
+    NOTIFICATION_MODULES.DAILY_PLANNER,
+    {
+      title: 'Team member below daily hours minimum',
+      message: managerMessage,
+      createdBy: 'system',
+      actionType: 'View',
+      actionId: 'team-daily-planner',
+      actionUrl: '/daily-planner',
+      metadata: {
+        date: targetDate,
+        employeeCode,
+        employeeName: name,
+        plannedHours,
+        remainingHours: remaining,
+        minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+        reminderType: 'minimum_hours_admin',
+      },
+    },
+    { excludeEmployeeCode: employeeCode },
   );
 }
 
@@ -428,6 +529,16 @@ export const updateManualTask = async (taskId, body, authUser) => {
     patch.currentPriority = p;
     patch.originalPriority = existing.originalPriority || p;
   }
+  if (body.hoursRequired !== undefined) {
+    patch.hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
+    if (
+      existing.originalHoursRequired === undefined ||
+      existing.originalHoursRequired === null ||
+      existing.originalHoursRequired === ''
+    ) {
+      patch.originalHoursRequired = patch.hoursRequired;
+    }
+  }
   if (body.date !== undefined) patch.date = String(body.date || '').trim();
 
   const task = await DailyPlannerTasksModel.updateTask(taskId, patch);
@@ -457,6 +568,7 @@ export const updateManualTask = async (taskId, body, authUser) => {
     'description',
     'priority',
     'currentPriority',
+    'hoursRequired',
     'date',
     'status',
   ]);
@@ -470,6 +582,16 @@ export const updateManualTask = async (taskId, body, authUser) => {
       newValues: fieldDiff.newValues,
     },
   );
+
+  if (body.hoursRequired !== undefined) {
+    const location = await getEmployeeLocation(existing.employeeCode);
+    await maybeNotifyMinimumHoursShortfall(
+      existing.employeeCode,
+      task.date || existing.date,
+      location,
+      existing.employeeName,
+    );
+  }
 
   return { task };
 };
@@ -588,6 +710,9 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
       originalPriority: existing.originalPriority || existing.priority,
       currentPriority: existing.currentPriority || existing.priority,
       priorityEdited: existing.priorityEdited,
+      hoursRequired: existing.hoursRequired,
+      originalHoursRequired: existing.originalHoursRequired ?? existing.hoursRequired,
+      hoursRequiredEdited: existing.hoursRequiredEdited,
       taskType: existing.taskType,
       source: PLANNING_SOURCE_RESCHEDULED,
       salesPlannerId: existing.salesPlannerId,
@@ -759,6 +884,24 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
     }
   }
 
+  if (body.hoursRequired !== undefined && body.hoursRequired !== null && String(body.hoursRequired).trim() !== '') {
+    const nextHours = assertValidHoursRequired(body.hoursRequired, { required: true });
+    const originalHours =
+      existing.originalHoursRequired != null && existing.originalHoursRequired !== ''
+        ? Number(existing.originalHoursRequired)
+        : existing.hoursRequired != null && existing.hoursRequired !== ''
+          ? Number(existing.hoursRequired)
+          : nextHours;
+    patch.hoursRequired = nextHours;
+    patch.originalHoursRequired = Number.isFinite(originalHours) ? originalHours : nextHours;
+    patch.hoursRequiredEdited = patch.originalHoursRequired !== nextHours;
+    if (patch.hoursRequiredEdited) {
+      patch.hoursRequiredEditedBy = reviewerCode;
+      patch.hoursRequiredEditedByName = reviewerName;
+      patch.hoursRequiredEditedAt = nowIso;
+    }
+  }
+
   const task = await DailyPlannerTasksModel.updateTask(taskId, patch);
 
   void PlannerNotificationEmitters.emitPlannerTaskApproved(
@@ -767,9 +910,26 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
   );
 
   auditPlannerTask(authUser, AUDIT_ACTIONS.APPROVE, task, 'Task Approved', {
-    oldValues: { status: existing.status, approvalStatus: existing.approvalStatus },
-    newValues: { status: task.status, approvalStatus: task.approvalStatus },
+    oldValues: {
+      status: existing.status,
+      approvalStatus: existing.approvalStatus,
+      hoursRequired: existing.hoursRequired,
+    },
+    newValues: {
+      status: task.status,
+      approvalStatus: task.approvalStatus,
+      hoursRequired: task.hoursRequired,
+    },
   });
+
+  const location = await getEmployeeLocation(existing.employeeCode);
+  if (isCompanyWorkingDayDateKey(existing.date, location)) {
+    await notifyHoursShortfallForDate(
+      existing.employeeCode,
+      existing.date,
+      existing.employeeName,
+    );
+  }
 
   return { task };
 };
@@ -796,6 +956,7 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
   }
 
   const replacementRaw = body.replacementTask || {};
+  const replacementHours = assertValidHoursRequired(replacementRaw.hoursRequired, { required: true });
   const replacementTask = {
     taskName: String(replacementRaw.taskName || '').trim(),
     description: String(replacementRaw.description || '').trim(),
@@ -803,6 +964,7 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
       replacementRaw.priority,
       existing.currentPriority || existing.priority || 'Medium',
     ),
+    hoursRequired: replacementHours,
     expectedOutcome: String(replacementRaw.expectedOutcome || '').trim(),
   };
 
@@ -926,6 +1088,18 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
 
   const reviewerCode = String(existing.revisionRequestedBy || '').trim();
   const reviewerName = String(existing.revisionRequestedByName || '').trim();
+  const suggestionHoursRaw =
+    suggestion.hoursRequired !== undefined && suggestion.hoursRequired !== null && suggestion.hoursRequired !== ''
+      ? Number(suggestion.hoursRequired)
+      : null;
+  const hoursRequired =
+    suggestionHoursRaw != null && Number.isFinite(suggestionHoursRaw) && suggestionHoursRaw > 0
+      ? Math.round(suggestionHoursRaw * 100) / 100
+      : existing.hoursRequired;
+  const originalHoursRequired =
+    suggestionHoursRaw != null && Number.isFinite(suggestionHoursRaw) && suggestionHoursRaw > 0
+      ? hoursRequired
+      : existing.originalHoursRequired ?? existing.hoursRequired;
 
   const revisedTask = await DailyPlannerTasksModel.createTask({
     employeeCode: existing.employeeCode,
@@ -937,6 +1111,9 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
     originalPriority: priority,
     currentPriority: priority,
     priorityEdited: false,
+    hoursRequired,
+    originalHoursRequired,
+    hoursRequiredEdited: false,
     taskType: 'Manual',
     source: 'MANUAL',
     status: 'Approved',

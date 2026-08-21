@@ -51,6 +51,12 @@ export function toDailyPlannerTaskDto(row) {
           taskName: String(row.replacementTask.taskName || '').trim(),
           description: String(row.replacementTask.description || '').trim(),
           priority: String(row.replacementTask.priority || 'Medium').trim(),
+          hoursRequired:
+            row.replacementTask.hoursRequired === undefined ||
+            row.replacementTask.hoursRequired === null ||
+            row.replacementTask.hoursRequired === ''
+              ? null
+              : Number(row.replacementTask.hoursRequired),
           expectedOutcome: String(row.replacementTask.expectedOutcome || '').trim(),
         }
       : null;
@@ -68,6 +74,20 @@ export function toDailyPlannerTaskDto(row) {
     priorityEditedBy: String(row.priorityEditedBy || '').trim(),
     priorityEditedByName: String(row.priorityEditedByName || '').trim(),
     priorityEditedAt: row.priorityEditedAt || null,
+    hoursRequired:
+      row.hoursRequired === undefined || row.hoursRequired === null || row.hoursRequired === ''
+        ? null
+        : Number(row.hoursRequired),
+    originalHoursRequired:
+      row.originalHoursRequired === undefined ||
+      row.originalHoursRequired === null ||
+      row.originalHoursRequired === ''
+        ? null
+        : Number(row.originalHoursRequired),
+    hoursRequiredEdited: Boolean(row.hoursRequiredEdited),
+    hoursRequiredEditedBy: String(row.hoursRequiredEditedBy || '').trim(),
+    hoursRequiredEditedByName: String(row.hoursRequiredEditedByName || '').trim(),
+    hoursRequiredEditedAt: row.hoursRequiredEditedAt || null,
     status: String(row.status || 'Pending').trim(),
     reason: String(row.reason || '').trim(),
     taskType: String(row.taskType || 'Manual').trim(),
@@ -234,6 +254,16 @@ export async function createTask(payload) {
 
   const now = new Date().toISOString();
   const priority = String(payload.priority || 'Medium').trim();
+  const hoursRequired =
+    payload.hoursRequired === undefined || payload.hoursRequired === null || payload.hoursRequired === ''
+      ? null
+      : Number(payload.hoursRequired);
+  const originalHoursRequired =
+    payload.originalHoursRequired === undefined ||
+    payload.originalHoursRequired === null ||
+    payload.originalHoursRequired === ''
+      ? hoursRequired
+      : Number(payload.originalHoursRequired);
   const item = {
     plannerTaskId: uuidv4(),
     employeeCode,
@@ -245,6 +275,12 @@ export async function createTask(payload) {
     originalPriority: String(payload.originalPriority || priority).trim(),
     currentPriority: String(payload.currentPriority || priority).trim(),
     priorityEdited: Boolean(payload.priorityEdited),
+    hoursRequired: Number.isFinite(hoursRequired) ? hoursRequired : null,
+    originalHoursRequired: Number.isFinite(originalHoursRequired) ? originalHoursRequired : null,
+    hoursRequiredEdited: Boolean(payload.hoursRequiredEdited),
+    hoursRequiredEditedBy: String(payload.hoursRequiredEditedBy || '').trim(),
+    hoursRequiredEditedByName: String(payload.hoursRequiredEditedByName || '').trim(),
+    hoursRequiredEditedAt: payload.hoursRequiredEditedAt || null,
     status: String(payload.status || 'Pending').trim(),
     reason: String(payload.reason || '').trim(),
     taskType: String(payload.taskType || 'Manual').trim(),

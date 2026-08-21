@@ -54,6 +54,7 @@ import {
   buildExpenseExportContext,
   exportExpensesToExcel,
 } from '../utils/expenseExcelExport';
+import ExpenseEditRequestModal from './expenses/ExpenseEditRequestModal';
 
 export type { ExpenseRecord } from '../types/expenses';
 
@@ -161,6 +162,8 @@ export default function ExpensesTab({
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isRateSettingsOpen, setIsRateSettingsOpen] = useState(false);
+  const [editRequestOpen, setEditRequestOpen] = useState(false);
+  const [editRequestRecord, setEditRequestRecord] = useState<ExpenseRecord | null>(null);
   const [pendingPreviousModalOpen, setPendingPreviousModalOpen] = useState(false);
   const [pendingPreviousExpenses, setPendingPreviousExpenses] = useState<ExpenseRecord[]>([]);
   const [pendingExportCurrentRows, setPendingExportCurrentRows] = useState<ExpenseRecord[]>([]);
@@ -458,7 +461,22 @@ export default function ExpensesTab({
         selectedYear,
         currentUserName,
       });
-      await exportExpensesToExcel(exportRows, context);
+      const outstationRows = currentRows.filter(
+        (row) => row.expenseHead === 'Travel' && row.outStation === 'Yes',
+      );
+      const travelAllowanceSummary =
+        outstationRows.length > 0
+          ? {
+              recordCount: outstationRows.length,
+              totalAmount: outstationRows.reduce((sum, row) => {
+                const fromAllowance = Number(row.travelAllowanceAmount);
+                if (Number.isFinite(fromAllowance)) return sum + fromAllowance;
+                const fromAmount = Number(row.amount);
+                return sum + (Number.isFinite(fromAmount) ? fromAmount : 0);
+              }, 0),
+            }
+          : undefined;
+      await exportExpensesToExcel(exportRows, context, travelAllowanceSummary);
 
       const idsToMarkExported = [
         ...new Set(
@@ -714,8 +732,19 @@ export default function ExpensesTab({
                   const auditStatus = expense.auditStatus ?? 'Pending';
                   const showEditAction =
                     canEditRecords && (auditStatus === 'Pending' || auditStatus === 'Rejected');
+                  const isOwnedExpense =
+                    String(expense.employeeId || '').trim() === String(currentEmployeeCode || '').trim();
+                  const canRequestEditPermission = auditStatus === 'Approved' && isOwnedExpense;
                   return (
-                  <TableRow key={expense.expenseId} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                  <TableRow
+                    key={expense.expenseId}
+                    className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
+                    onDoubleClick={() => {
+                      if (!canRequestEditPermission) return;
+                      setEditRequestRecord(expense);
+                      setEditRequestOpen(true);
+                    }}
+                  >
                     <TableCell className="whitespace-nowrap">{index + 1}</TableCell>
                     <TableCell>
                       {auditStatus === 'Approved' ? (
@@ -902,6 +931,14 @@ export default function ExpensesTab({
         onIncludeSelected={handleIncludeSelectedPrevious}
         onSkipSelected={handleSkipSelectedPrevious}
         onCancel={closePendingPreviousModal}
+      />
+      <ExpenseEditRequestModal
+        isOpen={editRequestOpen}
+        onClose={() => {
+          setEditRequestOpen(false);
+          setEditRequestRecord(null);
+        }}
+        record={editRequestRecord}
       />
     </Card>
   );

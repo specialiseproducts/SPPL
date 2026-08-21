@@ -86,6 +86,26 @@ export function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord
     exportBatch: raw.exportBatch != null ? String(raw.exportBatch) : undefined,
     exportedMonth: raw.exportedMonth != null ? String(raw.exportedMonth) : undefined,
     exportedYear: raw.exportedYear != null ? String(raw.exportedYear) : undefined,
+    outStation:
+      raw.outStation === 'Yes' || raw.outStation === 'No'
+        ? raw.outStation
+        : undefined,
+    arrivalDate: raw.arrivalDate != null ? String(raw.arrivalDate) : undefined,
+    arrivalTime: raw.arrivalTime != null ? String(raw.arrivalTime) : undefined,
+    departureDate: raw.departureDate != null ? String(raw.departureDate) : undefined,
+    departureTime: raw.departureTime != null ? String(raw.departureTime) : undefined,
+    durationHours:
+      raw.durationHours == null || String(raw.durationHours).trim() === ''
+        ? undefined
+        : Number(raw.durationHours),
+    durationDays:
+      raw.durationDays == null || String(raw.durationDays).trim() === ''
+        ? undefined
+        : Number(raw.durationDays),
+    travelAllowanceAmount:
+      raw.travelAllowanceAmount == null || String(raw.travelAllowanceAmount).trim() === ''
+        ? null
+        : Number(raw.travelAllowanceAmount),
     documents: (() => {
       if (Array.isArray(raw.documents) && raw.documents.length > 0) {
         return raw.documents as ExpenseDocument[];

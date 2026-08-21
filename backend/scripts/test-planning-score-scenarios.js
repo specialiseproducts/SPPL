@@ -8,6 +8,7 @@ import {
   computeTaskCompletionContribution,
   computeWorkingDayPlanningScore,
   countPlannedTasksForDate,
+  sumPlannedHoursForDate,
   TASK_PLANNING_SCORE_PREVIOUS_DAY,
   TASK_PLANNING_SCORE_MORNING,
   TASK_COMPLETION_SCORE_COMPLETED,
@@ -16,6 +17,7 @@ import {
   PLANNING_SOURCE_IMPORTED,
   PLANNING_SOURCE_RESCHEDULED,
   MIN_PLANNED_TASKS_PER_WORKING_DAY,
+  MIN_PLANNED_HOURS_PER_WORKING_DAY,
 } from '../src/utils/planningRecognition.js';
 import {
   isCompanyHolidayDateKey,
@@ -125,10 +127,22 @@ const scenarios = [
     },
   },
   {
-    name: 'Min 10 planned tasks count',
+    name: 'Planned tasks count helper still works',
     run: () => {
       const tasks = Array.from({ length: 7 }, (_, i) => manualTask(`t${i}`, PREVIOUS, 18, i));
       return countPlannedTasksForDate(tasks, TARGET) === 7;
+    },
+  },
+  {
+    name: 'Sum planned hours for date',
+    run: () => {
+      const tasks = [
+        { ...manualTask('a', PREVIOUS, 18, 0), hoursRequired: 2 },
+        { ...manualTask('b', PREVIOUS, 18, 1), hoursRequired: 1.5 },
+        { ...manualTask('c', PREVIOUS, 18, 2), hoursRequired: 3.5 },
+        { ...manualTask('d', PREVIOUS, 18, 3), status: 'Rescheduled', hoursRequired: 9 },
+      ];
+      return sumPlannedHoursForDate(tasks, TARGET) === 7;
     },
   },
   {
@@ -172,8 +186,12 @@ const scenarios = [
     },
   },
   {
-    name: `Constant MIN_PLANNED_TASKS is ${MIN_PLANNED_TASKS_PER_WORKING_DAY}`,
+    name: `Constant MIN_PLANNED_TASKS (score ceiling) is ${MIN_PLANNED_TASKS_PER_WORKING_DAY}`,
     run: () => MIN_PLANNED_TASKS_PER_WORKING_DAY === 10,
+  },
+  {
+    name: `Constant MIN_PLANNED_HOURS is ${MIN_PLANNED_HOURS_PER_WORKING_DAY}`,
+    run: () => MIN_PLANNED_HOURS_PER_WORKING_DAY === 7,
   },
 ];
 

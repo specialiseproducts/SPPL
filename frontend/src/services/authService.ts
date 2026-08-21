@@ -72,6 +72,36 @@ export async function getCurrentUser() {
   return { user, accessControl, token };
 }
 
+/**
+ * Authenticated profile Change Password (JWT employee only).
+ * Does not accept a target employeeCode from the client.
+ */
+export async function changeOwnPassword(newPassword: string, confirmPassword: string) {
+  const token = getToken();
+  if (!token) {
+    throw new Error('Missing token');
+  }
+
+  const res = await fetch(`${getApiBaseUrl()}/auth/change-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ newPassword, confirmPassword }),
+  });
+
+  const payload = await res.json().catch(() => null);
+  if (!res.ok || !payload?.success) {
+    throw new Error(
+      (typeof payload?.message === 'string' && payload.message) ||
+        (typeof payload?.error === 'string' && payload.error) ||
+        'Password change failed',
+    );
+  }
+  return payload.data || { success: true };
+}
+
 export function logout() {
   removeToken();
 }

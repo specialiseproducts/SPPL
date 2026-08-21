@@ -29,15 +29,20 @@ type TaskSectionState = {
   id: string;
   taskName: string;
   priority: DailyPlannerPriority;
+  hoursRequired: string;
 };
 
-type SectionErrors = Record<string, { taskName?: boolean; urgentReason?: boolean }>;
+type SectionErrors = Record<
+  string,
+  { taskName?: boolean; urgentReason?: boolean; hoursRequired?: boolean }
+>;
 
 function createEmptySection(): TaskSectionState {
   return {
     id: crypto.randomUUID(),
     taskName: '',
     priority: 'Medium',
+    hoursRequired: '',
   };
 }
 
@@ -61,6 +66,7 @@ interface TaskSectionRowProps {
   urgentMode: boolean;
   showTaskNameError: boolean;
   showUrgentReasonError: boolean;
+  showHoursRequiredError: boolean;
   onChange: (patch: Partial<TaskSectionState>) => void;
   onRemove: () => void;
   onDescriptionRef: (handle: BulletPointEditorHandle | null) => void;
@@ -74,6 +80,7 @@ function TaskSectionRow({
   urgentMode,
   showTaskNameError,
   showUrgentReasonError,
+  showHoursRequiredError,
   onChange,
   onRemove,
   onDescriptionRef,
@@ -132,6 +139,25 @@ function TaskSectionRow({
           ) : null}
         </div>
       ) : null}
+
+      <div className="space-y-2">
+        <Label htmlFor={`hours-required-${section.id}`}>Hours Required to Complete *</Label>
+        <Input
+          id={`hours-required-${section.id}`}
+          type="number"
+          inputMode="decimal"
+          min={0.25}
+          step={0.25}
+          placeholder="e.g. 1.5"
+          value={section.hoursRequired}
+          onChange={(e) => onChange({ hoursRequired: e.target.value })}
+          className={cn(showHoursRequiredError && 'border-red-500 focus-visible:ring-red-500/30')}
+          aria-invalid={showHoursRequiredError}
+        />
+        {showHoursRequiredError ? (
+          <p className="text-xs text-red-600">Enter a valid number of hours greater than 0.</p>
+        ) : null}
+      </div>
 
       <div className="space-y-2">
         <Label>Priority</Label>
@@ -246,12 +272,28 @@ export default function DailyPlannerCreateTaskModal({
       }
 
       if (!section.taskName.trim()) {
-        validationErrors[section.id] = { taskName: true };
+        validationErrors[section.id] = { ...(validationErrors[section.id] || {}), taskName: true };
         continue;
       }
 
       if (urgentMode && !hasBulletContent(parseBulletPoints(urgentReason))) {
-        validationErrors[section.id] = { urgentReason: true };
+        validationErrors[section.id] = {
+          ...(validationErrors[section.id] || {}),
+          urgentReason: true,
+        };
+        continue;
+      }
+
+      const hoursValue = Number(section.hoursRequired);
+      if (
+        !String(section.hoursRequired || '').trim() ||
+        !Number.isFinite(hoursValue) ||
+        hoursValue <= 0
+      ) {
+        validationErrors[section.id] = {
+          ...(validationErrors[section.id] || {}),
+          hoursRequired: true,
+        };
         continue;
       }
 
@@ -260,6 +302,7 @@ export default function DailyPlannerCreateTaskModal({
         taskName: section.taskName.trim(),
         description,
         priority: section.priority,
+        hoursRequired: Math.round(hoursValue * 100) / 100,
         planningCategory: autoPlanningCategory,
         urgentReason: urgentMode ? urgentReason : '',
       });
@@ -370,6 +413,7 @@ export default function DailyPlannerCreateTaskModal({
                   urgentMode={urgentMode}
                   showTaskNameError={Boolean(errors[section.id]?.taskName)}
                   showUrgentReasonError={Boolean(errors[section.id]?.urgentReason)}
+                  showHoursRequiredError={Boolean(errors[section.id]?.hoursRequired)}
                   onChange={(patch) => updateSection(section.id, patch)}
                   onRemove={() => removeSection(section.id)}
                   onDescriptionRef={(handle) => {

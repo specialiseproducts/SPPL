@@ -425,6 +425,31 @@ export const createExpense = async (expenseData) => {
   if (expenseData.stayDateTo) {
     item.stayDateTo = expenseData.stayDateTo;
   }
+  if (expenseData.outStation === 'Yes' || expenseData.outStation === 'No') {
+    item.outStation = expenseData.outStation;
+  }
+  if (expenseData.arrivalDate) {
+    item.arrivalDate = expenseData.arrivalDate;
+  }
+  if (expenseData.arrivalTime) {
+    item.arrivalTime = expenseData.arrivalTime;
+  }
+  if (expenseData.departureDate) {
+    item.departureDate = expenseData.departureDate;
+  }
+  if (expenseData.departureTime) {
+    item.departureTime = expenseData.departureTime;
+  }
+  if (expenseData.durationHours !== undefined && expenseData.durationHours !== null) {
+    item.durationHours = Number(expenseData.durationHours);
+  }
+  if (expenseData.durationDays !== undefined && expenseData.durationDays !== null) {
+    item.durationDays = Number(expenseData.durationDays);
+  }
+  if (expenseData.travelAllowanceAmount !== undefined) {
+    item.travelAllowanceAmount =
+      expenseData.travelAllowanceAmount === null ? null : Number(expenseData.travelAllowanceAmount);
+  }
 
   await dynamoDB.put({
     TableName: TABLE_NAME,

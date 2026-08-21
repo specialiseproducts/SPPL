@@ -112,8 +112,9 @@ function normalizeEmailText(text) {
 
 /**
  * Send an email. Returns { ok: true } or { ok: false, error } — never throws.
+ * Optional `from` overrides the default sender (used by password-reset OTP mail).
  */
-export async function sendEmail({ to, subject, text, html }) {
+export async function sendEmail({ to, subject, text, html, from: fromOverride }) {
   const recipients = (Array.isArray(to) ? to : [to])
     .map((e) => String(e || '').trim())
     .filter(Boolean);
@@ -129,7 +130,7 @@ export async function sendEmail({ to, subject, text, html }) {
     return { ok: false, error: 'SMTP not configured' };
   }
 
-  const from = getFromAddress();
+  const from = String(fromOverride || '').trim() || getFromAddress();
 
   log.info('Attempting email send', {
     FROM: from,

@@ -38,6 +38,7 @@ export interface PlanningConfig {
   todayIst: string;
   tomorrowIst: string;
   employeeLocation?: string;
+  minPlannedHoursPerWorkingDay?: number;
   minPlannedTasksPerWorkingDay?: number;
   windows: {
     morning: { start: string; end: string; active: boolean };

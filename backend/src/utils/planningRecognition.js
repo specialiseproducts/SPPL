@@ -33,14 +33,21 @@ export const MORNING_PLANNING_SCORE = 0.5;
 export const EVENING_PLANNING_SCORE = 1;
 export const DAILY_PLANNING_SCORE_CAP = 30;
 
-/** Ideal day: 10 tasks × (+1 plan + +2 complete). */
-export const MIN_PLANNED_TASKS_PER_WORKING_DAY = 10;
+/**
+ * Score ceiling still assumes an ideal day of up to 10 scored tasks × (+1 plan + +2 complete).
+ * Daily *compliance* minimum is hours-based (see MIN_PLANNED_HOURS_PER_WORKING_DAY).
+ */
+export const IDEAL_SCORED_TASKS_PER_WORKING_DAY = 10;
+/** @deprecated Use IDEAL_SCORED_TASKS_PER_WORKING_DAY — retained for score ceiling only. */
+export const MIN_PLANNED_TASKS_PER_WORKING_DAY = IDEAL_SCORED_TASKS_PER_WORKING_DAY;
+/** Minimum total Hours Required planned per employee per working day. */
+export const MIN_PLANNED_HOURS_PER_WORKING_DAY = 7;
 export const TASK_PLANNING_SCORE_PREVIOUS_DAY = 1;
 export const TASK_PLANNING_SCORE_MORNING = 0.5;
 export const TASK_COMPLETION_SCORE_COMPLETED = 2;
 export const TASK_COMPLETION_SCORE_NOT_COMPLETED = -1;
 export const MAX_SCORE_PER_WORKING_DAY =
-  MIN_PLANNED_TASKS_PER_WORKING_DAY *
+  IDEAL_SCORED_TASKS_PER_WORKING_DAY *
   (TASK_PLANNING_SCORE_PREVIOUS_DAY + TASK_COMPLETION_SCORE_COMPLETED);
 
 export const BASE_PLANNING_SCORE = 100;
@@ -192,12 +199,43 @@ export function isTaskEligibleForPlanningScore(task) {
   return true;
 }
 
-/** Tasks that count toward the minimum planned-task requirement for a day. */
+/** Tasks that count toward the minimum daily planning requirement for a day. */
 export function isTaskCountedTowardDailyMinimum(task) {
   if (!task) return false;
   const status = String(task.status || '').trim();
   if (status === 'Rescheduled') return false;
   return true;
+}
+
+export function parseHoursRequired(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100) / 100;
+}
+
+/** Effective hours for a task; missing/legacy/invalid values count as 0 (do not satisfy the minimum). */
+export function getEffectiveHoursRequired(task) {
+  const n = parseHoursRequired(task?.hoursRequired);
+  return n != null && n > 0 ? n : 0;
+}
+
+export function assertValidHoursRequired(value, { required = true } = {}) {
+  const n = parseHoursRequired(value);
+  if (n == null) {
+    if (!required && (value === undefined || value === null || String(value).trim() === '')) {
+      return null;
+    }
+    const err = new Error('Hours Required to Complete must be a valid number');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (n <= 0) {
+    const err = new Error('Hours Required to Complete must be greater than 0');
+    err.statusCode = 400;
+    throw err;
+  }
+  return n;
 }
 
 export function countPlannedTasksForDate(tasks, dateKey) {
@@ -207,6 +245,21 @@ export function countPlannedTasksForDate(tasks, dateKey) {
       String(task.date || '').trim().slice(0, 10) === target &&
       isTaskCountedTowardDailyMinimum(task),
   ).length;
+}
+
+export function sumPlannedHoursForDate(tasks, dateKey) {
+  const target = String(dateKey || '').trim().slice(0, 10);
+  const total = (tasks || []).reduce((sum, task) => {
+    if (String(task.date || '').trim().slice(0, 10) !== target) return sum;
+    if (!isTaskCountedTowardDailyMinimum(task)) return sum;
+    return sum + getEffectiveHoursRequired(task);
+  }, 0);
+  return Math.round(total * 100) / 100;
+}
+
+export function formatHoursAmount(hours) {
+  const n = Math.round((Number(hours) || 0) * 100) / 100;
+  return Number.isInteger(n) ? String(n) : String(n);
 }
 
 export function countPendingEveningReviewTasks(tasks, dateKey) {
@@ -321,7 +374,8 @@ export function derivePlanningDayFlags(dayScore, tasks, targetDateKey, location)
 }
 
 /**
- * A working day counts as "planned ahead" when ≥10 eligible tasks and all were planned previous day.
+ * A working day counts as "planned ahead" when eligible tasks total ≥7 hours
+ * and all were planned on the previous working day.
  */
 export function isWorkingDayPlannedAhead(targetDateKey, tasks, location) {
   const target = String(targetDateKey || '').trim().slice(0, 10);
@@ -331,7 +385,10 @@ export function isWorkingDayPlannedAhead(targetDateKey, tasks, location) {
     (task) =>
       String(task.date || '').trim().slice(0, 10) === target && isTaskEligibleForPlanningScore(task),
   );
-  if (eligible.length < MIN_PLANNED_TASKS_PER_WORKING_DAY) return false;
+  const hours = Math.round(
+    eligible.reduce((sum, task) => sum + getEffectiveHoursRequired(task), 0) * 100,
+  ) / 100;
+  if (hours < MIN_PLANNED_HOURS_PER_WORKING_DAY) return false;
 
   const previousWorkingDay = getPreviousWorkingDayDateKey(target, location);
   if (!previousWorkingDay) return false;
@@ -347,7 +404,10 @@ export function isWorkingDaySameDayOnly(targetDateKey, tasks, location) {
     (task) =>
       String(task.date || '').trim().slice(0, 10) === target && isTaskEligibleForPlanningScore(task),
   );
-  if (eligible.length < MIN_PLANNED_TASKS_PER_WORKING_DAY) return false;
+  const hours = Math.round(
+    eligible.reduce((sum, task) => sum + getEffectiveHoursRequired(task), 0) * 100,
+  ) / 100;
+  if (hours < MIN_PLANNED_HOURS_PER_WORKING_DAY) return false;
 
   return eligible.every((task) => {
     const createdKey = taskCreatedOnDateKey(task);
@@ -493,14 +553,36 @@ export function normalizeMonthlyPlanningScore(rawScore, workingDays) {
   return Math.min(100, Math.round((raw / maxScore) * 100));
 }
 
-export function buildMinimumTasksWarningMessage(plannedCount) {
-  const count = Math.max(0, Number(plannedCount) || 0);
-  const remaining = Math.max(0, MIN_PLANNED_TASKS_PER_WORKING_DAY - count);
+export function buildMinimumHoursWarningMessage(plannedHours, dateKey) {
+  const hours = Math.max(0, Number(plannedHours) || 0);
+  const remaining = Math.max(0, Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - hours) * 100) / 100);
+  const dayLabel = String(dateKey || 'today').trim() || 'today';
   return (
-    `You currently have only ${count} planned tasks for today.\n\n` +
-    `Company policy requires a minimum of ${MIN_PLANNED_TASKS_PER_WORKING_DAY} planned tasks every working day.\n\n` +
-    `Please create the remaining ${remaining} tasks immediately.`
+    `Your tasks for ${dayLabel} currently total ${formatHoursAmount(hours)} hours. ` +
+    `You need to add tasks covering another ${formatHoursAmount(remaining)} hours ` +
+    `to complete the minimum daily requirement of ${formatHoursAmount(MIN_PLANNED_HOURS_PER_WORKING_DAY)} hours.`
   );
+}
+
+export function buildMinimumHoursManagerWarningMessage(
+  employeeName,
+  plannedHours,
+  dateKey,
+) {
+  const hours = Math.max(0, Number(plannedHours) || 0);
+  const remaining = Math.max(0, Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - hours) * 100) / 100);
+  const name = String(employeeName || 'Employee').trim() || 'Employee';
+  const dayLabel = String(dateKey || 'today').trim() || 'today';
+  return (
+    `${name} currently has only ${formatHoursAmount(hours)} valid planned hours for ${dayLabel}. ` +
+    `An additional ${formatHoursAmount(remaining)} hours of tasks are required ` +
+    `to meet the ${formatHoursAmount(MIN_PLANNED_HOURS_PER_WORKING_DAY)}-hour daily requirement.`
+  );
+}
+
+/** @deprecated Use buildMinimumHoursWarningMessage */
+export function buildMinimumTasksWarningMessage(plannedCount) {
+  return buildMinimumHoursWarningMessage(plannedCount, 'today');
 }
 
 export function getPlanningConfig(reference = new Date(), location) {
@@ -510,7 +592,8 @@ export function getPlanningConfig(reference = new Date(), location) {
     todayIst: todayIstDateKey(reference),
     tomorrowIst: tomorrowIstDateKey(reference),
     employeeLocation: normalizeEmployeeLocationLabel(location),
-    minPlannedTasksPerWorkingDay: MIN_PLANNED_TASKS_PER_WORKING_DAY,
+    minPlannedHoursPerWorkingDay: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+    minPlannedTasksPerWorkingDay: IDEAL_SCORED_TASKS_PER_WORKING_DAY,
     windows: {
       morning: {
         start: `${String(MORNING_START_HOUR).padStart(2, '0')}:${String(MORNING_START_MINUTE).padStart(2, '0')}`,

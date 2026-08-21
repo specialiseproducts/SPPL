@@ -350,6 +350,13 @@ export default function DailyPlannerDayTasksModal({
                                   <BulletPointList text={task.replacementTask.description || '—'} />
                                 </div>
                                 <p><span className="font-medium">Priority:</span> {task.replacementTask.priority || '—'}</p>
+                                {task.replacementTask.hoursRequired != null &&
+                                Number.isFinite(Number(task.replacementTask.hoursRequired)) ? (
+                                  <p>
+                                    <span className="font-medium">Hours Required To Complete:</span>{' '}
+                                    {task.replacementTask.hoursRequired}
+                                  </p>
+                                ) : null}
                                 {task.replacementTask.expectedOutcome ? (
                                   <div>
                                     <p className="font-medium">Expected Outcome:</p>
@@ -368,15 +375,6 @@ export default function DailyPlannerDayTasksModal({
                                 onClick={() => void acceptSuggestion(task)}
                               >
                                 Accept Suggestion
-                              </Button>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                disabled={busyId === task.plannerTaskId}
-                                onClick={() => onAddTask(task.plannerTaskId)}
-                              >
-                                Create Own Revised Task
                               </Button>
                             </div>
                           </div>

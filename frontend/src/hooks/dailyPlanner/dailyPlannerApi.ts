@@ -41,6 +41,20 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     priorityEditedBy: String(r.priorityEditedBy ?? '').trim(),
     priorityEditedByName: String(r.priorityEditedByName ?? '').trim(),
     priorityEditedAt: r.priorityEditedAt ? String(r.priorityEditedAt) : null,
+    hoursRequired:
+      r.hoursRequired === undefined || r.hoursRequired === null || String(r.hoursRequired).trim() === ''
+        ? null
+        : Number(r.hoursRequired),
+    originalHoursRequired:
+      r.originalHoursRequired === undefined ||
+      r.originalHoursRequired === null ||
+      String(r.originalHoursRequired).trim() === ''
+        ? null
+        : Number(r.originalHoursRequired),
+    hoursRequiredEdited: Boolean(r.hoursRequiredEdited),
+    hoursRequiredEditedBy: String(r.hoursRequiredEditedBy ?? '').trim(),
+    hoursRequiredEditedByName: String(r.hoursRequiredEditedByName ?? '').trim(),
+    hoursRequiredEditedAt: r.hoursRequiredEditedAt ? String(r.hoursRequiredEditedAt) : null,
     status: String(r.status ?? 'Pending').trim() as DailyPlannerTask['status'],
     reason: String(r.reason ?? '').trim(),
     taskType: String(r.taskType ?? 'Manual').trim() as DailyPlannerTask['taskType'],
@@ -69,6 +83,12 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
           taskName: String(replacementRaw.taskName ?? '').trim(),
           description: String(replacementRaw.description ?? '').trim(),
           priority: String(replacementRaw.priority || 'Medium').trim() as DailyPlannerTask['priority'],
+          hoursRequired:
+            replacementRaw.hoursRequired === undefined ||
+            replacementRaw.hoursRequired === null ||
+            String(replacementRaw.hoursRequired).trim() === ''
+              ? null
+              : Number(replacementRaw.hoursRequired),
           expectedOutcome: String(replacementRaw.expectedOutcome ?? '').trim(),
         }
       : null,
@@ -300,7 +320,7 @@ export async function fetchTeamDailyPlannerMonth(
 
 export async function approveDailyPlannerTask(
   taskId: string,
-  options?: { comments?: string; priority?: string },
+  options?: { comments?: string; priority?: string; hoursRequired?: number },
 ): Promise<DailyPlannerTask> {
   const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/approve`, {
     method: 'POST',
@@ -308,6 +328,7 @@ export async function approveDailyPlannerTask(
     body: JSON.stringify({
       comments: options?.comments || '',
       ...(options?.priority ? { priority: options.priority } : {}),
+      ...(options?.hoursRequired !== undefined ? { hoursRequired: options.hoursRequired } : {}),
     }),
   })) as { data?: { task?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Approve failed');
@@ -335,6 +356,7 @@ export async function requestNeedsRevisionDailyPlannerTask(
       taskName: string;
       description: string;
       priority: string;
+      hoursRequired: number;
       expectedOutcome?: string;
     };
   },

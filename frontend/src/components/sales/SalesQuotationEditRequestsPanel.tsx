@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
+import { Input } from '../ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import {
   Dialog,
@@ -20,9 +21,10 @@ import {
 } from '../../hooks/sales/useSalesQueries';
 import {
   approveQuotationEditRequest,
+  fetchSalesOpportunityById,
   rejectQuotationEditRequest,
 } from '../../hooks/sales/salesApi';
-import type { QuotationEditRequest } from '../../types/salesForecast';
+import type { QuotationEditRequest, SalesOpportunity } from '../../types/salesForecast';
 
 const FIELD_LABELS: Record<string, string> = {
   unitPrice: 'Unit Price',
@@ -43,6 +45,65 @@ function formatValues(values: Record<string, unknown> | undefined): string {
     .join('; ');
 }
 
+function firstDisplayValue(values: Record<string, unknown> | undefined): unknown {
+  const entries = Object.entries(values || {}).filter(([k]) => k !== 'probabilityPercent');
+  if (entries.length === 0) return '';
+  return entries[0][1];
+}
+
+function QuotationReadField({ label, value }: { label: string; value: unknown }) {
+  const s = value === null || value === undefined ? '' : String(value);
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Input readOnly tabIndex={-1} className="bg-muted text-sm" value={s || '—'} />
+    </div>
+  );
+}
+
+function getQuotationDisplayFields(record: SalesOpportunity): { label: string; value: unknown }[] {
+  return [
+    { label: 'Quotation Ref', value: record.quotationRef },
+    { label: 'Owner', value: record.ownerEmployeeName || record.ownerEmployeeCode },
+    { label: 'Status', value: record.opportunityStatus },
+    { label: 'Probability %', value: record.probabilityLabel || record.probabilityPercent },
+    { label: 'Quotation Date', value: record.quotationDate },
+    { label: 'Decision Expected By', value: record.decisionExpectedBy },
+    { label: 'Customer Organization', value: record.customerOrganization },
+    { label: 'Title', value: record.contactTitle },
+    { label: 'Full name', value: record.contactFullName },
+    { label: 'Address', value: record.contactAddress },
+    { label: 'Phone', value: record.contactNumber },
+    { label: 'Email', value: record.contactEmail },
+    { label: 'Customer Segment', value: record.customerSegment },
+    { label: 'Enquiry Type', value: record.enquiryType },
+    { label: 'Principle', value: record.principal },
+    { label: 'Principle Short Code', value: record.principalShortCode },
+    { label: 'Model Number', value: record.modelNumber },
+    { label: 'Product Description', value: record.productDescription },
+    { label: 'Currency', value: record.currency },
+    { label: 'Unit Price', value: record.unitPrice },
+    { label: 'Quantity', value: record.quantity },
+    {
+      label: 'Total Value',
+      value: record.totalValue != null ? Number(record.totalValue).toFixed(2) : '',
+    },
+    {
+      label: 'INR Value excl. GST',
+      value: record.inrValueExclGst != null ? Number(record.inrValueExclGst).toFixed(2) : '',
+    },
+    { label: 'Delivery (Days)', value: record.deliveryDays },
+    { label: 'Warranty', value: record.warranty },
+    { label: 'Application Details', value: record.applicationDetails },
+    { label: 'Technical Specifications', value: record.technicalSpecifications },
+    { label: 'Competition', value: record.competition },
+    { label: 'Technical Challenges', value: record.technicalChallenges },
+    { label: 'Key Decision Criteria', value: record.keyDecisionCriteria },
+    { label: 'Follow-up Actions Required', value: record.followUpActionsRequired },
+    { label: 'Remarks', value: record.remarks },
+  ];
+}
+
 export default function SalesQuotationEditRequestsPanel() {
   const invalidateForecasts = useInvalidateSalesForecasts();
   const pendingQuery = usePendingEditRequestsQuery(true);
@@ -52,11 +113,22 @@ export default function SalesQuotationEditRequestsPanel() {
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<QuotationEditRequest | null>(null);
   const [rejectRemark, setRejectRemark] = useState('');
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailRequest, setDetailRequest] = useState<QuotationEditRequest | null>(null);
+  const [detailQuotation, setDetailQuotation] = useState<SalesOpportunity | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const closeDetail = () => {
+    setDetailOpen(false);
+    setDetailRequest(null);
+    setDetailQuotation(null);
+  };
 
   const approveMutation = useMutation({
     mutationFn: (requestId: string) => approveQuotationEditRequest(requestId),
     onSuccess: () => {
       toast.success('Edit request approved — quotation updated');
+      closeDetail();
       void invalidateForecasts();
     },
     onError: (e: Error) => {
@@ -72,6 +144,7 @@ export default function SalesQuotationEditRequestsPanel() {
       setRejectOpen(false);
       setRejectTarget(null);
       setRejectRemark('');
+      closeDetail();
       void invalidateForecasts();
     },
     onError: (e: Error) => {
@@ -80,6 +153,27 @@ export default function SalesQuotationEditRequestsPanel() {
   });
 
   const busy = approveMutation.isPending || rejectMutation.isPending;
+
+  const openDetail = async (row: QuotationEditRequest) => {
+    setDetailRequest(row);
+    setDetailQuotation(null);
+    setDetailOpen(true);
+    setDetailLoading(true);
+    try {
+      const quotation = await fetchSalesOpportunityById(row.quotationId);
+      setDetailQuotation(quotation);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not load quotation details');
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const openReject = (row: QuotationEditRequest) => {
+    setRejectTarget(row);
+    setRejectRemark('');
+    setRejectOpen(true);
+  };
 
   return (
     <>
@@ -112,7 +206,11 @@ export default function SalesQuotationEditRequestsPanel() {
               </TableHeader>
               <TableBody>
                 {rows.map((r) => (
-                  <TableRow key={r.requestId}>
+                  <TableRow
+                    key={r.requestId}
+                    className="cursor-pointer"
+                    onDoubleClick={() => void openDetail(r)}
+                  >
                     <TableCell className="px-3 py-2 text-sm">
                       <div>{r.employeeName || '—'}</div>
                       <div className="text-xs text-muted-foreground">{r.employeeCode || ''}</div>
@@ -135,7 +233,11 @@ export default function SalesQuotationEditRequestsPanel() {
                     <TableCell className="max-w-[220px] px-3 py-2 text-xs text-[#212529]">
                       {formatValues(r.requestedValues)}
                     </TableCell>
-                    <TableCell className="px-3 py-2 whitespace-nowrap">
+                    <TableCell
+                      className="px-3 py-2 whitespace-nowrap"
+                      onClick={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                    >
                       <div className="flex gap-2">
                         <Button
                           type="button"
@@ -152,11 +254,7 @@ export default function SalesQuotationEditRequestsPanel() {
                           variant="outline"
                           className="h-8"
                           disabled={busy}
-                          onClick={() => {
-                            setRejectTarget(r);
-                            setRejectRemark('');
-                            setRejectOpen(true);
-                          }}
+                          onClick={() => openReject(r)}
                         >
                           Reject
                         </Button>
@@ -169,6 +267,91 @@ export default function SalesQuotationEditRequestsPanel() {
           </div>
         )}
       </div>
+
+      <Dialog
+        open={detailOpen}
+        onOpenChange={(open) => {
+          if (busy) return;
+          if (!open) closeDetail();
+        }}
+      >
+        <DialogContent
+          className="max-w-3xl sm:max-w-3xl"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            maxHeight: '90vh',
+            overflow: 'hidden',
+          }}
+        >
+          <DialogHeader className="shrink-0" style={{ flexShrink: 0 }}>
+            <DialogTitle>Quotation Edit Request</DialogTitle>
+            <DialogDescription>
+              Review the quotation record and the requested change before approving or rejecting.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div
+            className="space-y-4"
+            style={{
+              flex: '1 1 auto',
+              minHeight: 0,
+              overflowY: 'auto',
+              overflowX: 'hidden',
+            }}
+          >
+            <div className="space-y-3">
+              <div className="text-sm font-semibold text-[#212529]">Quotation Details</div>
+              {detailLoading ? (
+                <p className="text-sm text-muted-foreground">Loading quotation details…</p>
+              ) : detailQuotation ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {getQuotationDisplayFields(detailQuotation).map((field) => (
+                    <QuotationReadField key={field.label} label={field.label} value={field.value} />
+                  ))}
+                  {detailRequest ? (
+                    <>
+                      <QuotationReadField label="Request Type" value={detailRequest.requestType} />
+                      <QuotationReadField
+                        label="Old Value"
+                        value={firstDisplayValue(detailRequest.oldValues)}
+                      />
+                      <QuotationReadField
+                        label="Requested Value"
+                        value={firstDisplayValue(detailRequest.requestedValues)}
+                      />
+                    </>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Quotation could not be loaded.</p>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="shrink-0 gap-2 sm:justify-end" style={{ flexShrink: 0 }}>
+            <Button type="button" variant="outline" disabled={busy} onClick={closeDetail}>
+              Close
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy || !detailRequest}
+              onClick={() => detailRequest && openReject(detailRequest)}
+            >
+              Reject
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#007BFF] hover:bg-[#0056b3]"
+              disabled={busy || !detailRequest}
+              onClick={() => detailRequest && approveMutation.mutate(detailRequest.requestId)}
+            >
+              Approve
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={rejectOpen}

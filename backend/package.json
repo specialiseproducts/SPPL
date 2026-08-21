@@ -9,6 +9,9 @@
     "dev": "node --watch server.js",
     "dynamodb:ensure-gsis": "node scripts/ensure-dynamodb-gsis.js",
     "dynamodb:ensure-daily-planner-tables": "node scripts/ensure-daily-planner-tables.js",
+    "dynamodb:ensure-password-reset-otp-table": "node scripts/ensure-password-reset-otp-table.js",
+    "test:password-reset-phase1": "node scripts/test-password-reset-phase1.js",
+    "test:password-reset-phase4": "node scripts/test-password-reset-phase4-security.js",
     "dynamodb:backfill-sales-gsi": "node scripts/backfill-sales-entity-type.js",
     "dynamodb:repair-planner-next-visit-status": "node scripts/repair-planner-next-visit-status.js"
   },

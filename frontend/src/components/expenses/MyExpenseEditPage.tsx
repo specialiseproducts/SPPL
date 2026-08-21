@@ -17,6 +17,7 @@ import {
 } from '../../utils/myExpenseNavigation';
 import type { ExpenseDocument, ExpenseRecord } from '../../types/expenses';
 import ExpenseEditFormPanel from './ExpenseEditFormPanel';
+import { computeOutstationDuration } from '../../utils/expenseOutstation';
 
 type PreviewPhase = 'idle' | 'loading' | 'ready' | 'no_attachment' | 'preview_failed';
 
@@ -291,6 +292,15 @@ export default function MyExpenseEditPage(props: MyExpenseEditPageProps) {
   };
 
   const pageTitle = mode === 'create' ? 'Review Expense Record' : 'Edit Expense Record';
+  const outstationDuration =
+    detailExpense?.outStation === 'Yes'
+      ? computeOutstationDuration(
+          detailExpense.arrivalDate || '',
+          detailExpense.arrivalTime || '',
+          detailExpense.departureDate || '',
+          detailExpense.departureTime || '',
+        )
+      : null;
 
   return (
     <div
@@ -334,6 +344,17 @@ export default function MyExpenseEditPage(props: MyExpenseEditPageProps) {
       <h1 className="text-lg font-semibold text-[#212529]" style={{ flexShrink: 0 }}>
         {pageTitle}
       </h1>
+      {detailExpense?.outStation === 'Yes' ? (
+        <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-[#212529]">
+          <div className="font-medium">OutStation Travel Duration (Auto-calculated)</div>
+          <div className="mt-1">
+            Total Hours: {outstationDuration?.durationHours ?? detailExpense.durationHours ?? 0}
+          </div>
+          <div>
+            Total Days: {outstationDuration?.durationDays ?? detailExpense.durationDays ?? 0}
+          </div>
+        </div>
+      ) : null}
 
       <div
         style={{

@@ -14,6 +14,41 @@ export function isHotelBookingSelf(expenseHead, subCategory) {
   return expenseHead === 'Hotel_Booking' && sub === 'Self';
 }
 
+export function isTravelOutstationAllowance(data) {
+  const head = String(data?.expenseHead || '').trim();
+  const outStation = String(data?.outStation || '').trim();
+  return head === 'Travel' && outStation === 'Yes';
+}
+
+function parseDateTime(dateValue, timeValue) {
+  const date = String(dateValue ?? '').trim();
+  const time = String(timeValue ?? '').trim();
+  if (!date || !time) return null;
+  const dt = new Date(`${date}T${time}`);
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt;
+}
+
+export function computeOutstationDuration(data) {
+  const start = parseDateTime(data?.arrivalDate, data?.arrivalTime);
+  const end = parseDateTime(data?.departureDate, data?.departureTime);
+  if (!start || !end) return null;
+  const diffMs = end.getTime() - start.getTime();
+  if (diffMs < 0) return null;
+  const durationHours = Math.round((diffMs / (1000 * 60 * 60)) * 100) / 100;
+  const durationDays = Math.round((durationHours / 24) * 100) / 100;
+  return { durationHours, durationDays };
+}
+
+/** ₹ per hour for OutStation / Travel Allowance. */
+export const OUTSTATION_TRAVEL_ALLOWANCE_RATE_PER_HOUR = 20;
+
+export function computeOutstationTravelAllowanceAmount(durationHours) {
+  const hours = Number(durationHours);
+  if (!Number.isFinite(hours) || hours < 0) return null;
+  return Math.round(hours * OUTSTATION_TRAVEL_ALLOWANCE_RATE_PER_HOUR * 100) / 100;
+}
+
 export function assertTravelCarBikeFields(data) {
   const from = String(data.fromLocation ?? '').trim();
   const to = String(data.toLocation ?? '').trim();
@@ -60,6 +95,14 @@ export function validateExpenseBusinessRules(merged) {
   const head = merged?.expenseHead;
   const sub = merged?.subCategory != null ? String(merged.subCategory).trim() : '';
   const amountNum = Number(merged?.amount);
+
+  if (isTravelOutstationAllowance(merged)) {
+    const duration = computeOutstationDuration(merged);
+    if (!duration) {
+      throw new Error('Departure datetime cannot be earlier than arrival datetime');
+    }
+    return;
+  }
 
   if (isTravelCarOrBike(head, sub)) {
     assertTravelCarBikeFields(merged);

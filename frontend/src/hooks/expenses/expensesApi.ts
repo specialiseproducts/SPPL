@@ -1,7 +1,7 @@
 import { fetchPaginatedList } from '../../utils/paginatedFetch';
 import type { PaginatedResponse } from '../paginationTypes';
 import type { EmployeeListDto } from '../../types/employeeListDto';
-import type { ExpenseDocument, ExpenseRecord } from '../../types/expenses';
+import type { ExpenseDocument, ExpenseEditRequest, ExpenseRecord } from '../../types/expenses';
 import type { UserMaster } from '../../types/userMaster';
 import { mapApiEmployee } from '../../utils/mapApiEmployee';
 import { normalizeExpenseRow } from '../../utils/expenseRowNormalize';
@@ -49,6 +49,30 @@ export function buildExpenseFormData(expense: ExpenseRecord): FormData {
   }
   if (expense.fuelType) {
     formData.append('fuelType', expense.fuelType);
+  }
+  if (expense.outStation) {
+    formData.append('outStation', expense.outStation);
+  }
+  if (expense.arrivalDate) {
+    formData.append('arrivalDate', expense.arrivalDate);
+  }
+  if (expense.arrivalTime) {
+    formData.append('arrivalTime', expense.arrivalTime);
+  }
+  if (expense.departureDate) {
+    formData.append('departureDate', expense.departureDate);
+  }
+  if (expense.departureTime) {
+    formData.append('departureTime', expense.departureTime);
+  }
+  if (expense.durationHours !== undefined && expense.durationHours !== null) {
+    formData.append('durationHours', String(expense.durationHours));
+  }
+  if (expense.durationDays !== undefined && expense.durationDays !== null) {
+    formData.append('durationDays', String(expense.durationDays));
+  }
+  if (expense.travelAllowanceAmount !== undefined && expense.travelAllowanceAmount !== null) {
+    formData.append('travelAllowanceAmount', String(expense.travelAllowanceAmount));
   }
   if (expense.selectedFile) {
     formData.append('file', expense.selectedFile);
@@ -281,4 +305,60 @@ export async function fetchExpenseTravelRates(): Promise<ExpenseTravelRateSettin
     throw new Error('Invalid travel rates response from server');
   }
   return parsed;
+}
+
+export async function fetchPendingExpenseEditRequests(): Promise<ExpenseEditRequest[]> {
+  const res = (await apiFetch('/api/expenses/edit-requests/pending')) as {
+    success?: boolean;
+    data?: ExpenseEditRequest[];
+  };
+  return Array.isArray(res?.data) ? res.data : [];
+}
+
+export async function fetchExpenseEditRequests(expenseId: string): Promise<ExpenseEditRequest[]> {
+  const res = (await apiFetch(`/api/expenses/${encodeURIComponent(expenseId)}/edit-requests`)) as {
+    success?: boolean;
+    data?: ExpenseEditRequest[];
+  };
+  return Array.isArray(res?.data) ? res.data : [];
+}
+
+export async function createExpenseEditRequest(
+  expenseId: string,
+  body: { requestType: string; requestedValue: string },
+): Promise<ExpenseEditRequest> {
+  const res = (await apiFetch(`/api/expenses/${encodeURIComponent(expenseId)}/edit-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })) as { success?: boolean; data?: ExpenseEditRequest; message?: string };
+  if (!res?.success || !res.data) {
+    throw new Error(res?.message || 'Failed to submit edit request');
+  }
+  return res.data;
+}
+
+export async function approveExpenseEditRequest(requestId: string): Promise<ExpenseEditRequest> {
+  const res = (await apiFetch(`/api/expenses/edit-requests/${encodeURIComponent(requestId)}/approve`, {
+    method: 'POST',
+  })) as { success?: boolean; data?: ExpenseEditRequest; message?: string };
+  if (!res?.success || !res.data) {
+    throw new Error(res?.message || 'Failed to approve expense edit request');
+  }
+  return res.data;
+}
+
+export async function rejectExpenseEditRequest(
+  requestId: string,
+  adminRemark: string,
+): Promise<ExpenseEditRequest> {
+  const res = (await apiFetch(`/api/expenses/edit-requests/${encodeURIComponent(requestId)}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adminRemark }),
+  })) as { success?: boolean; data?: ExpenseEditRequest; message?: string };
+  if (!res?.success || !res.data) {
+    throw new Error(res?.message || 'Failed to reject expense edit request');
+  }
+  return res.data;
 }

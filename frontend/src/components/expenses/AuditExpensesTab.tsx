@@ -35,6 +35,7 @@ import {
 } from '../../hooks/expenses/useExpensesQueries';
 import { expensesQueryKeys } from '../../hooks/expenses/expensesQueryKeys';
 import { isQueryColdLoading } from '../../utils/queryLoading';
+import ExpenseEditRequestsPanel from './ExpenseEditRequestsPanel';
 
 const MONTH_FILTER_OPTIONS = [
   { value: '01', label: 'January' },
@@ -236,6 +237,7 @@ export default function AuditExpensesTab() {
 
   return (
     <Card className="p-6">
+      <ExpenseEditRequestsPanel />
       <div className="mb-6">
         <h2 className="text-[#212529] text-lg font-semibold">Audit Expenses</h2>
         <p className="text-sm text-gray-600 mt-1">

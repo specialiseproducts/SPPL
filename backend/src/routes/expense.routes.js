@@ -57,12 +57,17 @@ router.put(
 router.get('/', ExpenseController.getExpenses);
 router.get('/audit/employees', ExpenseController.getAuditEmployeeDirectory);
 router.get('/audit', ExpenseController.getExpensesForAudit);
+router.get('/edit-requests/pending', ExpenseController.listPendingExpenseEditRequests);
+router.post('/edit-requests/:requestId/approve', ExpenseController.approveExpenseEditRequest);
+router.post('/edit-requests/:requestId/reject', ExpenseController.rejectExpenseEditRequest);
 router.get('/export/pending-previous', ExpenseController.getPendingPreviousExportExpenses);
 router.post('/export/mark-status', ExpenseController.markExpenseExportStatuses);
 router.post('/:id/approve', ExpenseController.approveExpense);
 router.post('/:id/reject', ExpenseController.rejectExpense);
 router.get('/:id/full', ExpenseController.getExpenseFullDetails);
 router.get('/:id/documents', ExpenseController.getExpenseDocuments);
+router.get('/:id/edit-requests', ExpenseController.listExpenseEditRequests);
+router.post('/:id/edit-requests', ExpenseController.createExpenseEditRequest);
 router.get('/:id', ExpenseController.getExpenseById);
 router.post('/', uploadExpenseFile, ExpenseController.createExpense);
 router.put('/:id', uploadExpenseFile, ExpenseController.updateExpense);

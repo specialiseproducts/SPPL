@@ -19,14 +19,19 @@ import {
   computeTaskPlanningContribution,
   computeTaskCompletionContribution,
   isTaskEligibleForPlanningScore,
-  countPlannedTasksForDate,
   countPendingEveningReviewTasks,
-  MIN_PLANNED_TASKS_PER_WORKING_DAY,
+  sumPlannedHoursForDate,
+  MIN_PLANNED_HOURS_PER_WORKING_DAY,
+  buildMinimumHoursWarningMessage,
+  buildMinimumHoursManagerWarningMessage,
 } from '../utils/planningRecognition.js';
 import { parseDateKey, todayIstDateKey } from '../utils/salesQuotationDates.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import * as PlannerNotificationEmitters from './notificationEmitters.js';
+import { notifyUser } from '../utils/notifications.js';
+import * as NotificationService from './notification.service.js';
+import { NOTIFICATION_MODULES } from '../constants/notifications.js';
 
 function monthBounds(year, month) {
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -340,13 +345,24 @@ export async function runMonthlyPlanningFinalizationJob(reference = new Date()) 
 }
 
 /**
- * After morning planning slot closes — notify employees below the 10-task minimum.
+ * After morning planning slot closes — notify employees below the 7-hour minimum.
  */
 export async function runMorningMinimumTasksValidationJob(reference = new Date()) {
   const today = todayIstDateKey(reference);
   const employees = await listAllPlannerEmployees();
   let notified = 0;
   const errors = [];
+
+  const allMappings = await DailyPlannerTeamMappingsModel.listAllMappings();
+  const dayLabel = (() => {
+    const [y, m, d] = today.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+  })();
 
   for (const employee of employees) {
     try {
@@ -358,16 +374,79 @@ export async function runMorningMinimumTasksValidationJob(reference = new Date()
         today,
         today,
       );
-      const plannedCount = countPlannedTasksForDate(tasks, today);
-      if (plannedCount >= MIN_PLANNED_TASKS_PER_WORKING_DAY) continue;
+      const plannedHours = sumPlannedHoursForDate(tasks, today);
+      if (plannedHours >= MIN_PLANNED_HOURS_PER_WORKING_DAY) continue;
 
-      await PlannerNotificationEmitters.emitPlanningReminder(employee.employeeCode, {
-        plannerDate: today,
-        date: today,
-        reminderType: 'morning_minimum_tasks',
-        plannedCount,
-        minRequired: MIN_PLANNED_TASKS_PER_WORKING_DAY,
-      });
+      const remaining =
+        Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - plannedHours) * 100) / 100;
+      const employeeName = String(employee.employeeName || employee.employeeCode || '').trim();
+
+      await notifyUser(
+        employee.employeeCode,
+        'Minimum daily hours required',
+        buildMinimumHoursWarningMessage(plannedHours, dayLabel),
+        'WARNING',
+        {
+          date: today,
+          plannedHours,
+          remainingHours: remaining,
+          minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+          reminderType: 'morning_minimum_hours',
+        },
+      );
+
+      const managerMessage = buildMinimumHoursManagerWarningMessage(
+        employeeName,
+        plannedHours,
+        dayLabel,
+      );
+      const managers = allMappings.filter(
+        (m) =>
+          m.status === 'Active' &&
+          String(m.employeeCode || '').trim() === employee.employeeCode &&
+          String(m.managerCode || '').trim() &&
+          String(m.managerCode || '').trim() !== employee.employeeCode,
+      );
+      for (const manager of managers) {
+        void notifyUser(
+          manager.managerCode,
+          'Team member below daily hours minimum',
+          managerMessage,
+          'WARNING',
+          {
+            date: today,
+            employeeCode: employee.employeeCode,
+            employeeName,
+            plannedHours,
+            remainingHours: remaining,
+            minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+            reminderType: 'morning_minimum_hours_manager',
+          },
+        );
+      }
+
+      void NotificationService.notifyModuleAdmins(
+        NOTIFICATION_MODULES.DAILY_PLANNER,
+        {
+          title: 'Team member below daily hours minimum',
+          message: managerMessage,
+          createdBy: 'system',
+          actionType: 'View',
+          actionId: 'team-daily-planner',
+          actionUrl: '/daily-planner',
+          metadata: {
+            date: today,
+            employeeCode: employee.employeeCode,
+            employeeName,
+            plannedHours,
+            remainingHours: remaining,
+            minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+            reminderType: 'morning_minimum_hours_admin',
+          },
+        },
+        { excludeEmployeeCode: employee.employeeCode },
+      );
+
       notified += 1;
     } catch (err) {
       errors.push({

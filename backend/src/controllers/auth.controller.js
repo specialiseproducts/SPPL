@@ -5,6 +5,7 @@
  */
 
 import * as AuthService from '../services/auth.service.js';
+import * as PasswordResetService from '../services/passwordReset.service.js';
 import log from '../utils/logger.js';
 
 /**
@@ -60,14 +61,15 @@ export const me = async (req, res, next) => {
 
 export const changePassword = async (req, res, next) => {
   try {
-    const { currentPassword, newPassword, confirmPassword } = req.body || {};
-    if (!newPassword || newPassword !== confirmPassword) {
-      return res.status(400).json({ success: false, message: 'Password confirmation mismatch' });
+    const { newPassword, confirmPassword } = req.body || {};
+    const employeeCode = String(req.user?.employeeCode || '').trim();
+    if (!employeeCode) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
     const result = await AuthService.changePassword({
-      employeeCode: req.user?.employeeCode,
-      currentPassword,
+      employeeCode,
       newPassword,
+      confirmPassword,
     });
     res.status(200).json({ success: true, data: result });
   } catch (error) {
@@ -84,6 +86,51 @@ export const resetPassword = async (req, res, next) => {
     });
     res.status(200).json({ success: true, data: result });
   } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Request / resend forgot-password OTP
+ * POST /api/auth/forgot-password/request-otp
+ * Public — no auth token required.
+ */
+export const requestPasswordResetOtp = async (req, res, next) => {
+  try {
+    const result = await PasswordResetService.requestPasswordResetOtp(req.body || {});
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    log.error('requestPasswordResetOtp controller error:', error?.message || error);
+    next(error);
+  }
+};
+
+/**
+ * Verify forgot-password OTP and receive short-lived resetToken
+ * POST /api/auth/forgot-password/verify-otp
+ * Public — no auth token required.
+ */
+export const verifyPasswordResetOtp = async (req, res, next) => {
+  try {
+    const result = await PasswordResetService.verifyPasswordResetOtp(req.body || {});
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    log.error('verifyPasswordResetOtp controller error:', error?.message || error);
+    next(error);
+  }
+};
+
+/**
+ * Set a new password after successful OTP verification
+ * POST /api/auth/forgot-password/reset-password
+ * Public — requires resetToken from verify-otp (not the admin reset-password route).
+ */
+export const forgotPasswordResetPassword = async (req, res, next) => {
+  try {
+    const result = await PasswordResetService.resetPasswordWithVerifiedToken(req.body || {});
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    log.error('forgotPasswordResetPassword controller error:', error?.message || error);
     next(error);
   }
 };

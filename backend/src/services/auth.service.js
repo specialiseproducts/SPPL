@@ -9,7 +9,9 @@ import * as UserAccessControlModel from '../models/UserAccessControl.js';
 import { generateToken, verifyToken as verifyJwtToken } from '../utils/jwt.js';
 import {
   comparePassword,
+  hashPassword,
 } from '../utils/password.js';
+import { validateNewPasswordPolicy } from '../utils/passwordReset.js';
 import { isDeveloper, isAdmin } from '../utils/accessControl.js';
 import { logActivity } from '../utils/activityLogger.js';
 import { generateEmployeePassword } from '../utils/userPassword.util.js';
@@ -192,26 +194,36 @@ export const verifyToken = async (token) => {
   }
 };
 
-export const changePassword = async ({ employeeCode, currentPassword, newPassword }) => {
-  // TODO: TEMP DEV MODE — restore bcrypt hashing before production.
-  const employee = await EmployeeModel.getEmployeeByCode(String(employeeCode || '').trim());
+export const changePassword = async ({ employeeCode, newPassword, confirmPassword }) => {
+  // Identity comes from JWT (controller); never trust a client-supplied employee target.
+  const code = String(employeeCode || '').trim();
+  const employee = await EmployeeModel.getEmployeeByCode(code);
   if (!employee) {
     const err = new Error('User not found');
     err.statusCode = 404;
     throw err;
   }
-  if (!currentPassword || !newPassword || String(newPassword).length < 8) {
-    const err = new Error('Invalid password payload');
+
+  const policy = validateNewPasswordPolicy(newPassword, confirmPassword);
+  if (!policy.ok) {
+    const err = new Error(policy.message);
     err.statusCode = 400;
+    err.code = 'PASSWORD_POLICY';
     throw err;
   }
-  const valid = await comparePassword(currentPassword, employee.password || '');
-  if (!valid) {
-    const err = new Error('Current password is incorrect');
-    err.statusCode = 401;
-    throw err;
+
+  // Same persistence strategy as login / forgot-password reset.
+  const storedPassword = await hashPassword(String(newPassword));
+  const patch = { password: storedPassword };
+  // Keep Profile "readable password" fields in sync when present (dev/self display).
+  if (String(employee.temporaryPassword || '').trim()) {
+    patch.temporaryPassword = storedPassword;
   }
-  await EmployeeModel.updateEmployee(employee.employeeId, { password: newPassword });
+  if (String(employee.plainPassword || '').trim()) {
+    patch.plainPassword = storedPassword;
+  }
+
+  await EmployeeModel.updateEmployee(employee.employeeId, patch);
   await logActivity({
     actorEmployeeCode: employee.employeeCode,
     actorName: `${employee.firstName || ''} ${employee.lastName || ''}`.trim(),

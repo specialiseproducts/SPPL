@@ -45,6 +45,11 @@ export type ExpenseExportContext = {
   yearLabel: string;
 };
 
+export type ExpenseTravelAllowanceSummary = {
+  recordCount: number;
+  totalAmount: number;
+};
+
 function displayCell(value: string | number | undefined | null): string {
   if (value === undefined || value === null) return '';
   const s = String(value).trim();
@@ -69,6 +74,15 @@ function supportingDocumentLabel(expense: ExpenseRecord): string {
   }
   if (expense.documents && expense.documents.length > 0) return 'Yes';
   return 'No';
+}
+
+/** Existing OutStation Travel records are Travel Allowance items, not normal expense rows. */
+function isTravelAllowanceRecord(expense: ExpenseRecord): boolean {
+  return String(expense.expenseHead || '').trim() === 'Travel' && expense.outStation === 'Yes';
+}
+
+function longestSegment(text: string, splitter: RegExp): number {
+  return text.split(splitter).reduce((max, part) => Math.max(max, part.trim().length), 0);
 }
 
 export function buildExpenseExportContext(
@@ -206,6 +220,7 @@ function applySignatureDivider(
 export async function exportExpensesToExcel(
   rows: ExpenseRecord[],
   context: ExpenseExportContext,
+  travelAllowanceSummary?: ExpenseTravelAllowanceSummary,
 ): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'SPPL Expenses';
@@ -219,25 +234,7 @@ export async function exportExpensesToExcel(
     },
   });
 
-  sheet.columns = [
-    { width: 6 },
-    { width: 14 },
-    { width: 16 },
-    { width: 14 },
-    { width: 18 },
-    { width: 12 },
-    { width: 12 },
-    { width: 10 },
-    { width: 12 },
-    { width: 14 },
-    { width: 14 },
-    { width: 16 },
-    { width: 12 },
-    { width: 12 },
-    { width: 12 },
-    { width: 16 },
-    { width: 12 },
-  ];
+  sheet.columns = EXPORT_COLUMNS.map(() => ({ width: 10 }));
 
   const lastColLetter = String.fromCharCode(64 + COL_COUNT);
   const reportLeftCol = 1;
@@ -285,12 +282,14 @@ export async function exportExpensesToExcel(
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     applyThinBorder(cell);
   });
-  headerRow.height = 28;
+  headerRow.height = 32;
+
+  const tableRows = rows.filter((expense) => !isTravelAllowanceRecord(expense));
 
   let dataRowIndex = headerRowIndex + 1;
   let totalAmount = 0;
 
-  rows.forEach((expense, index) => {
+  tableRows.forEach((expense, index) => {
     const amount = Number.isFinite(Number(expense.amount)) ? Number(expense.amount) : 0;
     totalAmount += amount;
 
@@ -329,19 +328,46 @@ export async function exportExpensesToExcel(
       }
       applyThinBorder(cell);
     });
-    row.height = 20;
+    row.height = undefined;
     dataRowIndex += 1;
   });
 
-  const totalRowIndex = dataRowIndex;
+  const dataEndRowIndex = dataRowIndex;
+  let nextRowIndex = dataRowIndex;
+
+  if ((travelAllowanceSummary?.recordCount ?? 0) > 0) {
+    const summaryRow = nextRowIndex;
+    sheet.mergeCells(`A${summaryRow}:P${summaryRow}`);
+    const allowanceTitleCell = sheet.getCell(`A${summaryRow}`);
+    allowanceTitleCell.value = `Travel Allowances for ${context.monthLabel} ${context.yearLabel}`;
+    allowanceTitleCell.font = { bold: true, size: 11 };
+    allowanceTitleCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+
+    const allowanceAmountCell = sheet.getCell(`Q${summaryRow}`);
+    allowanceAmountCell.value = Number(travelAllowanceSummary?.totalAmount || 0);
+    allowanceAmountCell.numFmt = '₹ #,##0.00';
+    allowanceAmountCell.font = { bold: true, size: 11 };
+    allowanceAmountCell.alignment = { horizontal: 'right', vertical: 'middle' };
+    for (let col = reportLeftCol; col <= reportRightCol; col += 1) {
+      applyThinBorder(sheet.getCell(summaryRow, col));
+    }
+    sheet.getRow(summaryRow).height = 22;
+    nextRowIndex = summaryRow + 1;
+  }
+
+  const totalRowIndex = nextRowIndex;
   sheet.mergeCells(`A${totalRowIndex}:P${totalRowIndex}`);
   const totalLabelCell = sheet.getCell(`A${totalRowIndex}`);
   totalLabelCell.value = 'Total :';
   totalLabelCell.font = { bold: true, size: 11 };
   totalLabelCell.alignment = { horizontal: 'right', vertical: 'middle' };
 
+  const travelAllowanceTotal = Number(travelAllowanceSummary?.totalAmount || 0);
+  const finalTotal =
+    totalAmount + (Number.isFinite(travelAllowanceTotal) ? travelAllowanceTotal : 0);
+
   const totalValueCell = sheet.getCell(`Q${totalRowIndex}`);
-  totalValueCell.value = totalAmount;
+  totalValueCell.value = finalTotal;
   totalValueCell.numFmt = '₹ #,##0.00';
   totalValueCell.font = { bold: true, size: 11 };
   totalValueCell.alignment = { horizontal: 'right', vertical: 'middle' };
@@ -351,6 +377,7 @@ export async function exportExpensesToExcel(
   sheet.getRow(totalRowIndex).height = 22;
 
   const signatureRowIndex = totalRowIndex + 1;
+
   const signatureEndRow = signatureRowIndex + 2;
   const signatureDividerCol = 8;
 
@@ -402,6 +429,46 @@ export async function exportExpensesToExcel(
     reportLeftCol,
     reportRightCol,
   );
+
+  const MIN_COL_WIDTH = 5;
+  const MAX_COL_WIDTH = 12;
+  for (let colIndex = 1; colIndex <= COL_COUNT; colIndex += 1) {
+    const headerText = String(EXPORT_COLUMNS[colIndex - 1] || '');
+    let contentWidth = longestSegment(headerText, /\s+/);
+    for (let rowIndex = headerRowIndex + 1; rowIndex < dataEndRowIndex; rowIndex += 1) {
+      const cell = sheet.getCell(rowIndex, colIndex);
+      const value = cell.value == null ? '' : String(cell.value);
+      const wordWidth = longestSegment(value, /\s+/);
+      if (wordWidth > contentWidth) contentWidth = wordWidth;
+    }
+    const minWidth = colIndex === COL_COUNT ? 11 : MIN_COL_WIDTH;
+    const width = Math.max(minWidth, Math.min(MAX_COL_WIDTH, contentWidth + 1));
+    sheet.getColumn(colIndex).width = width;
+  }
+
+  for (let rowIndex = headerRowIndex; rowIndex < signatureRowIndex; rowIndex += 1) {
+    const row = sheet.getRow(rowIndex);
+    if (rowIndex >= dataEndRowIndex) {
+      row.height = 22;
+      continue;
+    }
+    let maxLines = rowIndex === headerRowIndex ? 2 : 1;
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cell.alignment = {
+        ...(cell.alignment || {}),
+        wrapText: true,
+        vertical: 'middle',
+      };
+      const text = cell.value == null ? '' : String(cell.value);
+      if (!text) return;
+      const colWidth = Math.max(4, Number(sheet.getColumn(colNumber).width ?? 10) - 1);
+      const wrappedLines = text
+        .split('\n')
+        .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / colWidth)), 0);
+      if (wrappedLines > maxLines) maxLines = wrappedLines;
+    });
+    row.height = Math.max(18, Math.min(72, maxLines * 15));
+  }
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

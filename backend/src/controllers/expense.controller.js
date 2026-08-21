@@ -5,6 +5,7 @@
  */
 
 import * as ExpenseService from '../services/expense.service.js';
+import * as ExpenseEditRequestService from '../services/expenseEditRequest.service.js';
 import { DEFAULT_QUERY_LIMIT } from '../utils/dynamoPagination.js';
 import log from '../utils/logger.js';
 
@@ -119,6 +120,79 @@ export const getExpensesForAudit = async (req, res, next) => {
     });
   } catch (error) {
     log.error('Get audit expenses controller error:', error);
+    next(error);
+  }
+};
+
+export const listPendingExpenseEditRequests = async (req, res, next) => {
+  try {
+    const data = await ExpenseEditRequestService.listPendingExpenseEditRequests(
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List pending expense edit requests controller error:', error);
+    next(error);
+  }
+};
+
+export const listExpenseEditRequests = async (req, res, next) => {
+  try {
+    const id = decodeExpenseRouteId(req.params.id);
+    const data = await ExpenseEditRequestService.listExpenseEditRequests(
+      id,
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List expense edit requests controller error:', error);
+    next(error);
+  }
+};
+
+export const createExpenseEditRequest = async (req, res, next) => {
+  try {
+    const id = decodeExpenseRouteId(req.params.id);
+    const data = await ExpenseEditRequestService.createExpenseEditRequest(
+      id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Create expense edit request controller error:', error);
+    next(error);
+  }
+};
+
+export const approveExpenseEditRequest = async (req, res, next) => {
+  try {
+    const data = await ExpenseEditRequestService.approveExpenseEditRequest(
+      req.params.requestId,
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Approve expense edit request controller error:', error);
+    next(error);
+  }
+};
+
+export const rejectExpenseEditRequest = async (req, res, next) => {
+  try {
+    const data = await ExpenseEditRequestService.rejectExpenseEditRequest(
+      req.params.requestId,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Reject expense edit request controller error:', error);
     next(error);
   }
 };
