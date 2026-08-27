@@ -134,7 +134,7 @@ function ViewField({ label, value }: { label: string; value: ReactNode }) {
 
 function ViewSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+    <section className="min-w-0 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <h3 className="mb-3 border-b border-gray-100 pb-2 text-sm font-semibold text-[#212529]">
         {title}
       </h3>
@@ -458,7 +458,7 @@ export default function PlannerCreateEventsModal({
             </Button>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <ViewSection title="Event Details">
               <div className="space-y-4">
                 {blocks.map((block, index) => (
@@ -513,7 +513,7 @@ export default function PlannerCreateEventsModal({
                       No sales history records were found for this customer organization.
                     </p>
                   ) : (
-                    <div className="max-h-[280px] overflow-auto rounded-md border [&_[data-slot=table-container]]:overflow-visible">
+                    <div className="min-w-0 w-full max-h-[280px] overflow-x-auto overflow-y-auto rounded-md border [&_[data-slot=table-container]]:overflow-visible">
                       <Table
                         style={{
                           tableLayout: 'fixed',

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { Card, CardContent, CardFooter, CardHeader } from './ui/card';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -66,6 +67,7 @@ export default function ForgotPasswordFlow({ onBackToLogin }: ForgotPasswordFlow
   const [resetToken, setResetToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const otpRefs = useRef<Array<HTMLInputElement | null>>([]);
@@ -90,6 +92,7 @@ export default function ForgotPasswordFlow({ onBackToLogin }: ForgotPasswordFlow
     setResetToken('');
     setNewPassword('');
     setConfirmPassword('');
+    setShowNewPassword(false);
     setSubmitting(false);
     setStep('employee');
   }, []);
@@ -394,16 +397,28 @@ export default function ForgotPasswordFlow({ onBackToLogin }: ForgotPasswordFlow
         <form onSubmit={handleResetPassword} className="space-y-5">
           <div className="space-y-2">
             <Label htmlFor="new-password">New Password</Label>
-            <Input
-              id="new-password"
-              type="password"
-              placeholder="Enter new password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              autoComplete="new-password"
-              required
-              disabled={submitting}
-            />
+            <div className="relative w-full">
+              <Input
+                id="new-password"
+                type={showNewPassword ? 'text' : 'password'}
+                placeholder="Enter new password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="pr-8"
+                autoComplete="new-password"
+                required
+                disabled={submitting}
+              />
+              <button
+                type="button"
+                className="absolute top-1/2 right-0 z-10 flex h-9 translate-y-[-50%] items-center justify-center px-3 text-gray-500 hover:text-gray-700 cursor-pointer"
+                onClick={() => setShowNewPassword((prev) => !prev)}
+                aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                title={showNewPassword ? 'Hide password' : 'Show password'}
+              >
+                {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="confirm-password">Confirm Password</Label>
