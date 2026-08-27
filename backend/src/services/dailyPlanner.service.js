@@ -78,6 +78,16 @@ function assertTaskNotPermanentlyClosed(task) {
   }
 }
 
+function assertTaskNotAlreadyRescheduled(task) {
+  if (String(task?.status || '').trim() === 'Rescheduled') {
+    const err = new Error(
+      'This task has been rescheduled and cannot be marked complete or incomplete',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
 function revisionOutcomeOf(task) {
   return String(task?.revisionOutcome || '').trim();
 }
@@ -663,6 +673,7 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     throw err;
   }
   assertTaskNotPermanentlyClosed(existing);
+  assertTaskNotAlreadyRescheduled(existing);
   const planningScore = Number(existing.planningScore) || 0;
   // Keep existing scoring: employee completion still awards Completed contribution.
   const completionScore = computeTaskCompletionContribution('Completed');
@@ -706,6 +717,7 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
     throw err;
   }
   assertTaskNotPermanentlyClosed(existing);
+  assertTaskNotAlreadyRescheduled(existing);
 
   const now = new Date();
   const code = employeeCodeOf(authUser);

@@ -16,7 +16,7 @@ import { toast } from 'sonner';
 import type { DailyPlannerNotCompletedAction, DailyPlannerTask } from '../../types/dailyPlanner';
 import type { PlanningConfig } from '../../utils/planningRecognition';
 import { canUpdateTasksOnDate, TASK_UPDATES_READONLY_MESSAGE } from '../../utils/planningRecognition';
-import { getDailyTaskChipStyle, getDailyTaskStatusLabel, getDailyTaskVisualKey, isPermanentlyClosedTask, visibleEmployeePlannerTasks } from './dailyPlannerUtils';
+import { getDailyTaskChipStyle, getDailyTaskStatusLabel, getDailyTaskVisualKey, isPermanentlyClosedTask, isRescheduledTask, visibleEmployeePlannerTasks } from './dailyPlannerUtils';
 import {
   canCompleteTasksOnDate,
   canPlanTasksOnDate,
@@ -92,6 +92,11 @@ export default function DailyPlannerDayTasksModal({
       return;
     }
     const task = tasks.find((t) => t.plannerTaskId === completeTaskId);
+    if (task && isRescheduledTask(task)) {
+      toast.error('This task has been rescheduled and cannot be marked complete or incomplete.');
+      setCompleteTaskId(null);
+      return;
+    }
     const editor = workDoneEditorRef.current;
     if (!editor?.hasContent()) {
       toast.error('Work done is required');
@@ -138,6 +143,11 @@ export default function DailyPlannerDayTasksModal({
       return;
     }
     const task = tasks.find((t) => t.plannerTaskId === reasonTaskId);
+    if (task && isRescheduledTask(task)) {
+      toast.error('This task has been rescheduled and cannot be marked complete or incomplete.');
+      resetNotCompletedDialog();
+      return;
+    }
     const editor = reasonEditorRef.current;
     if (!editor?.hasContent()) {
       toast.error('Reason is required');
@@ -236,9 +246,11 @@ export default function DailyPlannerDayTasksModal({
               ) : (
                 visibleTasks.map((task) => {
                   const isClosed = isPermanentlyClosedTask(task);
+                  const showCompletionCheckbox = !isRescheduledTask(task);
                   return (
                   <div key={task.plannerTaskId} className="rounded-lg border border-gray-200 p-3">
                     <div className="flex items-start gap-3">
+                      {showCompletionCheckbox ? (
                       <Checkbox
                         checked={
                           task.status === 'Awaiting Verification' ||
@@ -270,6 +282,7 @@ export default function DailyPlannerDayTasksModal({
                           }
                         }}
                       />
+                      ) : null}
                       <div className="min-w-0 flex-1">
                         <div
                           style={getDailyTaskChipStyle(getDailyTaskVisualKey(task))}

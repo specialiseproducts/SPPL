@@ -125,6 +125,11 @@ export function isPermanentlyClosedTask(task: DailyPlannerTask): boolean {
   return task.status === 'Terminated';
 }
 
+/** Original task after Incomplete → Reschedule — not eligible for complete/incomplete actions. */
+export function isRescheduledTask(task: DailyPlannerTask): boolean {
+  return task.status === 'Rescheduled';
+}
+
 /** Original Needs Revision task after Accept Suggestion or Create Own Revised Task. */
 export function isHandledRevisionParent(task: DailyPlannerTask): boolean {
   return Boolean(String(task.revisionOutcome || '').trim());
