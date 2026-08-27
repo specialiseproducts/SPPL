@@ -45,7 +45,6 @@ export const DAILY_STATUS_LEGEND = [
   { status: 'Marked Not Completed', color: DAILY_TASK_COLORS['Not Completed'].bg },
   { status: 'Needs Revision', color: '#6B7280' },
   { status: 'Rescheduled Task', color: '#06B6D4' },
-  { status: 'Terminated / Closed Task', color: '#111827' },
 ] as const;
 
 export type DailyCalendarDayCell = {
