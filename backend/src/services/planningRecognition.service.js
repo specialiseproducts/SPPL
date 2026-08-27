@@ -5,6 +5,12 @@
 import * as DailyPlannerPlanningModel from '../models/DailyPlannerPlanning.js';
 import * as DailyPlannerTasksModel from '../models/DailyPlannerTasks.js';
 import {
+  assertRegularPlanningAllowedOnDate,
+  isCompanyHolidayDateKey,
+  isCompanyWorkingDayDateKey,
+  COMPANY_HOLIDAY_TASK_CREATE_MESSAGE,
+} from '../utils/companyWorkingDays.js';
+import {
   computeWorkingDayPlanningScore,
   countWorkingDaysInMonth,
   derivePlanningDayFlags,
@@ -16,6 +22,7 @@ import {
   PLANNING_CATEGORY_URGENT,
   resolvePlanningWindowForRegularTask,
   assertRegularTaskAllowed,
+  assertUrgentTaskAllowed,
   getPlanningTargetDateMode,
   calculatePlanningScore,
   calculatePlannerBadge,
@@ -28,10 +35,6 @@ import {
   computeTaskPlanningContribution,
   computeTaskCompletionContribution,
 } from '../utils/planningRecognition.js';
-import {
-  assertRegularPlanningAllowedOnDate,
-  isCompanyWorkingDayDateKey,
-} from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import * as AuditTrailService from './auditTrail.service.js';
@@ -254,6 +257,12 @@ export function validateTaskPlanningPayload(body, reference = new Date(), locati
   const taskDate = String(body.date || '').trim().slice(0, 10);
   const urgentReason = String(body.urgentReason || '').trim();
 
+  if (isCompanyHolidayDateKey(taskDate, location)) {
+    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+
   if (getPlanningTargetDateMode(taskDate, reference) === 'past') {
     const err = new Error('Cannot create tasks for past dates');
     err.statusCode = 400;
@@ -266,6 +275,7 @@ export function validateTaskPlanningPayload(body, reference = new Date(), locati
       err.statusCode = 400;
       throw err;
     }
+    assertUrgentTaskAllowed(taskDate, reference, location);
     return {
       planningCategory: PLANNING_CATEGORY_URGENT,
       urgentReason,

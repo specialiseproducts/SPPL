@@ -17,6 +17,10 @@ import { addCalendarDays, dateKeyFromDate, parseDateKey } from './salesQuotation
 export const COMPANY_HOLIDAY_MESSAGE =
   'This date is a company holiday. Regular planning is not available.';
 
+/** Daily Planner task creation — holiday blocks all task types. */
+export const COMPANY_HOLIDAY_TASK_CREATE_MESSAGE =
+  'You cannot create a task on a holiday.';
+
 export const EMPLOYEE_LOCATION_OFFICE = 'Office';
 export const EMPLOYEE_LOCATION_FACTORY = 'Factory';
 

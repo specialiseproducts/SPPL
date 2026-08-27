@@ -596,6 +596,59 @@ export const updateManualTask = async (taskId, body, authUser) => {
   return { task };
 };
 
+async function listTasksCoveringDateKeys(employeeCode, dateKeys) {
+  const months = new Set();
+  for (const raw of dateKeys || []) {
+    const key = String(raw || '').trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+      months.add(key.slice(0, 7));
+    }
+  }
+  const results = [];
+  const seen = new Set();
+  for (const ym of months) {
+    const [y, m] = ym.split('-').map(Number);
+    const startDate = `${ym}-01`;
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const endDate = `${ym}-${String(lastDay).padStart(2, '0')}`;
+    const rows = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+      employeeCode,
+      startDate,
+      endDate,
+    );
+    for (const row of rows || []) {
+      const id = String(row.plannerTaskId || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      results.push(row);
+    }
+  }
+  return results;
+}
+
+/**
+ * Soft-delete only RESCHEDULED children linked via parentTaskId to this task.
+ */
+async function cancelLinkedRescheduledChildren(parentTask) {
+  const parentId = String(parentTask?.plannerTaskId || '').trim();
+  const code = String(parentTask?.employeeCode || '').trim();
+  if (!parentId || !code) return [];
+
+  const candidates = await listTasksCoveringDateKeys(code, [
+    parentTask.date,
+    parentTask.rescheduledToDate,
+  ]);
+
+  const cancelled = [];
+  for (const child of candidates) {
+    if (String(child.parentTaskId || '').trim() !== parentId) continue;
+    if (String(child.source || '').trim() !== PLANNING_SOURCE_RESCHEDULED) continue;
+    await DailyPlannerTasksModel.softDeleteTask(child.plannerTaskId);
+    cancelled.push(child);
+  }
+  return cancelled;
+}
+
 export const markTaskCompleted = async (taskId, body, authUser) => {
   const workDone = String(body?.workDone || body?.reason || '').trim();
   if (!workDone) {
@@ -620,6 +673,11 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     completionScore,
     finalScore: planningScore + completionScore,
   });
+
+  // Incomplete → Reschedule creates a child via parentTaskId. Completing the original
+  // must invalidate that linked rescheduled task so it does not remain active.
+  const cancelledRescheduledTasks = await cancelLinkedRescheduledChildren(existing);
+
   if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
     await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
       employeeCode: existing.employeeCode,
@@ -630,7 +688,7 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     oldValues: { status: existing.status },
     newValues: { status: task.status, reason: workDone },
   });
-  return { task };
+  return { task, cancelledRescheduledTasks };
 };
 
 export const markTaskNotCompleted = async (taskId, body, authUser) => {

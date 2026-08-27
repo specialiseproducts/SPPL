@@ -15,6 +15,7 @@ import {
 import { createDailyPlannerTasks } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import {
   markRevisionParentHandledInCache,
+  removePlannerTasksFromCache,
   upsertPlannerTasksInCache,
 } from '../../hooks/dailyPlanner/dailyPlannerCache';
 import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQueryKeys';
@@ -33,14 +34,10 @@ import {
   WEEKDAY_LABELS,
   type DailyCalendarDayCell,
 } from './dailyPlannerUtils';
-import { assertCanPlanTasks } from './dailyPlannerDateRules';
 import { useAuth } from '../../context/AuthContext';
-import { COMPANY_HOLIDAY_MESSAGE, isCompanyHoliday } from '../../utils/companyWorkingDays';
 import {
-  assertCanCreateRegularTask,
-  assertCanCreateUrgentTask,
-  getPlanningWindowUiState,
-  REGULAR_TASK_BLOCKED_MESSAGE,
+  evaluateMyDailyPlannerCreateEligibility,
+  REGULAR_TASK_TODAY_BLOCKED_MESSAGE,
 } from '../../utils/planningRecognition';
 
 const MONTHS = [
@@ -171,9 +168,16 @@ export default function MyDailyPlannerTab() {
     return Array.from({ length: 11 }, (_, i) => base - 5 + i);
   }, [now]);
 
-  const refresh = (patch?: { upsert?: DailyPlannerTask[]; hideRevisionParentId?: string }) => {
+  const refresh = (patch?: {
+    upsert?: DailyPlannerTask[];
+    removeIds?: string[];
+    hideRevisionParentId?: string;
+  }) => {
     if (patch?.upsert?.length) {
       upsertPlannerTasksInCache(queryClient, patch.upsert);
+    }
+    if (patch?.removeIds?.length) {
+      removePlannerTasksFromCache(queryClient, patch.removeIds);
     }
     if (patch?.hideRevisionParentId) {
       markRevisionParentHandledInCache(
@@ -183,7 +187,7 @@ export default function MyDailyPlannerTab() {
         patch.upsert?.[0]?.plannerTaskId,
       );
     }
-    if (patch?.upsert?.length || patch?.hideRevisionParentId) {
+    if (patch?.upsert?.length || patch?.removeIds?.length || patch?.hideRevisionParentId) {
       // Task lists already updated in cache — avoid full Daily Planner refetch lag.
       void queryClient.invalidateQueries({
         queryKey: dailyPlannerQueryKeys.planningProfile(),
@@ -235,64 +239,46 @@ export default function MyDailyPlannerTab() {
     }
   }, []);
 
-  const openCreate = (iso: string) => {
-    try {
-      assertCanPlanTasks(iso);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Cannot create task for this date');
-      return;
-    }
-
+  const openCreate = (iso: string, revisesTaskId?: string | null) => {
     const config = planningConfigQuery.data;
     if (!config) {
       toast.error('Planning window information is loading. Please try again.');
       return;
     }
 
-    // Urgent-only window: keep existing behavior (form opens already in urgent mode).
-    if (getPlanningWindowUiState(config) === 'urgent-only') {
-      setReviseTaskId(null);
-      setCreateBlockedReason(null);
+    const eligibility = evaluateMyDailyPlannerCreateEligibility(iso, config);
+    if (!eligibility.allowed) {
+      toast.error(eligibility.message);
+      return;
+    }
+
+    setReviseTaskId(revisesTaskId || null);
+    if (eligibility.mode === 'urgent') {
+      setCreateBlockedReason(REGULAR_TASK_TODAY_BLOCKED_MESSAGE);
       setCreateDate(iso);
       return;
     }
 
-    // Same eligibility source as Save Task — run before opening the normal form.
-    try {
-      assertCanCreateRegularTask(iso, config);
-      setReviseTaskId(null);
-      setCreateBlockedReason(null);
-      setCreateDate(iso);
-    } catch (err) {
-      try {
-        assertCanCreateUrgentTask(iso, config);
-        setReviseTaskId(null);
-        setCreateBlockedReason(
-          err instanceof Error ? err.message : REGULAR_TASK_BLOCKED_MESSAGE,
-        );
-        setCreateDate(iso);
-      } catch (urgentErr) {
-        toast.error(
-          urgentErr instanceof Error ? urgentErr.message : 'Cannot create task for this date',
-        );
-      }
-    }
+    setCreateBlockedReason(null);
+    setCreateDate(iso);
   };
   const openDay = (iso: string) => setDayDate(iso);
 
   const handlePlanTomorrow = () => {
-    try {
-      const tomorrow = tomorrowIso();
-      if (isCompanyHoliday(tomorrow, employeeLocation)) {
-        toast.error(COMPANY_HOLIDAY_MESSAGE);
-        return;
-      }
-      assertCanPlanTasks(tomorrow);
-      setReviseTaskId(null);
-      setCreateDate(tomorrow);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Cannot plan tasks for this date');
+    const config = planningConfigQuery.data;
+    if (!config) {
+      toast.error('Planning window information is loading. Please try again.');
+      return;
     }
+    const tomorrow = config.tomorrowIst || tomorrowIso();
+    const eligibility = evaluateMyDailyPlannerCreateEligibility(tomorrow, config);
+    if (!eligibility.allowed) {
+      toast.error(eligibility.message);
+      return;
+    }
+    setReviseTaskId(null);
+    setCreateBlockedReason(null);
+    setCreateDate(tomorrow);
   };
 
   const toggleCellExpand = (iso: string) => {
@@ -505,13 +491,7 @@ export default function MyDailyPlannerTab() {
           onChanged={refresh}
           onAddTask={(revisesTaskId) => {
             if (!dayDate) return;
-            try {
-              assertCanPlanTasks(dayDate);
-              setReviseTaskId(revisesTaskId || null);
-              setCreateDate(dayDate);
-            } catch (err) {
-              toast.error(err instanceof Error ? err.message : 'Cannot create task for this date');
-            }
+            openCreate(dayDate, revisesTaskId);
           }}
         />
       </div>

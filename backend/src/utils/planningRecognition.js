@@ -11,7 +11,9 @@ import {
 } from './salesQuotationDates.js';
 import {
   assertRegularPlanningAllowedOnDate,
+  COMPANY_HOLIDAY_TASK_CREATE_MESSAGE,
   getPreviousWorkingDayDateKey,
+  isCompanyHolidayDateKey,
   isCompanyWorkingDayDateKey,
 } from './companyWorkingDays.js';
 
@@ -66,9 +68,21 @@ export const PLANNING_SOURCE_RESCHEDULED = 'RESCHEDULED';
 
 export const REGULAR_TASK_BLOCKED_MESSAGE =
   'Regular tasks can only be planned during the planning windows.\n\n' +
-  'Today: 08:00 AM – 11:00 AM\n' +
+  'Today: 12:00 AM – 11:00 AM\n' +
   'Tomorrow: 05:30 PM – 08:00 PM\n\n' +
   'If this work is urgent, please create it as an Urgent Task.';
+
+export const REGULAR_TASK_TODAY_BLOCKED_MESSAGE =
+  'A Regular Task for today can only be created before 11:00 AM.';
+
+export const REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE =
+  'A Regular Task for tomorrow can only be created between 5:30 PM and 8:00 PM today.';
+
+export const URGENT_TASK_TODAY_BLOCKED_MESSAGE =
+  'Urgent Tasks for today can only be created between 11:00 AM and 5:30 PM.';
+
+export const TASK_CREATE_DATE_BLOCKED_MESSAGE =
+  'You can only create tasks for today or tomorrow according to the allowed task creation schedule.';
 
 export const URGENT_REASON_REQUIRED_MESSAGE = 'Urgent Task Reason is required.';
 
@@ -97,6 +111,28 @@ export function isEveningPlanningWindow(reference = new Date()) {
   const start = minutesFrom(EVENING_START_HOUR, EVENING_START_MINUTE);
   const end = minutesFrom(EVENING_END_HOUR, EVENING_END_MINUTE);
   return mins >= start && mins < end;
+}
+
+/** Regular today: midnight (inclusive) until 11:00 AM (exclusive). */
+export function isRegularTodayCreationWindow(reference = new Date()) {
+  const mins = getIstMinutesSinceMidnight(reference);
+  return mins < minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE);
+}
+
+/** Urgent today: 11:00 AM (inclusive) until 5:30 PM (exclusive). */
+export function isUrgentTodayCreationWindow(reference = new Date()) {
+  const mins = getIstMinutesSinceMidnight(reference);
+  const start = minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE);
+  const end = minutesFrom(EVENING_START_HOUR, EVENING_START_MINUTE);
+  return mins >= start && mins < end;
+}
+
+export function assertTaskCreationNotOnHoliday(taskDateIso, location) {
+  if (isCompanyHolidayDateKey(taskDateIso, location)) {
+    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
 }
 
 export function tomorrowIstDateKey(reference = new Date()) {
@@ -132,24 +168,66 @@ export function resolveActivePlanningWindow(reference = new Date()) {
 
 export function isRegularTaskAllowed(taskDateIso, reference = new Date()) {
   const target = getPlanningTargetDateMode(taskDateIso, reference);
-  if (target === 'today' && isMorningPlanningWindow(reference)) return true;
+  if (target === 'today' && isRegularTodayCreationWindow(reference)) return true;
   if (target === 'tomorrow' && isEveningPlanningWindow(reference)) return true;
   return false;
 }
 
+export function isUrgentTaskAllowed(taskDateIso, reference = new Date()) {
+  const target = getPlanningTargetDateMode(taskDateIso, reference);
+  return target === 'today' && isUrgentTodayCreationWindow(reference);
+}
+
 export function assertRegularTaskAllowed(taskDateIso, reference = new Date(), location) {
   assertRegularPlanningAllowedOnDate(taskDateIso, location);
+  const target = getPlanningTargetDateMode(taskDateIso, reference);
+  if (target === 'past' || target === 'other') {
+    const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
   if (isRegularTaskAllowed(taskDateIso, reference)) {
     return resolvePlanningWindowForRegularTask(taskDateIso, reference);
+  }
+  if (target === 'today') {
+    const err = new Error(REGULAR_TASK_TODAY_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (target === 'tomorrow') {
+    const err = new Error(REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    throw err;
   }
   const err = new Error(REGULAR_TASK_BLOCKED_MESSAGE);
   err.statusCode = 400;
   throw err;
 }
 
+export function assertUrgentTaskAllowed(taskDateIso, reference = new Date(), location) {
+  assertTaskCreationNotOnHoliday(taskDateIso, location);
+  const target = getPlanningTargetDateMode(taskDateIso, reference);
+  if (target === 'past' || target === 'other') {
+    const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (target === 'tomorrow') {
+    const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (isUrgentTaskAllowed(taskDateIso, reference)) {
+    return;
+  }
+  const err = new Error(URGENT_TASK_TODAY_BLOCKED_MESSAGE);
+  err.statusCode = 400;
+  throw err;
+}
+
 export function resolvePlanningWindowForRegularTask(taskDateIso, reference = new Date()) {
   const target = getPlanningTargetDateMode(taskDateIso, reference);
-  if (target === 'today' && isMorningPlanningWindow(reference)) return PLANNING_WINDOW_MORNING;
+  if (target === 'today' && isRegularTodayCreationWindow(reference)) return PLANNING_WINDOW_MORNING;
   if (target === 'tomorrow' && isEveningPlanningWindow(reference)) return PLANNING_WINDOW_EVENING;
   return PLANNING_WINDOW_OUTSIDE;
 }

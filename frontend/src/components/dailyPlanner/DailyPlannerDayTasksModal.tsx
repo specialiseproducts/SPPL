@@ -44,6 +44,7 @@ interface DailyPlannerDayTasksModalProps {
   onClose: () => void;
   onChanged: (patch?: {
     upsert?: DailyPlannerTask[];
+    removeIds?: string[];
     hideRevisionParentId?: string;
   }) => void;
   onAddTask: (revisesTaskId?: string) => void;
@@ -99,14 +100,17 @@ export default function DailyPlannerDayTasksModal({
     const workDone = editor.getFormattedValue();
     setBusyId(completeTaskId);
     try {
-      const updated = await completeDailyPlannerTask(
+      const result = await completeDailyPlannerTask(
         completeTaskId,
         workDone,
         task?.date ?? date,
         planningConfig ?? undefined,
       );
       setCompleteTaskId(null);
-      onChanged({ upsert: [updated] });
+      onChanged({
+        upsert: [result.task],
+        removeIds: result.cancelledRescheduledTaskIds,
+      });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Update failed');
     } finally {

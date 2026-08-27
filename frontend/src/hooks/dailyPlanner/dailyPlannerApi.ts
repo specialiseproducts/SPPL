@@ -200,7 +200,7 @@ export async function completeDailyPlannerTask(
   workDone: string,
   taskDate: string,
   planningConfig?: PlanningConfig,
-): Promise<DailyPlannerTask> {
+): Promise<{ task: DailyPlannerTask; cancelledRescheduledTaskIds: string[] }> {
   assertCanCompleteTasks(taskDate);
   if (planningConfig) {
     assertCanUpdateTasksOnDate(taskDate, planningConfig);
@@ -209,9 +209,20 @@ export async function completeDailyPlannerTask(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ workDone }),
-  })) as { data?: { task?: DailyPlannerTask } };
+  })) as {
+    data?: {
+      task?: DailyPlannerTask;
+      cancelledRescheduledTasks?: Array<{ plannerTaskId?: string } | DailyPlannerTask>;
+    };
+  };
   if (!res?.data?.task) throw new Error('Update failed');
-  return normalizeTask(res.data.task);
+  const cancelledRescheduledTaskIds = (res.data.cancelledRescheduledTasks || [])
+    .map((t) => String(t?.plannerTaskId || '').trim())
+    .filter(Boolean);
+  return {
+    task: normalizeTask(res.data.task),
+    cancelledRescheduledTaskIds,
+  };
 }
 
 export interface DailyPlannerNotCompletedPayload {
