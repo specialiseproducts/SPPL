@@ -17,6 +17,7 @@ import {
   markRevisionParentHandledInCache,
   upsertPlannerTasksInCache,
 } from '../../hooks/dailyPlanner/dailyPlannerCache';
+import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQueryKeys';
 import type { DailyPlannerTask } from '../../types/dailyPlanner';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerDayTasksModal from './DailyPlannerDayTasksModal';
@@ -35,6 +36,12 @@ import {
 import { assertCanPlanTasks } from './dailyPlannerDateRules';
 import { useAuth } from '../../context/AuthContext';
 import { COMPANY_HOLIDAY_MESSAGE, isCompanyHoliday } from '../../utils/companyWorkingDays';
+import {
+  assertCanCreateRegularTask,
+  assertCanCreateUrgentTask,
+  getPlanningWindowUiState,
+  REGULAR_TASK_BLOCKED_MESSAGE,
+} from '../../utils/planningRecognition';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -137,6 +144,7 @@ export default function MyDailyPlannerTab() {
   const { year, month } = view;
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
   const [createDate, setCreateDate] = useState<string | null>(null);
+  const [createBlockedReason, setCreateBlockedReason] = useState<string | null>(null);
   const [reviseTaskId, setReviseTaskId] = useState<string | null>(null);
   const [dayDate, setDayDate] = useState<string | null>(null);
 
@@ -174,6 +182,16 @@ export default function MyDailyPlannerTab() {
         'custom_revision',
         patch.upsert?.[0]?.plannerTaskId,
       );
+    }
+    if (patch?.upsert?.length || patch?.hideRevisionParentId) {
+      // Task lists already updated in cache — avoid full Daily Planner refetch lag.
+      void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.planningProfile(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.planningDashboard(),
+      });
+      return;
     }
     invalidate();
   };
@@ -220,10 +238,44 @@ export default function MyDailyPlannerTab() {
   const openCreate = (iso: string) => {
     try {
       assertCanPlanTasks(iso);
-      setReviseTaskId(null);
-      setCreateDate(iso);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Cannot create task for this date');
+      return;
+    }
+
+    const config = planningConfigQuery.data;
+    if (!config) {
+      toast.error('Planning window information is loading. Please try again.');
+      return;
+    }
+
+    // Urgent-only window: keep existing behavior (form opens already in urgent mode).
+    if (getPlanningWindowUiState(config) === 'urgent-only') {
+      setReviseTaskId(null);
+      setCreateBlockedReason(null);
+      setCreateDate(iso);
+      return;
+    }
+
+    // Same eligibility source as Save Task — run before opening the normal form.
+    try {
+      assertCanCreateRegularTask(iso, config);
+      setReviseTaskId(null);
+      setCreateBlockedReason(null);
+      setCreateDate(iso);
+    } catch (err) {
+      try {
+        assertCanCreateUrgentTask(iso, config);
+        setReviseTaskId(null);
+        setCreateBlockedReason(
+          err instanceof Error ? err.message : REGULAR_TASK_BLOCKED_MESSAGE,
+        );
+        setCreateDate(iso);
+      } catch (urgentErr) {
+        toast.error(
+          urgentErr instanceof Error ? urgentErr.message : 'Cannot create task for this date',
+        );
+      }
     }
   };
   const openDay = (iso: string) => setDayDate(iso);
@@ -417,8 +469,10 @@ export default function MyDailyPlannerTab() {
           open={!!createDate}
           date={createDate ?? ''}
           planningConfig={planningConfigQuery.data}
+          regularCreationBlockedMessage={createBlockedReason}
           onClose={() => {
             setCreateDate(null);
+            setCreateBlockedReason(null);
             setReviseTaskId(null);
           }}
           onSave={async (drafts) => {
@@ -434,6 +488,7 @@ export default function MyDailyPlannerTab() {
             );
             const parentId = reviseTaskId;
             setReviseTaskId(null);
+            setCreateBlockedReason(null);
             refresh({
               upsert: created,
               hideRevisionParentId: parentId || undefined,

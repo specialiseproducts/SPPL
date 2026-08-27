@@ -100,6 +100,35 @@ export async function resetPasswordWithToken(payload: {
 }
 
 /** Frontend UX validation — backend remains authoritative. */
+export type NewPasswordRequirementId =
+  | 'minLength'
+  | 'hasUppercase'
+  | 'hasLowercase'
+  | 'hasNumber'
+  | 'hasSpecial';
+
+export type NewPasswordRequirementChecks = Record<NewPasswordRequirementId, boolean>;
+
+/** Same rules as validateNewPasswordClient — use for live requirement indicators. */
+export function evaluateNewPasswordRequirements(password: string): NewPasswordRequirementChecks {
+  const value = String(password ?? '');
+  return {
+    minLength: value.length >= 8,
+    hasUppercase: /[A-Z]/.test(value),
+    hasLowercase: /[a-z]/.test(value),
+    hasNumber: /[0-9]/.test(value),
+    hasSpecial: /[^A-Za-z0-9]/.test(value),
+  };
+}
+
+export const NEW_PASSWORD_REQUIREMENT_LABELS: { id: NewPasswordRequirementId; label: string }[] = [
+  { id: 'minLength', label: 'At least 8 characters' },
+  { id: 'hasUppercase', label: 'At least 1 uppercase letter' },
+  { id: 'hasLowercase', label: 'At least 1 lowercase letter' },
+  { id: 'hasNumber', label: 'At least 1 number' },
+  { id: 'hasSpecial', label: 'At least 1 special character' },
+];
+
 export function validateNewPasswordClient(
   newPassword: string,
   confirmPassword: string,
@@ -112,19 +141,20 @@ export function validateNewPasswordClient(
   if (password !== confirm) {
     return { ok: false, message: 'New password and confirm password do not match' };
   }
-  if (password.length < 8) {
+  const requirements = evaluateNewPasswordRequirements(password);
+  if (!requirements.minLength) {
     return { ok: false, message: 'Password must be at least 8 characters' };
   }
-  if (!/[A-Z]/.test(password)) {
+  if (!requirements.hasUppercase) {
     return { ok: false, message: 'Password must contain at least 1 uppercase letter' };
   }
-  if (!/[a-z]/.test(password)) {
+  if (!requirements.hasLowercase) {
     return { ok: false, message: 'Password must contain at least 1 lowercase letter' };
   }
-  if (!/[0-9]/.test(password)) {
+  if (!requirements.hasNumber) {
     return { ok: false, message: 'Password must contain at least 1 number' };
   }
-  if (!/[^A-Za-z0-9]/.test(password)) {
+  if (!requirements.hasSpecial) {
     return { ok: false, message: 'Password must contain at least 1 special character' };
   }
   return { ok: true };

@@ -143,7 +143,7 @@ interface TodayTaskReviewWizardProps {
   initialTaskIndex?: number;
   onClose: () => void;
   onFinish: () => void;
-  onTasksUpdated: () => Promise<void> | void;
+  onTasksUpdated: (updatedTasks?: DailyPlannerTask[]) => Promise<void> | void;
 }
 
 export default function TodayTaskReviewWizard({
@@ -163,7 +163,7 @@ export default function TodayTaskReviewWizard({
   const [stagedHours, setStagedHours] = useState('');
   const [managerComments, setManagerComments] = useState('');
   const [busy, setBusy] = useState(false);
-  const [savePhase, setSavePhase] = useState<'idle' | 'saved' | 'loading-next'>('idle');
+  const [savePhase, setSavePhase] = useState<'idle' | 'saved'>('idle');
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
   const [replacementName, setReplacementName] = useState('');
@@ -250,14 +250,13 @@ export default function TodayTaskReviewWizard({
   }, [currentIndex, total]);
 
   const runSaveFlow = useCallback(
-    async (saveFn: () => Promise<void>) => {
+    async (saveFn: () => Promise<DailyPlannerTask | void>) => {
       setBusy(true);
       try {
-        await saveFn();
+        const updated = await saveFn();
         setSavePhase('saved');
-        await onTasksUpdated();
-        setSavePhase('loading-next');
-        window.setTimeout(() => advanceAfterSave(), 600);
+        await onTasksUpdated(updated ? [updated] : undefined);
+        advanceAfterSave();
       } catch (err) {
         setSavePhase('idle');
         toast.error(err instanceof Error ? err.message : 'Save failed');
@@ -279,7 +278,7 @@ export default function TodayTaskReviewWizard({
     }
     void runSaveFlow(async () => {
       const hoursValue = Number(stagedHours);
-      await approveDailyPlannerTask(task.plannerTaskId, {
+      const updated = await approveDailyPlannerTask(task.plannerTaskId, {
         comments: managerComments.trim(),
         priority: priorityChanged || editingPriority ? stagedPriority : undefined,
         hoursRequired:
@@ -289,13 +288,14 @@ export default function TodayTaskReviewWizard({
       });
       setEditingPriority(false);
       setEditingHours(false);
+      return updated;
     });
   };
 
   const handleVerify = () => {
     if (!task) return;
     void runSaveFlow(async () => {
-      await verifyDailyPlannerCompletion(task.plannerTaskId, managerComments.trim());
+      return verifyDailyPlannerCompletion(task.plannerTaskId, managerComments.trim());
     });
   };
 
@@ -319,7 +319,7 @@ export default function TodayTaskReviewWizard({
       return;
     }
     void runSaveFlow(async () => {
-      await requestNeedsRevisionDailyPlannerTask(task.plannerTaskId, {
+      const updated = await requestNeedsRevisionDailyPlannerTask(task.plannerTaskId, {
         reason: revisionReason.trim(),
         replacementTask: {
           taskName: replacementName.trim(),
@@ -330,6 +330,7 @@ export default function TodayTaskReviewWizard({
         },
       });
       setRevisionOpen(false);
+      return updated;
     });
   };
 
@@ -374,14 +375,9 @@ export default function TodayTaskReviewWizard({
                 </div>
               </div>
             </div>
-            {savePhase !== 'idle' ? (
+            {savePhase === 'saved' ? (
               <div className="mt-3 flex items-center gap-3 text-sm">
-                {savePhase === 'saved' || savePhase === 'loading-next' ? (
-                  <span className="font-medium text-green-700">Task Saved ✓</span>
-                ) : null}
-                {savePhase === 'loading-next' ? (
-                  <span className="text-gray-600">Loading Next Task...</span>
-                ) : null}
+                <span className="font-medium text-green-700">Task Saved ✓</span>
               </div>
             ) : null}
           </DialogHeader>

@@ -5,6 +5,8 @@ import {
   useTeamDailyPlannerQuery,
   useTeamMappingsQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
+import { upsertPlannerTasksInCache } from '../../hooks/dailyPlanner/dailyPlannerCache';
+import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQueryKeys';
 import { useAuth } from '../../context/AuthContext';
 import { isQueryColdLoading } from '../../utils/queryLoading';
 import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
@@ -18,10 +20,12 @@ import {
   type DailyCalendarDayCell,
 } from './dailyPlannerUtils';
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
+import { isTaskManagerReviewed } from './todayTaskReviewWizardUtils';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { cn } from '../ui/utils';
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 
@@ -132,6 +136,7 @@ function TeamPlannerDayCell({
 export default function TeamDailyPlannerTab() {
   const { user } = useAuth();
   const invalidate = useInvalidateDailyPlannerQueries();
+  const queryClient = useQueryClient();
   const managerCode = String(user?.employeeCode || user?.id || '').trim();
   const now = new Date();
   const [view, setView] = useState({ year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 });
@@ -141,6 +146,7 @@ export default function TeamDailyPlannerTab() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardTaskIndex, setWizardTaskIndex] = useState(0);
   const [wizardDismissedForEmployee, setWizardDismissedForEmployee] = useState('');
+  const hadPendingReviewsRef = useRef(false);
   const today = todayIso();
 
   const mappingsQuery = useTeamMappingsQuery();
@@ -209,28 +215,60 @@ export default function TeamDailyPlannerTab() {
     return [...list].sort((a, b) => a.taskName.localeCompare(b.taskName));
   }, [todayTasksQuery.data]);
 
+  const pendingReviewTasks = useMemo(
+    () => todayTasks.filter((task) => !isTaskManagerReviewed(task)),
+    [todayTasks],
+  );
+  const pendingReviewCount = pendingReviewTasks.length;
+  const firstPendingTaskId = pendingReviewTasks[0]?.plannerTaskId ?? '';
+
   const todayTasksLoading = isQueryColdLoading(todayTasksQuery);
 
   useEffect(() => {
     setWizardDismissedForEmployee('');
     setWizardOpen(false);
     setWizardTaskIndex(0);
+    hadPendingReviewsRef.current = false;
   }, [selectedEmployeeCode]);
 
   useEffect(() => {
     if (!selectedEmployeeCode || todayTasksLoading) return;
-    if (wizardDismissedForEmployee === selectedEmployeeCode) return;
-    if (todayTasks.length > 0) {
-      setWizardOpen(true);
-      setWizardTaskIndex(0);
-    } else {
-      setWizardOpen(false);
+
+    if (pendingReviewCount === 0) {
+      hadPendingReviewsRef.current = false;
+      // No pending reviews — never auto-open (fixes reopen after all reviews complete).
+      return;
     }
+
+    const newlyArrivedPending = !hadPendingReviewsRef.current;
+    hadPendingReviewsRef.current = true;
+
+    if (wizardDismissedForEmployee === selectedEmployeeCode) {
+      // Closed while pending remained — stay closed unless a fresh pending queue appeared.
+      if (!newlyArrivedPending) return;
+      setWizardDismissedForEmployee('');
+    }
+
+    // Don't reset the wizard while the manager is already reviewing.
+    if (wizardOpen && !newlyArrivedPending) return;
+
+    const firstPendingIndex = firstPendingTaskId
+      ? Math.max(
+          0,
+          todayTasks.findIndex((task) => task.plannerTaskId === firstPendingTaskId),
+        )
+      : 0;
+
+    setWizardOpen(true);
+    setWizardTaskIndex(firstPendingIndex);
   }, [
     selectedEmployeeCode,
     todayTasksLoading,
-    todayTasks.length,
+    pendingReviewCount,
+    firstPendingTaskId,
+    todayTasks,
     wizardDismissedForEmployee,
+    wizardOpen,
   ]);
 
   const tasks = monthQuery.data ?? [];
@@ -243,11 +281,23 @@ export default function TeamDailyPlannerTab() {
   const handleSelectTask = (task: DailyPlannerTask) => {
     if (task.date !== today || todayTasks.length === 0) return;
     const index = todayTasks.findIndex((t) => t.plannerTaskId === task.plannerTaskId);
+    setWizardDismissedForEmployee('');
     setWizardTaskIndex(index >= 0 ? index : 0);
     setWizardOpen(true);
   };
 
-  const refreshTasks = () => {
+  const refreshTasks = (updatedTasks?: DailyPlannerTask[]) => {
+    if (updatedTasks?.length) {
+      upsertPlannerTasksInCache(queryClient, updatedTasks);
+      // Task lists are already patched — only refresh planning score widgets.
+      void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.planningProfile(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.managerPlanningDashboard(),
+      });
+      return;
+    }
     invalidate();
   };
 

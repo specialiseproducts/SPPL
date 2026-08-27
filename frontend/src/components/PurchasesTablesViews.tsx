@@ -522,10 +522,9 @@ export function DetailsDrawer({
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/50 z-50 flex justify-end" onClick={onClose}>
+      <div className="fixed inset-0 bg-black/50 z-50 flex justify-end">
         <div
           className="bg-white w-full max-w-6xl h-full shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300"
-          onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
           <div className="sticky top-0 bg-white border-b p-6 z-10">

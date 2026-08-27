@@ -52,6 +52,8 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onPointerDownOutside,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
@@ -66,6 +68,15 @@ function DialogContent({
           className,
         )}
         {...props}
+        onPointerDownOutside={(event) => {
+          // Keep forms open when the backdrop is clicked; X / Cancel / Save still work.
+          event.preventDefault();
+          onPointerDownOutside?.(event);
+        }}
+        onInteractOutside={(event) => {
+          event.preventDefault();
+          onInteractOutside?.(event);
+        }}
       >
         {children}
         {showCloseButton ? (

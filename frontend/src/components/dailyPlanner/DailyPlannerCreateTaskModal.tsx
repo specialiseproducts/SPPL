@@ -183,6 +183,8 @@ interface DailyPlannerCreateTaskModalProps {
   open: boolean;
   date: string;
   planningConfig?: PlanningConfig | null;
+  /** When set, normal task fields stay hidden until Create Urgent Task (same UI as closed window). */
+  regularCreationBlockedMessage?: string | null;
   onClose: () => void;
   onSave: (drafts: DailyPlannerTaskDraft[]) => Promise<void>;
 }
@@ -191,6 +193,7 @@ export default function DailyPlannerCreateTaskModal({
   open,
   date,
   planningConfig,
+  regularCreationBlockedMessage = null,
   onClose,
   onSave,
 }: DailyPlannerCreateTaskModalProps) {
@@ -205,7 +208,12 @@ export default function DailyPlannerCreateTaskModal({
     () => getPlanningWindowUiState(planningConfig),
     [planningConfig],
   );
-  const planningClosed = windowState === 'closed' && !manualUrgentMode;
+  const windowClosedUi = windowState === 'closed' && !manualUrgentMode;
+  const dateBlockedUi = Boolean(regularCreationBlockedMessage) && !manualUrgentMode;
+  const planningClosed = windowClosedUi || dateBlockedUi;
+  const closedMessage = windowClosedUi
+    ? PLANNING_WINDOW_CLOSED_MESSAGE
+    : regularCreationBlockedMessage || PLANNING_WINDOW_CLOSED_MESSAGE;
   const urgentMode = windowState === 'urgent-only' || manualUrgentMode;
   const autoPlanningCategory = useMemo(
     () => resolveAutoPlanningCategory(planningConfig, manualUrgentMode),
@@ -389,7 +397,7 @@ export default function DailyPlannerCreateTaskModal({
 
               {planningClosed ? (
                 <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 whitespace-pre-wrap">
-                  {PLANNING_WINDOW_CLOSED_MESSAGE}
+                  {closedMessage}
                   <div className="pt-1">
                     <Button
                       type="button"

@@ -6,7 +6,9 @@ import { Button } from './ui/button';
 import { toast } from 'sonner';
 import { cn } from './ui/utils';
 import {
+  evaluateNewPasswordRequirements,
   formatCountdown,
+  NEW_PASSWORD_REQUIREMENT_LABELS,
   requestPasswordResetOtp,
   resetPasswordWithToken,
   validateNewPasswordClient,
@@ -78,6 +80,7 @@ export default function ForgotPasswordFlow({ onBackToLogin }: ForgotPasswordFlow
   const otpExpired = step === 'otp' && otpExpiresAt != null && remainingMs <= 0;
   const otpValue = otpDigits.join('');
   const otpComplete = /^\d{6}$/.test(otpValue);
+  const newPasswordRequirements = evaluateNewPasswordRequirements(newPassword);
 
   const clearSensitiveState = useCallback(() => {
     setEmployeeCode('');
@@ -418,12 +421,21 @@ export default function ForgotPasswordFlow({ onBackToLogin }: ForgotPasswordFlow
 
           <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 space-y-1">
             <p className="font-medium text-gray-700">Password must contain:</p>
-            <ul className="list-disc pl-4 space-y-0.5">
-              <li>At least 8 characters</li>
-              <li>At least 1 uppercase letter</li>
-              <li>At least 1 lowercase letter</li>
-              <li>At least 1 number</li>
-              <li>At least 1 special character</li>
+            <ul className="space-y-0.5">
+              {NEW_PASSWORD_REQUIREMENT_LABELS.map(({ id, label }) => {
+                const met = newPasswordRequirements[id];
+                return (
+                  <li key={id} className="flex items-start gap-1.5">
+                    <span
+                      className="w-3 shrink-0 text-[11px] leading-4 text-green-700"
+                      aria-hidden
+                    >
+                      {met ? '✔' : ''}
+                    </span>
+                    <span className={met ? 'text-green-700' : undefined}>{label}</span>
+                  </li>
+                );
+              })}
             </ul>
           </div>
 

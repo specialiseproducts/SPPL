@@ -50,8 +50,9 @@ function validatePayload(body = {}, { partial = false } = {}) {
   }
 }
 
-export async function listRecords(authUser, effectiveRole, query = {}) {
-  assertCanManage(effectiveRole);
+export async function listRecords(_authUser, _effectiveRole, query = {}) {
+  // Read-only list: any authenticated salesForecasting user (route middleware).
+  // Create / update / delete remain admin-gated via assertCanManage.
   return SalesHistoryModel.listRecords({
       customer: query.customer,
       principal: query.principal,
