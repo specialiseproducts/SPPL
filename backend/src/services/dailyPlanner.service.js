@@ -921,6 +921,14 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
     throw err;
   }
 
+  // Persist Manager Comments only (Finish Review flush) — do not change status/workflow.
+  if (body?.commentsOnly === true || body?.persistCommentsOnly === true) {
+    const task = await DailyPlannerTasksModel.updateTask(taskId, {
+      managerComments: String(body.comments ?? body.managerComments ?? '').trim(),
+    });
+    return { task };
+  }
+
   const nowIso = new Date().toISOString();
   const reviewerCode = employeeCodeOf(authUser);
   const reviewerName = employeeNameOf(authUser);

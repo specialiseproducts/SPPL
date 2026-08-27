@@ -335,6 +335,12 @@ export default function DailyPlannerDayTasksModal({
                             <BulletPointList text={task.reason} />
                           </div>
                         ) : null}
+                        {task.managerComments ? (
+                          <div className="mt-2 text-xs">
+                            <p className="font-medium">Manager Comments</p>
+                            <BulletPointList text={task.managerComments} />
+                          </div>
+                        ) : null}
                         {task.status === 'Not Completed' && task.reason ? (
                           <div className="mt-2 text-xs">
                             <p className="font-medium text-red-600">Reason</p>

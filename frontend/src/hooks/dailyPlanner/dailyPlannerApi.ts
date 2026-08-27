@@ -346,6 +346,23 @@ export async function approveDailyPlannerTask(
   return normalizeTask(res.data.task);
 }
 
+/** Persist Manager Comments without changing task status/workflow (Finish Review flush). */
+export async function saveDailyPlannerManagerComments(
+  taskId: string,
+  comments: string,
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      comments: comments || '',
+      commentsOnly: true,
+    }),
+  })) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Failed to save manager comments');
+  return normalizeTask(res.data.task);
+}
+
 export async function rejectDailyPlannerTask(
   taskId: string,
   comments?: string,

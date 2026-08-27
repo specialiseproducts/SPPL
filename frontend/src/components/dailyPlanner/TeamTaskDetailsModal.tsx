@@ -393,6 +393,20 @@ export default function TeamTaskDetailsModal({
                     value={displayCell(task.verifiedByName || task.verifiedBy)}
                   />
                   <ViewField label="Verified At" value={formatDateCell(task.verifiedAt)} />
+                  {task.managerComments ? (
+                    <ViewBulletField
+                      label="Manager Comments"
+                      value={displayCell(task.managerComments)}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+              {task.status === 'Approved' && task.managerComments ? (
+                <div className="mt-4">
+                  <ViewBulletField
+                    label="Manager Comments"
+                    value={displayCell(task.managerComments)}
+                  />
                 </div>
               ) : null}
               {task.status === 'Needs Revision' ? (

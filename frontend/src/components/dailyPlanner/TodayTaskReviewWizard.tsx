@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, CheckCheck, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import type { DailyPlannerPriority, DailyPlannerTask } from '../../types/dailyPlanner';
 import {
   approveDailyPlannerTask,
   requestNeedsRevisionDailyPlannerTask,
+  saveDailyPlannerManagerComments,
   verifyDailyPlannerCompletion,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import { getDailyTaskStatusLabel } from './dailyPlannerUtils';
@@ -161,7 +162,12 @@ export default function TodayTaskReviewWizard({
   const [stagedPriority, setStagedPriority] = useState<DailyPlannerPriority>('Medium');
   const [editingHours, setEditingHours] = useState(false);
   const [stagedHours, setStagedHours] = useState('');
-  const [managerComments, setManagerComments] = useState('');
+  /** Draft Manager Comments keyed by plannerTaskId — survives Previous/Next navigation. */
+  const [managerCommentsByTaskId, setManagerCommentsByTaskId] = useState<Record<string, string>>(
+    {},
+  );
+  const managerCommentsByTaskIdRef = useRef(managerCommentsByTaskId);
+  managerCommentsByTaskIdRef.current = managerCommentsByTaskId;
   const [busy, setBusy] = useState(false);
   const [savePhase, setSavePhase] = useState<'idle' | 'saved'>('idle');
   const [revisionOpen, setRevisionOpen] = useState(false);
@@ -183,6 +189,24 @@ export default function TodayTaskReviewWizard({
   const allReviewed = total > 0 && reviewedCount === total;
   const progressPct = total > 0 ? Math.round((reviewedCount / total) * 100) : 0;
 
+  const managerComments = task
+    ? (managerCommentsByTaskId[task.plannerTaskId] ?? task.managerComments ?? '')
+    : '';
+
+  const getDraftCommentsForTask = useCallback((taskId: string, fallbackTask?: DailyPlannerTask | null) => {
+    const drafts = managerCommentsByTaskIdRef.current;
+    if (Object.prototype.hasOwnProperty.call(drafts, taskId)) {
+      return String(drafts[taskId] ?? '').trim();
+    }
+    return String(fallbackTask?.managerComments ?? '').trim();
+  }, []);
+
+  const setManagerCommentsForCurrentTask = (value: string) => {
+    if (!task) return;
+    const taskId = task.plannerTaskId;
+    setManagerCommentsByTaskId((prev) => ({ ...prev, [taskId]: value }));
+  };
+
   useEffect(() => {
     if (!open) return;
     const safeIndex = Math.min(Math.max(0, initialTaskIndex), Math.max(0, total - 1));
@@ -190,7 +214,7 @@ export default function TodayTaskReviewWizard({
     setSavePhase('idle');
     setEditingPriority(false);
     setEditingHours(false);
-    setManagerComments('');
+    setManagerCommentsByTaskId({});
     setRevisionOpen(false);
   }, [open, initialTaskIndex, total, employee.employeeCode]);
 
@@ -204,7 +228,6 @@ export default function TodayTaskReviewWizard({
         ? String(task.hoursRequired)
         : '',
     );
-    setManagerComments('');
     setRevisionOpen(false);
     setRevisionReason('');
     setReplacementName('');
@@ -276,10 +299,12 @@ export default function TodayTaskReviewWizard({
         return;
       }
     }
+    const taskId = task.plannerTaskId;
+    const comments = getDraftCommentsForTask(taskId, task);
     void runSaveFlow(async () => {
       const hoursValue = Number(stagedHours);
-      const updated = await approveDailyPlannerTask(task.plannerTaskId, {
-        comments: managerComments.trim(),
+      const updated = await approveDailyPlannerTask(taskId, {
+        comments,
         priority: priorityChanged || editingPriority ? stagedPriority : undefined,
         hoursRequired:
           editingHours && Number.isFinite(hoursValue) && hoursValue > 0
@@ -294,9 +319,37 @@ export default function TodayTaskReviewWizard({
 
   const handleVerify = () => {
     if (!task) return;
+    const taskId = task.plannerTaskId;
+    const comments = getDraftCommentsForTask(taskId, task);
     void runSaveFlow(async () => {
-      return verifyDailyPlannerCompletion(task.plannerTaskId, managerComments.trim());
+      return verifyDailyPlannerCompletion(taskId, comments);
     });
+  };
+
+  const handleFinishReview = async () => {
+    if (!allReviewed || busy) return;
+    setBusy(true);
+    try {
+      const drafts = managerCommentsByTaskIdRef.current;
+      const updatedTasks: DailyPlannerTask[] = [];
+      for (const reviewTask of sortedTasks) {
+        const taskId = reviewTask.plannerTaskId;
+        if (!Object.prototype.hasOwnProperty.call(drafts, taskId)) continue;
+        const nextComments = String(drafts[taskId] ?? '').trim();
+        const existingComments = String(reviewTask.managerComments ?? '').trim();
+        if (nextComments === existingComments) continue;
+        const saved = await saveDailyPlannerManagerComments(taskId, nextComments);
+        updatedTasks.push(saved);
+      }
+      if (updatedTasks.length > 0) {
+        await onTasksUpdated(updatedTasks);
+      }
+      onFinish();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save manager comments');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleSubmitRevision = () => {
@@ -519,8 +572,14 @@ export default function TodayTaskReviewWizard({
                 </div>
               ) : null}
               {task.status === 'Verified Complete' ? (
-                <div className="mt-4">
+                <div className="mt-4 space-y-3">
                   <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
+                  {task.managerComments ? (
+                    <ViewBulletField
+                      label="Manager Comments"
+                      value={displayCell(task.managerComments)}
+                    />
+                  ) : null}
                 </div>
               ) : null}
             </ViewSection>
@@ -574,7 +633,7 @@ export default function TodayTaskReviewWizard({
                   rows={2}
                   value={managerComments}
                   disabled={busy}
-                  onChange={(e) => setManagerComments(e.target.value)}
+                  onChange={(e) => setManagerCommentsForCurrentTask(e.target.value)}
                   placeholder="Add comments for this review decision"
                 />
               </div>
@@ -638,7 +697,7 @@ export default function TodayTaskReviewWizard({
                   type="button"
                   className="bg-[#007BFF] hover:bg-[#0056b3]"
                   disabled={!allReviewed || busy}
-                  onClick={onFinish}
+                  onClick={() => void handleFinishReview()}
                 >
                   Finish Review
                 </Button>
