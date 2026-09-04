@@ -70,8 +70,34 @@ export function isTaskManagerReviewed(task: DailyPlannerTask): boolean {
   return false;
 }
 
+/** Employee has recorded Completed / Not Completed / Rescheduled for this task. */
+export function hasEmployeeCompletionOutcome(task: DailyPlannerTask): boolean {
+  const status = String(task.status || '').trim();
+  return (
+    status === 'Awaiting Verification' ||
+    status === 'Completed' ||
+    status === 'Terminated' ||
+    status === 'Rescheduled' ||
+    status === 'Verified Complete' ||
+    status === 'Not Completed'
+  );
+}
+
+/** Manager has reviewed this task's completion result. */
+export function isTaskCompletionReviewed(task: DailyPlannerTask): boolean {
+  if (task.completionManagerReviewedAt) return true;
+  if (task.status === 'Verified Complete') return true;
+  if (String(task.verificationStatus || '').trim() === 'VERIFIED_COMPLETED') return true;
+  if (String(task.verificationStatus || '').trim() === 'VERIFIED') return true;
+  return false;
+}
+
 export function countReviewedTasks(tasks: DailyPlannerTask[]): number {
   return tasks.filter(isTaskManagerReviewed).length;
+}
+
+export function countCompletionReviewedTasks(tasks: DailyPlannerTask[]): number {
+  return tasks.filter(isTaskCompletionReviewed).length;
 }
 
 export function formatReviewDate(iso: string): string {

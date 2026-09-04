@@ -147,6 +147,23 @@ export function isCompanyWorkingDay(dateIso: string, location?: string | null): 
   return !isCompanyHoliday(dateIso, location);
 }
 
+/** Next company working day after dateKey (exclusive). Mirrors backend getNextWorkingDayDateKey. */
+export function getNextWorkingDayDateKey(
+  dateKey: string,
+  location?: string | null,
+): string {
+  const parsed = parseIsoDateOnly(String(dateKey || '').trim().slice(0, 10));
+  if (!parsed) return '';
+
+  for (let offset = 1; offset <= 366; offset += 1) {
+    const cursor = new Date(parsed.getTime());
+    cursor.setUTCDate(cursor.getUTCDate() + offset);
+    const key = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}-${String(cursor.getUTCDate()).padStart(2, '0')}`;
+    if (isCompanyWorkingDay(key, location)) return key;
+  }
+  return '';
+}
+
 export function assertRegularPlanningAllowedOnDate(
   dateIso: string,
   location?: string | null,

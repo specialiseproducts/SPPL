@@ -20,4 +20,6 @@ export const dailyPlannerQueryKeys = {
   planningReport: (year: number, month: number, employeeCode = 'me') =>
     [...dailyPlannerQueryKeys.all, 'planningReport', year, month, employeeCode] as const,
   teamPlanningHistory: () => [...dailyPlannerQueryKeys.all, 'teamPlanningHistory'] as const,
+  completionApprovalsPending: () =>
+    [...dailyPlannerQueryKeys.all, 'completion-approvals', 'pending'] as const,
 };

@@ -9,6 +9,57 @@ import log from '../utils/logger.js';
 
 const TABLE_NAME = TABLES.SALES_PLANNER_EVENTS;
 
+/**
+ * Short in-memory cache for Sales Planner events.
+ * Important: the table is scanned by partition key `eventId` only (no owner GSI), so we
+ * keep ONE shared full-table snapshot and filter by owner in memory. Concurrent callers
+ * share a single in-flight scan to avoid N× full-table stampede on Team Daily Planner.
+ */
+const SALES_EVENTS_CACHE_TTL_MS = 30_000;
+let allSalesEventsCache = { at: 0, items: null };
+let allSalesEventsInflight = null;
+
+async function loadAllSalesEventRows() {
+  if (
+    allSalesEventsCache.items &&
+    Date.now() - allSalesEventsCache.at <= SALES_EVENTS_CACHE_TTL_MS
+  ) {
+    return allSalesEventsCache.items;
+  }
+  if (allSalesEventsInflight) return allSalesEventsInflight;
+
+  allSalesEventsInflight = (async () => {
+    let items = [];
+    let lastKey;
+    do {
+      const params = {
+        TableName: TABLE_NAME,
+        FilterExpression: 'attribute_not_exists(is_deleted) OR is_deleted = :f',
+        ExpressionAttributeValues: { ':f': false },
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      };
+      logPlannerDynamo('scan', params);
+      const result = await dynamoDB.scan(params).promise();
+      items = items.concat(result.Items || []);
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+
+    allSalesEventsCache = { at: Date.now(), items };
+    return items;
+  })();
+
+  try {
+    return await allSalesEventsInflight;
+  } finally {
+    allSalesEventsInflight = null;
+  }
+}
+
+/** Warm the shared scan cache before fan-out listTeamTasks syncs. */
+export async function warmSalesEventsCache() {
+  await loadAllSalesEventRows();
+}
+
 function logPlannerDynamo(operation, params) {
   console.log({
     operation,
@@ -102,27 +153,16 @@ export const listPlannerEventsForMonth = async (
   startDate,
   endDate,
 ) => {
-  let items = [];
-  let lastKey;
-  do {
-    const params = {
-      TableName: TABLE_NAME,
-      FilterExpression:
-        '(attribute_not_exists(is_deleted) OR is_deleted = :f) AND ownerEmployeeCode = :owner',
-      ExpressionAttributeValues: {
-        ':f': false,
-        ':owner': String(ownerEmployeeCode || '').trim(),
-      },
-      ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
-    };
-    logPlannerDynamo('scan', params);
+  const owner = String(ownerEmployeeCode || '').trim();
+  const cacheWasWarm =
+    Boolean(allSalesEventsCache.items) &&
+    Date.now() - allSalesEventsCache.at <= SALES_EVENTS_CACHE_TTL_MS;
+  const allItems = await loadAllSalesEventRows();
+  const ownerItems = allItems.filter(
+    (row) => String(row?.ownerEmployeeCode || '').trim() === owner,
+  );
 
-    const result = await dynamoDB.scan(params).promise();
-    items = items.concat(result.Items || []);
-    lastKey = result.LastEvaluatedKey;
-  } while (lastKey);
-
-  const rows = items
+  const rows = ownerItems
     .map(toPlannerEventDto)
     .filter(Boolean)
     .filter((row) => {
@@ -140,11 +180,12 @@ export const listPlannerEventsForMonth = async (
     });
 
   log.info('Planner month scan complete', {
-    ownerEmployeeCode: String(ownerEmployeeCode || '').trim(),
+    ownerEmployeeCode: owner,
     startDate: startDate || '',
     endDate: endDate || '',
-    scannedCount: items.length,
+    scannedCount: allItems.length,
     matchedCount: rows.length,
+    cacheHit: cacheWasWarm,
   });
   return rows;
 };

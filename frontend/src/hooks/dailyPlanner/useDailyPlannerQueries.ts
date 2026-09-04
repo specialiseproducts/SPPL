@@ -7,6 +7,7 @@ import {
   fetchTeamDailyPlannerMonth,
   fetchTeamDailyPlannerTasks,
   fetchTeamMappings,
+  fetchPendingCompletionApprovals,
 } from './dailyPlannerApi';
 import {
   fetchEmployeePlanningProfile,
@@ -43,12 +44,14 @@ export function useDailyPlannerDayQuery(date: string, enabled = true) {
 export function useTeamDailyPlannerQuery(
   filters: Record<string, string>,
   enabled = true,
+  options?: { staleTime?: number; refetchInterval?: number | false; refetchOnMount?: boolean | 'always' },
 ) {
   return useQuery({
     queryKey: dailyPlannerQueryKeys.team(filters),
     queryFn: () => fetchTeamDailyPlannerTasks(filters),
     enabled,
     ...queryDefaults.list,
+    ...options,
   });
 }
 
@@ -72,6 +75,15 @@ export function useTeamMappingsQuery(enabled = true) {
     queryFn: fetchTeamMappings,
     enabled,
     ...queryDefaults.reference,
+  });
+}
+
+export function usePendingCompletionApprovalsQuery(enabled = true) {
+  return useQuery({
+    queryKey: dailyPlannerQueryKeys.completionApprovalsPending(),
+    queryFn: fetchPendingCompletionApprovals,
+    enabled,
+    ...queryDefaults.list,
   });
 }
 

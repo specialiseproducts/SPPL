@@ -168,6 +168,12 @@ export const TABLE_GSI_DEFINITIONS = {
       },
     ],
   },
+  DailyPlannerProjects: {
+    tableEnv: 'DYNAMODB_TABLE_DAILY_PLANNER_PROJECTS',
+    defaultName: 'DailyPlannerProjects',
+    attributeDefinitions: [{ AttributeName: 'projectKey', AttributeType: 'S' }],
+    globalSecondaryIndexes: [],
+  },
   Notifications: {
     tableEnv: 'DYNAMODB_TABLE_NOTIFICATIONS',
     defaultName: 'Notifications',

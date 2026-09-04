@@ -57,6 +57,18 @@ export interface DailyPlannerTask {
   approvedDate?: string | null;
   approvedAt?: string | null;
   managerComments: string;
+  managerInstructions?: string;
+  isProjectBased?: boolean;
+  projectName?: string;
+  planFinalizedAt?: string | null;
+  planFinalizedBy?: string;
+  createdByRole?: string;
+  dayCompletionSubmittedAt?: string | null;
+  dayCompletionSubmittedBy?: string;
+  completionManagerReviewedAt?: string | null;
+  completionManagerReviewedBy?: string;
+  dayCompletionReviewSubmittedAt?: string | null;
+  dayCompletionReviewSubmittedBy?: string;
   verifiedBy?: string;
   verifiedByName?: string;
   verifiedAt?: string | null;
@@ -115,4 +127,19 @@ export interface DailyPlannerTaskDraft {
   planningCategory?: DailyPlannerPlanningCategory;
   urgentReason?: string;
   revisesTaskId?: string;
+  isProjectBased?: boolean;
+  projectName?: string;
+  managerInstructions?: string;
+  employeeCode?: string;
+}
+
+/** Manager-facing pending day-completion submission (Team Daily Planner). */
+export interface PendingCompletionApproval {
+  employeeCode: string;
+  employeeName: string;
+  date: string;
+  taskCount: number;
+  submittedAt: string | null;
+  status: string;
+  tasks: DailyPlannerTask[];
 }

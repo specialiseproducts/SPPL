@@ -24,7 +24,15 @@ router.get('/planning/export', DailyPlannerController.getPlanningExportPayload);
 router.get('/tasks/month', DailyPlannerController.listMyMonth);
 router.get('/tasks/day', DailyPlannerController.listDayTasks);
 router.get('/tasks/team', DailyPlannerController.listTeamTasks);
+router.get(
+  '/completion-approvals/pending',
+  DailyPlannerController.listPendingCompletionApprovals,
+);
 router.get('/tasks/:id', DailyPlannerController.getTask);
+router.post('/tasks/batch', DailyPlannerController.createTaskBatch);
+router.post('/tasks/for-employee', DailyPlannerController.createTaskForEmployee);
+router.post('/tasks/day/submit-completion', DailyPlannerController.submitDayCompletion);
+router.post('/tasks/day/submit-completion-review', DailyPlannerController.submitDayCompletionReview);
 router.post('/tasks', DailyPlannerController.createTask);
 router.put('/tasks/:id', DailyPlannerController.updateTask);
 router.post('/tasks/:id/complete', DailyPlannerController.completeTask);
@@ -34,8 +42,14 @@ router.post('/tasks/:id/approve', DailyPlannerController.approveTask);
 router.post('/tasks/:id/reject', DailyPlannerController.rejectTask);
 router.post('/tasks/:id/needs-revision', DailyPlannerController.requestNeedsRevision);
 router.post('/tasks/:id/verify-completion', DailyPlannerController.verifyTaskCompletion);
+router.post('/tasks/:id/review-completion', DailyPlannerController.reviewTaskCompletion);
 router.post('/tasks/:id/accept-revision', DailyPlannerController.acceptRevisionSuggestion);
 router.put('/tasks/:id/priority', DailyPlannerController.editPriority);
+
+router.get('/projects', DailyPlannerController.listProjects);
+router.post('/projects', DailyPlannerController.upsertProject);
+router.post('/plans/finalize', DailyPlannerController.finalizeEmployeePlan);
+router.get('/planning/next-working-day', DailyPlannerController.getNextWorkingDay);
 
 router.get('/team-mappings', DailyPlannerController.listTeamMappings);
 router.post('/team-mappings', DailyPlannerController.assignTeamMapping);

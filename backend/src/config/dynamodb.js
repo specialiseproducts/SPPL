@@ -61,6 +61,8 @@ export const TABLES = {
     process.env.DYNAMODB_TABLE_DAILY_PLANNER_TEAM_MAPPINGS || 'DailyPlannerTeamMappings',
   DAILY_PLANNER_PLANNING:
     process.env.DYNAMODB_TABLE_DAILY_PLANNER_PLANNING || 'DailyPlannerPlanning',
+  DAILY_PLANNER_PROJECTS:
+    process.env.DYNAMODB_TABLE_DAILY_PLANNER_PROJECTS || 'DailyPlannerProjects',
   AUDIT_LOGS: process.env.DYNAMODB_TABLE_AUDIT_LOGS || 'AuditLogs',
   ORDER_PROCESSING: process.env.DYNAMODB_TABLE_ORDER_PROCESSING || 'OrderProcessing',
   PASSWORD_RESET_OTPS:

@@ -16,31 +16,39 @@ export type PlanningCategory =
 
 export const REGULAR_TASK_BLOCKED_MESSAGE =
   'Regular tasks can only be planned during the planning windows.\n\n' +
-  'Today: 12:00 AM – 11:00 AM\n' +
-  'Tomorrow: 05:30 PM – 08:00 PM\n\n' +
-  'If this work is urgent, please create it as an Urgent Task.';
+  'Next working day: 05:30 PM – 08:00 PM\n\n' +
+  'Managers may create Urgent Tasks when reviewing team plans.';
 
 export const REGULAR_TASK_TODAY_BLOCKED_MESSAGE =
-  'A Regular Task for today can only be created before 11:00 AM.';
+  'A Regular Task for today can only be created before 11:00 AM (managers/admins only).';
 
 export const REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE =
-  'A Regular Task for tomorrow can only be created between 5:30 PM and 8:00 PM today.';
+  'A Regular Task for the next working day can only be created between 5:30 PM and 8:00 PM today.';
 
 export const URGENT_TASK_TODAY_BLOCKED_MESSAGE =
-  'Urgent Tasks for today can only be created between 11:00 AM and 5:30 PM.';
+  'Urgent Tasks for today can only be created between 11:00 AM and 5:30 PM (managers/admins only).';
 
 export const TASK_CREATE_DATE_BLOCKED_MESSAGE =
   'You can only create tasks for today or tomorrow according to the allowed task creation schedule.';
 
+export const EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE =
+  'Regular task planning is only allowed between 5:30 PM and 8:00 PM for the next working day.';
+
+export const EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE =
+  'Your minimum total hours planning is not completed. Please plan 7 hours.';
+
+export const USER_URGENT_FORBIDDEN_MESSAGE =
+  'You do not have permission to create Urgent Tasks.';
+
 export const PLANNING_WINDOW_CLOSED_MESSAGE =
   'The planning window is currently closed.\n\n' +
-  "Today's Regular Tasks are allowed from 12:00 AM–11:00 AM.\n\n" +
-  "Today's Urgent Tasks are allowed from 11:00 AM–5:30 PM.\n\n" +
-  "Tomorrow's Regular Tasks are allowed from 5:30 PM–8:00 PM.\n\n" +
-  "If this is genuinely urgent and within the Urgent window, please use the 'Create Urgent Task' option.";
+  'Employee Regular Tasks for the next working day are allowed from 5:30 PM–8:00 PM.\n\n' +
+  'Manager review runs from 8:00 PM until 9:30 AM the next day.';
 
 export const TASK_UPDATES_READONLY_MESSAGE =
   'Task updates are only allowed during the planning windows (08:00–11:00 AM and 05:30–08:00 PM).';
+
+export const MIN_PLANNED_HOURS_PER_WORKING_DAY = 7;
 
 export type PlanningWindowUiState = 'morning' | 'closed' | 'evening' | 'urgent-only';
 
@@ -157,13 +165,31 @@ export function isUrgentTaskAllowed(taskDateIso: string, config: PlanningConfig)
 /**
  * Central eligibility for My Daily Planner create entry points (before opening the form).
  * Holiday always takes priority.
+ * User-access: next working day only, evening window, Regular only.
+ * Elevated (Admin/Manager/Developer): prior today morning / urgent / tomorrow evening rules.
  */
 export function evaluateMyDailyPlannerCreateEligibility(
   taskDateIso: string,
   config: PlanningConfig,
+  options?: { elevated?: boolean; nextWorkingDayIst?: string },
 ): MyDailyPlannerCreateEligibility {
   if (isCompanyHoliday(taskDateIso, config.employeeLocation)) {
     return { allowed: false, message: COMPANY_HOLIDAY_TASK_CREATE_MESSAGE };
+  }
+
+  const elevated = Boolean(options?.elevated);
+  const nextWorking =
+    String(options?.nextWorkingDayIst || '').trim().slice(0, 10) || config.tomorrowIst;
+  const normalized = String(taskDateIso || '').trim().slice(0, 10);
+
+  if (!elevated) {
+    if (normalized !== nextWorking) {
+      return { allowed: false, message: EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE };
+    }
+    if (!config.windows.evening.active) {
+      return { allowed: false, message: EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE };
+    }
+    return { allowed: true, mode: 'regular' };
   }
 
   const target = getPlanningTargetDateMode(taskDateIso, config);
@@ -181,16 +207,25 @@ export function evaluateMyDailyPlannerCreateEligibility(
     return { allowed: false, message: URGENT_TASK_TODAY_BLOCKED_MESSAGE };
   }
 
-  // tomorrow
+  // tomorrow / next working day evening for elevated own planning
   if (config.windows.evening.active) {
     return { allowed: true, mode: 'regular' };
   }
   return { allowed: false, message: REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE };
 }
 
-export function assertCanCreateRegularTask(taskDateIso: string, config: PlanningConfig): void {
+export function assertCanCreateRegularTask(
+  taskDateIso: string,
+  config: PlanningConfig,
+  options?: { elevated?: boolean; nextWorkingDayIst?: string },
+): void {
   if (isCompanyHoliday(taskDateIso, config.employeeLocation)) {
     throw new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
+  }
+  if (!options?.elevated) {
+    const eligibility = evaluateMyDailyPlannerCreateEligibility(taskDateIso, config, options);
+    if (!eligibility.allowed) throw new Error(eligibility.message);
+    return;
   }
   const target = getPlanningTargetDateMode(taskDateIso, config);
   if (target === 'past' || target === 'other') {
@@ -206,7 +241,14 @@ export function assertCanCreateRegularTask(taskDateIso: string, config: Planning
   throw new Error(config.regularTaskBlockedMessage || REGULAR_TASK_BLOCKED_MESSAGE);
 }
 
-export function assertCanCreateUrgentTask(taskDateIso: string, config: PlanningConfig): void {
+export function assertCanCreateUrgentTask(
+  taskDateIso: string,
+  config: PlanningConfig,
+  options?: { elevated?: boolean },
+): void {
+  if (!options?.elevated) {
+    throw new Error(USER_URGENT_FORBIDDEN_MESSAGE);
+  }
   if (isCompanyHoliday(taskDateIso, config.employeeLocation)) {
     throw new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
   }

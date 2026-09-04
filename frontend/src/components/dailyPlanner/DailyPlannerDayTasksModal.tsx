@@ -28,6 +28,7 @@ import {
   acceptDailyPlannerRevision,
   completeDailyPlannerTask,
   notCompletedDailyPlannerTask,
+  submitDayCompletion,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import BulletPointList from './BulletPointList';
@@ -35,6 +36,11 @@ import { parseBulletPoints } from './bulletPointUtils';
 import { isCompanyHoliday } from '../../utils/companyWorkingDays';
 import { todayIso } from './dailyPlannerUtils';
 import { useAuth } from '../../context/AuthContext';
+import { hasEmployeeCompletionOutcome } from './todayTaskReviewWizardUtils';
+
+/** Display-only message for the day-tasks modal (does not change global planning rules). */
+const DAY_TASK_UPDATES_READONLY_DISPLAY_MESSAGE =
+  'Task updates are only allowed during the planning windows (05:30 PM–08:00 PM).';
 
 interface DailyPlannerDayTasksModalProps {
   open: boolean;
@@ -48,6 +54,7 @@ interface DailyPlannerDayTasksModalProps {
     hideRevisionParentId?: string;
   }) => void;
   onAddTask: (revisesTaskId?: string) => void;
+  onViewFinalPlan?: () => void;
 }
 
 export default function DailyPlannerDayTasksModal({
@@ -58,6 +65,7 @@ export default function DailyPlannerDayTasksModal({
   onClose,
   onChanged,
   onAddTask,
+  onViewFinalPlan,
 }: DailyPlannerDayTasksModalProps) {
   const { user } = useAuth();
   const employeeLocation = user?.location || 'Office';
@@ -67,6 +75,7 @@ export default function DailyPlannerDayTasksModal({
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [completeTaskId, setCompleteTaskId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [submittingDay, setSubmittingDay] = useState(false);
   const workDoneEditorRef = useRef<BulletPointEditorHandle>(null);
   const reasonEditorRef = useRef<BulletPointEditorHandle>(null);
 
@@ -79,6 +88,37 @@ export default function DailyPlannerDayTasksModal({
     [canCompleteByDate, date, planningConfig],
   );
   const isReadOnlyWindow = canCompleteByDate && !canModifyTasks;
+
+  const allHaveCompletionOutcomes =
+    visibleTasks.length > 0 && visibleTasks.every(hasEmployeeCompletionOutcome);
+  const completionAlreadySubmitted = visibleTasks.some((t) => Boolean(t.dayCompletionSubmittedAt));
+  const canSubmitDayCompletion =
+    canCompleteByDate &&
+    allHaveCompletionOutcomes &&
+    !completionAlreadySubmitted &&
+    !submittingDay;
+
+  const handleSubmitDayCompletion = async () => {
+    if (!canSubmitDayCompletion) {
+      if (!allHaveCompletionOutcomes) {
+        toast.error(
+          'Mark every task as Completed, Not Completed, or Rescheduled before submitting.',
+        );
+      }
+      return;
+    }
+    setSubmittingDay(true);
+    try {
+      const updated = await submitDayCompletion(date);
+      toast.success('Completion submitted for manager review');
+      onChanged({ upsert: updated });
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Submit failed');
+    } finally {
+      setSubmittingDay(false);
+    }
+  };
 
   const submitCompleted = async () => {
     if (!completeTaskId || !canModifyTasks) {
@@ -221,7 +261,14 @@ export default function DailyPlannerDayTasksModal({
           style={{ height: '90vh', maxHeight: '90vh' }}
         >
           <DialogHeader className="shrink-0 border-b border-gray-200 px-6 py-4 text-left">
-            <DialogTitle>Tasks for {date}</DialogTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2 pr-8">
+              <DialogTitle>Tasks for {date}</DialogTitle>
+              {onViewFinalPlan && visibleTasks.some((t) => Boolean(t.planFinalizedAt)) ? (
+                <Button type="button" variant="outline" size="sm" onClick={onViewFinalPlan}>
+                  View Final Plan
+                </Button>
+              ) : null}
+            </div>
           </DialogHeader>
 
           <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth overscroll-contain px-6 py-4">
@@ -237,7 +284,9 @@ export default function DailyPlannerDayTasksModal({
                 <Badge variant="secondary" className="font-normal">
                   Read Only
                 </Badge>
-                <p className="text-xs text-muted-foreground">{TASK_UPDATES_READONLY_MESSAGE}</p>
+                <p className="text-xs text-muted-foreground">
+                  {DAY_TASK_UPDATES_READONLY_DISPLAY_MESSAGE}
+                </p>
               </div>
             ) : null}
             <div className="space-y-3">
@@ -430,9 +479,24 @@ export default function DailyPlannerDayTasksModal({
                 + Add Task
               </Button>
             ) : null}
-            <Button type="button" onClick={onClose}>
-              Close
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {completionAlreadySubmitted ? (
+                <p className="text-xs text-green-700 sm:mr-2">Completion submitted.</p>
+              ) : null}
+              <Button type="button" variant="outline" onClick={onClose} disabled={submittingDay}>
+                Close
+              </Button>
+              {canCompleteByDate && visibleTasks.length > 0 ? (
+                <Button
+                  type="button"
+                  className="bg-[#007BFF] hover:bg-[#0056b3]"
+                  disabled={!canSubmitDayCompletion}
+                  onClick={() => void handleSubmitDayCompletion()}
+                >
+                  {submittingDay ? 'Submitting…' : 'Submit'}
+                </Button>
+              ) : null}
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

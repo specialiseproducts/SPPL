@@ -3,6 +3,7 @@ import type {
   DailyPlannerTaskDraft,
   DailyPlannerTeamMapping,
   DailyPlannerNotCompletedAction,
+  PendingCompletionApproval,
 } from '../../types/dailyPlanner';
 import { apiFetch } from '../../services/api';
 import {
@@ -67,6 +68,24 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     approvedDate: r.approvedDate ? String(r.approvedDate) : r.approvedAt ? String(r.approvedAt) : null,
     approvedAt: r.approvedAt ? String(r.approvedAt) : r.approvedDate ? String(r.approvedDate) : null,
     managerComments: String(r.managerComments ?? '').trim(),
+    managerInstructions: String(r.managerInstructions ?? '').trim(),
+    isProjectBased: Boolean(r.isProjectBased),
+    projectName: String(r.projectName ?? '').trim(),
+    planFinalizedAt: r.planFinalizedAt ? String(r.planFinalizedAt) : null,
+    planFinalizedBy: String(r.planFinalizedBy ?? '').trim(),
+    createdByRole: String(r.createdByRole ?? '').trim(),
+    dayCompletionSubmittedAt: r.dayCompletionSubmittedAt
+      ? String(r.dayCompletionSubmittedAt)
+      : null,
+    dayCompletionSubmittedBy: String(r.dayCompletionSubmittedBy ?? '').trim(),
+    completionManagerReviewedAt: r.completionManagerReviewedAt
+      ? String(r.completionManagerReviewedAt)
+      : null,
+    completionManagerReviewedBy: String(r.completionManagerReviewedBy ?? '').trim(),
+    dayCompletionReviewSubmittedAt: r.dayCompletionReviewSubmittedAt
+      ? String(r.dayCompletionReviewSubmittedAt)
+      : null,
+    dayCompletionReviewSubmittedBy: String(r.dayCompletionReviewSubmittedBy ?? '').trim(),
     verifiedBy: String(r.verifiedBy ?? '').trim(),
     verifiedByName: String(r.verifiedByName ?? '').trim(),
     verifiedAt: r.verifiedAt ? String(r.verifiedAt) : null,
@@ -140,16 +159,21 @@ export async function fetchDailyPlannerDay(date: string): Promise<DailyPlannerTa
 export async function createDailyPlannerTask(
   draft: DailyPlannerTaskDraft,
   planningConfig?: PlanningConfig,
+  options?: { elevated?: boolean; nextWorkingDayIst?: string },
 ): Promise<DailyPlannerTask> {
   const category = draft.planningCategory || PLANNING_CATEGORY_REGULAR;
+  const elevated = Boolean(options?.elevated);
   if (planningConfig) {
     if (isUrgentTask(category)) {
-      assertCanCreateUrgentTask(draft.date, planningConfig);
+      assertCanCreateUrgentTask(draft.date, planningConfig, { elevated });
       if (!String(draft.urgentReason || '').trim()) {
         throw new Error('Urgent Task Reason is required.');
       }
     } else {
-      assertCanCreateRegularTask(draft.date, planningConfig);
+      assertCanCreateRegularTask(draft.date, planningConfig, {
+        elevated,
+        nextWorkingDayIst: options?.nextWorkingDayIst,
+      });
     }
   } else {
     assertCanPlanTasks(draft.date);
@@ -168,22 +192,27 @@ export async function createDailyPlannerTask(
   return normalizeTask(res.data.task);
 }
 
-/** Save multiple tasks in one user operation (parallel creates, single refresh in caller). */
+/** Save multiple tasks in one user operation (batch for exact-7 employee plans). */
 export async function createDailyPlannerTasks(
   drafts: DailyPlannerTaskDraft[],
   planningConfig?: PlanningConfig,
+  options?: { elevated?: boolean; nextWorkingDayIst?: string; useBatch?: boolean },
 ): Promise<DailyPlannerTask[]> {
   if (drafts.length === 0) {
     throw new Error('At least one task is required');
   }
   const sharedDate = drafts[0].date;
+  const elevated = Boolean(options?.elevated);
   if (planningConfig) {
     for (const draft of drafts) {
       const category = draft.planningCategory || PLANNING_CATEGORY_REGULAR;
       if (isUrgentTask(category)) {
-        assertCanCreateUrgentTask(draft.date, planningConfig);
+        assertCanCreateUrgentTask(draft.date, planningConfig, { elevated });
       } else {
-        assertCanCreateRegularTask(draft.date, planningConfig);
+        assertCanCreateRegularTask(draft.date, planningConfig, {
+          elevated,
+          nextWorkingDayIst: options?.nextWorkingDayIst,
+        });
       }
     }
   } else {
@@ -192,7 +221,144 @@ export async function createDailyPlannerTasks(
   if (drafts.some((d) => d.date !== sharedDate)) {
     throw new Error('All tasks must use the same date');
   }
-  return Promise.all(drafts.map((draft) => createDailyPlannerTask(draft, planningConfig)));
+
+  const useBatch = options?.useBatch !== false && !elevated;
+  if (useBatch || drafts.length > 1) {
+    const res = (await apiFetch('/api/daily-planner/tasks/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tasks: drafts.map((draft) => ({
+          ...draft,
+          planningCategory: draft.planningCategory || PLANNING_CATEGORY_REGULAR,
+          urgentReason: draft.urgentReason || '',
+        })),
+      }),
+    })) as { data?: { tasks?: DailyPlannerTask[] } };
+    if (!res?.data?.tasks?.length) throw new Error('Create failed');
+    return res.data.tasks.map(normalizeTask);
+  }
+
+  return Promise.all(
+    drafts.map((draft) =>
+      createDailyPlannerTask(draft, planningConfig, {
+        elevated,
+        nextWorkingDayIst: options?.nextWorkingDayIst,
+      }),
+    ),
+  );
+}
+
+export async function createDailyPlannerTaskForEmployee(
+  draft: DailyPlannerTaskDraft & { employeeCode: string },
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch('/api/daily-planner/tasks/for-employee', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...draft,
+      planningCategory: draft.planningCategory || PLANNING_CATEGORY_REGULAR,
+      urgentReason: draft.urgentReason || '',
+      autoApprove: true,
+    }),
+  })) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Create failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function fetchDailyPlannerProjects(): Promise<
+  Array<{ projectKey: string; projectName: string }>
+> {
+  const res = (await apiFetch('/api/daily-planner/projects')) as {
+    data?: { projects?: Array<{ projectKey?: string; projectName?: string }> };
+  };
+  return (res?.data?.projects || [])
+    .map((p) => ({
+      projectKey: String(p.projectKey || '').trim(),
+      projectName: String(p.projectName || '').trim(),
+    }))
+    .filter((p) => p.projectName);
+}
+
+export async function finalizeEmployeeDailyPlan(
+  employeeCode: string,
+  date: string,
+): Promise<{ tasks: DailyPlannerTask[]; emailSent: boolean }> {
+  const res = (await apiFetch('/api/daily-planner/plans/finalize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeCode, date }),
+  })) as {
+    data?: { tasks?: DailyPlannerTask[]; emailSent?: boolean };
+  };
+  return {
+    tasks: (res?.data?.tasks || []).map(normalizeTask),
+    emailSent: Boolean(res?.data?.emailSent),
+  };
+}
+
+export async function submitDayCompletion(date: string): Promise<DailyPlannerTask[]> {
+  const res = (await apiFetch('/api/daily-planner/tasks/day/submit-completion', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date }),
+  })) as { data?: { tasks?: DailyPlannerTask[] } };
+  return (res?.data?.tasks || []).map(normalizeTask);
+}
+
+export async function reviewDailyPlannerTaskCompletion(
+  taskId: string,
+  comments = '',
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/review-completion`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ comments }),
+    },
+  )) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Review failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function submitDayCompletionReview(
+  employeeCode: string,
+  date: string,
+): Promise<DailyPlannerTask[]> {
+  const res = (await apiFetch('/api/daily-planner/tasks/day/submit-completion-review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeCode, date }),
+  })) as { data?: { tasks?: DailyPlannerTask[] } };
+  return (res?.data?.tasks || []).map(normalizeTask);
+}
+
+export async function fetchPendingCompletionApprovals(): Promise<PendingCompletionApproval[]> {
+  const res = (await apiFetch('/api/daily-planner/completion-approvals/pending')) as {
+    success?: boolean;
+    data?: {
+      approvals?: PendingCompletionApproval[];
+    };
+  };
+  const rows = Array.isArray(res?.data?.approvals) ? res.data.approvals : [];
+  return rows.map((row) => ({
+    employeeCode: String(row.employeeCode || '').trim(),
+    employeeName: String(row.employeeName || '').trim(),
+    date: String(row.date || '').trim().slice(0, 10),
+    taskCount: Number(row.taskCount) || (Array.isArray(row.tasks) ? row.tasks.length : 0),
+    submittedAt: row.submittedAt ? String(row.submittedAt) : null,
+    status: String(row.status || 'Pending').trim() || 'Pending',
+    tasks: (Array.isArray(row.tasks) ? row.tasks : []).map(normalizeTask),
+  }));
+}
+
+export async function fetchNextWorkingDay(): Promise<{ date: string }> {
+  const res = (await apiFetch('/api/daily-planner/planning/next-working-day')) as {
+    data?: { date?: string; nextWorkingDay?: string };
+  };
+  const date = String(res?.data?.date || res?.data?.nextWorkingDay || '').trim();
+  return { date };
 }
 
 export async function completeDailyPlannerTask(

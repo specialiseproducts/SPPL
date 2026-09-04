@@ -27,10 +27,125 @@ export const listDayTasks = async (req, res, next) => {
 
 export const createTask = async (req, res, next) => {
   try {
-    const data = await DailyPlannerService.createManualTask(req.body || {}, req.user);
+    const data = await DailyPlannerService.createManualTask(
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
     res.status(201).json({ success: true, data });
   } catch (error) {
     log.error('Daily planner createTask error:', error);
+    next(error);
+  }
+};
+
+export const createTaskBatch = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.createManualTaskBatch(
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner createTaskBatch error:', error);
+    next(error);
+  }
+};
+
+export const createTaskForEmployee = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.createTaskForEmployee(
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner createTaskForEmployee error:', error);
+    next(error);
+  }
+};
+
+export const listProjects = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.listProjects();
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listProjects error:', error);
+    next(error);
+  }
+};
+
+export const upsertProject = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.upsertProject(req.body || {}, req.user);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner upsertProject error:', error);
+    next(error);
+  }
+};
+
+export const finalizeEmployeePlan = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.finalizeEmployeePlan(
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner finalizeEmployeePlan error:', error);
+    next(error);
+  }
+};
+
+export const getNextWorkingDay = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.getNextWorkingDay(req.user);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner getNextWorkingDay error:', error);
+    next(error);
+  }
+};
+
+export const submitDayCompletion = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.submitDayCompletion(req.body || {}, req.user);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner submitDayCompletion error:', error);
+    next(error);
+  }
+};
+
+export const reviewTaskCompletion = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.reviewTaskCompletion(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner reviewTaskCompletion error:', error);
+    next(error);
+  }
+};
+
+export const submitDayCompletionReview = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.submitDayCompletionReview(
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner submitDayCompletionReview error:', error);
     next(error);
   }
 };
@@ -91,6 +206,19 @@ export const listTeamTasks = async (req, res, next) => {
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Daily planner listTeamTasks error:', error);
+    next(error);
+  }
+};
+
+export const listPendingCompletionApprovals = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.listPendingCompletionApprovals(
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listPendingCompletionApprovals error:', error);
     next(error);
   }
 };

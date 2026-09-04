@@ -1,6 +1,7 @@
 import type { DailyPlannerTask } from '../../types/dailyPlanner';
 import {
   useInvalidateDailyPlannerQueries,
+  usePlanningConfigQuery,
   useTeamDailyPlannerMonthQuery,
   useTeamDailyPlannerQuery,
   useTeamMappingsQuery,
@@ -20,6 +21,7 @@ import {
   type DailyCalendarDayCell,
 } from './dailyPlannerUtils';
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
+import DailyPlannerCompletionApprovalsPanel from './DailyPlannerCompletionApprovalsPanel';
 import { isTaskManagerReviewed } from './todayTaskReviewWizardUtils';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
@@ -28,6 +30,28 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
+
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const EVENING_END_MINUTES = 20 * 60;
+
+function resolveTeamReviewDate(
+  today: string,
+  serverTimeIso: string | undefined,
+  location: string | undefined,
+  tomorrowIst: string | undefined,
+): string {
+  if (!serverTimeIso) return today;
+  const ref = new Date(serverTimeIso);
+  if (Number.isNaN(ref.getTime())) return today;
+  const ist = new Date(ref.getTime() + IST_OFFSET_MS);
+  const minutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  // After 8:00 PM IST managers review next-working-day plans submitted in the evening window.
+  if (minutes >= EVENING_END_MINUTES) {
+    return getNextWorkingDayDateKey(today, location) || tomorrowIst || today;
+  }
+  return today;
+}
 
 const MONTHS = [
   'January',
@@ -148,6 +172,7 @@ export default function TeamDailyPlannerTab() {
   const [wizardDismissedForEmployee, setWizardDismissedForEmployee] = useState('');
   const hadPendingReviewsRef = useRef(false);
   const today = todayIso();
+  const planningConfigQuery = usePlanningConfigQuery();
 
   const mappingsQuery = useTeamMappingsQuery();
   const employeesQuery = useEmployeesListQuery();
@@ -177,11 +202,6 @@ export default function TeamDailyPlannerTab() {
     !!selectedEmployeeCode,
   );
 
-  const todayTasksQuery = useTeamDailyPlannerQuery(
-    { employeeCode: selectedEmployeeCode, date: today },
-    !!selectedEmployeeCode,
-  );
-
   const selectedEmployeeLocation = useMemo(() => {
     const code = String(selectedEmployeeCode || '').trim();
     if (!code) return undefined;
@@ -191,6 +211,28 @@ export default function TeamDailyPlannerTab() {
     });
     return emp?.location || undefined;
   }, [selectedEmployeeCode, employeesQuery.data]);
+
+  const reviewDate = useMemo(
+    () =>
+      resolveTeamReviewDate(
+        planningConfigQuery.data?.todayIst || today,
+        planningConfigQuery.data?.serverTimeIso,
+        selectedEmployeeLocation,
+        planningConfigQuery.data?.tomorrowIst,
+      ),
+    [
+      planningConfigQuery.data?.todayIst,
+      planningConfigQuery.data?.serverTimeIso,
+      planningConfigQuery.data?.tomorrowIst,
+      selectedEmployeeLocation,
+      today,
+    ],
+  );
+
+  const todayTasksQuery = useTeamDailyPlannerQuery(
+    { employeeCode: selectedEmployeeCode, date: reviewDate },
+    !!selectedEmployeeCode,
+  );
 
   const selectedEmployeeProfile = useMemo(() => {
     const code = String(selectedEmployeeCode || '').trim();
@@ -215,6 +257,7 @@ export default function TeamDailyPlannerTab() {
     return [...list].sort((a, b) => a.taskName.localeCompare(b.taskName));
   }, [todayTasksQuery.data]);
 
+  // Plan-review pending only (never reuse completion submission as plan-review state).
   const pendingReviewTasks = useMemo(
     () => todayTasks.filter((task) => !isTaskManagerReviewed(task)),
     [todayTasks],
@@ -236,7 +279,7 @@ export default function TeamDailyPlannerTab() {
 
     if (pendingReviewCount === 0) {
       hadPendingReviewsRef.current = false;
-      // No pending reviews — never auto-open (fixes reopen after all reviews complete).
+      // No pending plan reviews — never auto-open (fixes reopen after all reviews complete).
       return;
     }
 
@@ -279,7 +322,7 @@ export default function TeamDailyPlannerTab() {
   const isLoading = isQueryColdLoading(monthQuery);
 
   const handleSelectTask = (task: DailyPlannerTask) => {
-    if (task.date !== today || todayTasks.length === 0) return;
+    if (task.date !== reviewDate || todayTasks.length === 0) return;
     const index = todayTasks.findIndex((t) => t.plannerTaskId === task.plannerTaskId);
     setWizardDismissedForEmployee('');
     setWizardTaskIndex(index >= 0 ? index : 0);
@@ -289,12 +332,14 @@ export default function TeamDailyPlannerTab() {
   const refreshTasks = (updatedTasks?: DailyPlannerTask[]) => {
     if (updatedTasks?.length) {
       upsertPlannerTasksInCache(queryClient, updatedTasks);
-      // Task lists are already patched — only refresh planning score widgets.
       void queryClient.invalidateQueries({
         queryKey: dailyPlannerQueryKeys.planningProfile(),
       });
       void queryClient.invalidateQueries({
         queryKey: dailyPlannerQueryKeys.managerPlanningDashboard(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.completionApprovalsPending(),
       });
       return;
     }
@@ -345,6 +390,8 @@ export default function TeamDailyPlannerTab() {
 
   return (
     <TooltipPrimitive.Provider delayDuration={200}>
+      <DailyPlannerCompletionApprovalsPanel onTasksUpdated={refreshTasks} />
+
       <div className="w-full space-y-3 pb-6">
         <Card className="w-full border-gray-200 shadow-sm">
           <div
@@ -507,13 +554,13 @@ export default function TeamDailyPlannerTab() {
 
         {!todayTasksLoading && selectedEmployeeCode && todayTasks.length === 0 ? (
           <p className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-            No tasks created today.
+            No tasks created for plan review date ({reviewDate}).
           </p>
         ) : null}
 
         <p className="text-xs text-muted-foreground">
-          Today&apos;s tasks open in the review wizard automatically. Click a today task chip to
-          reopen the wizard.
+          Today&apos;s plan-review tasks open in the review wizard automatically. Click a plan-date
+          task chip to reopen the wizard.
         </p>
       </div>
 
@@ -522,8 +569,9 @@ export default function TeamDailyPlannerTab() {
           open={wizardOpen}
           tasks={todayTasks}
           employee={selectedEmployeeProfile}
-          reviewDate={today}
+          reviewDate={reviewDate}
           initialTaskIndex={wizardTaskIndex}
+          completionReviewMode={false}
           onClose={() => {
             setWizardOpen(false);
             setWizardDismissedForEmployee(selectedEmployeeCode);

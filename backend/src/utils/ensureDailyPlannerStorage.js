@@ -12,6 +12,7 @@ const DAILY_PLANNER_DEFS = [
   TABLE_GSI_DEFINITIONS.DailyPlannerTasks,
   TABLE_GSI_DEFINITIONS.DailyPlannerTeamMappings,
   TABLE_GSI_DEFINITIONS.DailyPlannerPlanning,
+  TABLE_GSI_DEFINITIONS.DailyPlannerProjects,
 ];
 
 function createDynamoClient() {
@@ -92,24 +93,33 @@ async function createTableIfMissing(dynamodb, def, info) {
   }
 
   info(`[create] ${tableName}…`);
-  await dynamodb
-    .createTable({
-      TableName: tableName,
-      KeySchema: [
-        {
-          AttributeName: def.attributeDefinitions[0].AttributeName,
-          KeyType: 'HASH',
-        },
-      ],
-      AttributeDefinitions: def.attributeDefinitions,
-      GlobalSecondaryIndexes: def.globalSecondaryIndexes.map((gsi) => ({
-        IndexName: gsi.IndexName,
-        KeySchema: gsi.KeySchema,
-        Projection: gsi.Projection,
-      })),
-      BillingMode: 'PAY_PER_REQUEST',
-    })
-    .promise();
+  const createParams = {
+    TableName: tableName,
+    KeySchema: [
+      {
+        AttributeName: def.attributeDefinitions[0].AttributeName,
+        KeyType: 'HASH',
+      },
+    ],
+    AttributeDefinitions: def.attributeDefinitions.filter((a) => {
+      const pk = def.attributeDefinitions[0].AttributeName;
+      const gsiAttrs = new Set(
+        (def.globalSecondaryIndexes || []).flatMap((g) =>
+          (g.KeySchema || []).map((k) => k.AttributeName),
+        ),
+      );
+      return a.AttributeName === pk || gsiAttrs.has(a.AttributeName);
+    }),
+    BillingMode: 'PAY_PER_REQUEST',
+  };
+  if ((def.globalSecondaryIndexes || []).length > 0) {
+    createParams.GlobalSecondaryIndexes = def.globalSecondaryIndexes.map((gsi) => ({
+      IndexName: gsi.IndexName,
+      KeySchema: gsi.KeySchema,
+      Projection: gsi.Projection,
+    }));
+  }
+  await dynamodb.createTable(createParams).promise();
   await waitForTableActive(dynamodb, tableName, info);
   info(`[ok] ${tableName} is ACTIVE (created with GSIs)`);
   return tableName;

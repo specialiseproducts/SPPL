@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, CheckCheck, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
+import { Check, CheckCheck, ChevronLeft, ChevronRight, Pencil, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import type { DailyPlannerPriority, DailyPlannerTask } from '../../types/dailyPlanner';
 import {
@@ -7,16 +7,23 @@ import {
   requestNeedsRevisionDailyPlannerTask,
   saveDailyPlannerManagerComments,
   verifyDailyPlannerCompletion,
+  createDailyPlannerTaskForEmployee,
+  finalizeEmployeeDailyPlan,
+  reviewDailyPlannerTaskCompletion,
+  submitDayCompletionReview,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import { getDailyTaskStatusLabel } from './dailyPlannerUtils';
 import BulletPointList from './BulletPointList';
+import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import {
+  countCompletionReviewedTasks,
   countReviewedTasks,
   formatReviewDate,
   getCompletionTime,
   getPreviousRevisionCount,
   getTaskOriginLabel,
   getWizardReviewIndicator,
+  isTaskCompletionReviewed,
   isTaskManagerReviewed,
   type WizardReviewIndicator,
 } from './todayTaskReviewWizardUtils';
@@ -34,6 +41,7 @@ import {
   DialogTitle,
 } from '../ui/dialog';
 import { cn } from '../ui/utils';
+import { MIN_PLANNED_HOURS_PER_WORKING_DAY } from '../../utils/planningRecognition';
 
 function displayCell(value: string | number | undefined | null): string {
   if (value === undefined || value === null) return '—';
@@ -142,6 +150,8 @@ interface TodayTaskReviewWizardProps {
   employee: TodayReviewEmployeeInfo;
   reviewDate: string;
   initialTaskIndex?: number;
+  /** When true, wizard runs completion-review stage (not plan finalize). */
+  completionReviewMode?: boolean;
   onClose: () => void;
   onFinish: () => void;
   onTasksUpdated: (updatedTasks?: DailyPlannerTask[]) => Promise<void> | void;
@@ -153,6 +163,7 @@ export default function TodayTaskReviewWizard({
   employee,
   reviewDate,
   initialTaskIndex = 0,
+  completionReviewMode = false,
   onClose,
   onFinish,
   onTasksUpdated,
@@ -177,15 +188,29 @@ export default function TodayTaskReviewWizard({
   const [replacementPriority, setReplacementPriority] = useState<DailyPlannerPriority>('Medium');
   const [replacementHours, setReplacementHours] = useState('');
   const [replacementOutcome, setReplacementOutcome] = useState('');
+  const [addTaskOpen, setAddTaskOpen] = useState(false);
 
   const sortedTasks = useMemo(
     () => [...tasks].sort((a, b) => a.taskName.localeCompare(b.taskName)),
     [tasks],
   );
 
+  const planTotalHours = useMemo(() => {
+    return Math.round(
+      sortedTasks.reduce((sum, t) => sum + (Number(t.hoursRequired) || 0), 0) * 100,
+    ) / 100;
+  }, [sortedTasks]);
+
+  const planFinalized = useMemo(
+    () => sortedTasks.some((t) => Boolean(t.planFinalizedAt)),
+    [sortedTasks],
+  );
+
   const task = sortedTasks[currentIndex] ?? null;
   const total = sortedTasks.length;
-  const reviewedCount = countReviewedTasks(sortedTasks);
+  const reviewedCount = completionReviewMode
+    ? countCompletionReviewedTasks(sortedTasks)
+    : countReviewedTasks(sortedTasks);
   const allReviewed = total > 0 && reviewedCount === total;
   const progressPct = total > 0 ? Math.round((reviewedCount / total) * 100) : 0;
 
@@ -256,14 +281,18 @@ export default function TodayTaskReviewWizard({
   const awaitingVerification =
     task?.status === 'Awaiting Verification' || task?.status === 'Completed';
   const showApprove =
-    task?.status === 'Pending' ||
-    (editingPriority && priorityChanged) ||
-    (editingHours && hoursChanged);
+    !completionReviewMode &&
+    !planFinalized &&
+    (task?.status === 'Pending' ||
+      (editingPriority && priorityChanged) ||
+      (editingHours && hoursChanged));
   const showVerify = awaitingVerification;
   const showRequestRevision =
-    task?.status === 'Pending' ||
-    task?.status === 'Approved' ||
-    awaitingVerification;
+    !completionReviewMode &&
+    !planFinalized &&
+    (task?.status === 'Pending' ||
+      task?.status === 'Approved' ||
+      awaitingVerification);
 
   const advanceAfterSave = useCallback(() => {
     if (currentIndex < total - 1) {
@@ -328,6 +357,27 @@ export default function TodayTaskReviewWizard({
 
   const handleFinishReview = async () => {
     if (!allReviewed || busy) return;
+    if (completionReviewMode) {
+      setBusy(true);
+      try {
+        const updated = await submitDayCompletionReview(employee.employeeCode, reviewDate);
+        if (updated.length) await onTasksUpdated(updated);
+        toast.success('Completion review submitted');
+        onFinish();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to submit completion review');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (planFinalized) return;
+    if (planTotalHours !== MIN_PLANNED_HOURS_PER_WORKING_DAY) {
+      toast.error(
+        `Final plan must total exactly ${MIN_PLANNED_HOURS_PER_WORKING_DAY} hours (currently ${planTotalHours}). Add or edit tasks to reach ${MIN_PLANNED_HOURS_PER_WORKING_DAY} hours.`,
+      );
+      return;
+    }
     setBusy(true);
     try {
       const drafts = managerCommentsByTaskIdRef.current;
@@ -344,12 +394,30 @@ export default function TodayTaskReviewWizard({
       if (updatedTasks.length > 0) {
         await onTasksUpdated(updatedTasks);
       }
+      const finalized = await finalizeEmployeeDailyPlan(employee.employeeCode, reviewDate);
+      if (finalized.tasks.length) {
+        await onTasksUpdated(finalized.tasks);
+      }
+      toast.success(
+        finalized.emailSent
+          ? 'Plan finalized and email sent to employee'
+          : 'Plan finalized',
+      );
       onFinish();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save manager comments');
+      toast.error(err instanceof Error ? err.message : 'Failed to finalize plan');
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleReviewCompletionOutcome = () => {
+    if (!task) return;
+    const taskId = task.plannerTaskId;
+    const comments = getDraftCommentsForTask(taskId, task);
+    void runSaveFlow(async () => {
+      return reviewDailyPlannerTaskCompletion(taskId, comments);
+    });
   };
 
   const handleSubmitRevision = () => {
@@ -387,7 +455,35 @@ export default function TodayTaskReviewWizard({
     });
   };
 
-  if (!task) return null;
+  if (!task) {
+    return (
+      <DailyPlannerCreateTaskModal
+        open={addTaskOpen}
+        date={reviewDate}
+        elevated
+        forEmployeeCode={employee.employeeCode}
+        skipPlanningWindowAssert
+        onClose={() => setAddTaskOpen(false)}
+        onSave={async (drafts) => {
+          const created: DailyPlannerTask[] = [];
+          for (const draft of drafts) {
+            const createdTask = await createDailyPlannerTaskForEmployee({
+              ...draft,
+              employeeCode: employee.employeeCode,
+            });
+            created.push(createdTask);
+          }
+          toast.success(
+            created.length === 1
+              ? 'Task added for employee'
+              : `${created.length} tasks added for employee`,
+          );
+          await onTasksUpdated(created);
+          setAddTaskOpen(false);
+        }}
+      />
+    );
+  }
 
   return (
     <>
@@ -402,10 +498,12 @@ export default function TodayTaskReviewWizard({
           }}
         >
           <DialogHeader className="shrink-0 border-b border-gray-200 bg-white px-6 py-4 text-left">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
+            <div className="flex w-full flex-row items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
                 <DialogTitle className="text-lg font-semibold text-[#212529]">
-                  Today&apos;s Task Review
+                  {completionReviewMode
+                    ? 'Pending Completion Approval'
+                    : "Today's Task Review"}
                 </DialogTitle>
                 <p className="mt-1 text-base font-medium text-[#212529]">{employee.employeeName}</p>
                 <p className="text-sm text-gray-600">
@@ -414,7 +512,22 @@ export default function TodayTaskReviewWizard({
                   {employee.designation ? ` · ${employee.designation}` : ''}
                 </p>
               </div>
-              <div className="min-w-[12rem] space-y-2 text-right">
+              <div className="min-w-0 flex-1 text-center">
+                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Total Planned Hours
+                </p>
+                <p
+                  className={cn(
+                    'text-sm font-medium',
+                    planTotalHours === MIN_PLANNED_HOURS_PER_WORKING_DAY
+                      ? 'text-green-700'
+                      : 'text-amber-700',
+                  )}
+                >
+                  {planTotalHours} / {MIN_PLANNED_HOURS_PER_WORKING_DAY} Hours
+                </p>
+              </div>
+              <div className="min-w-0 flex-1 space-y-2 text-right">
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Date</p>
                   <p className="text-sm font-medium text-[#212529]">{formatReviewDate(reviewDate)}</p>
@@ -553,6 +666,20 @@ export default function TodayTaskReviewWizard({
               <div className="mt-4">
                 <ViewBulletField label="Description" value={displayCell(task.description)} />
               </div>
+              {task.isProjectBased ? (
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <ViewField label="Project Based" value="Yes" />
+                  <ViewField label="Project Name" value={displayCell(task.projectName)} />
+                </div>
+              ) : null}
+              {task.managerInstructions ? (
+                <div className="mt-4">
+                  <ViewBulletField
+                    label="Instructions / Special Remarks"
+                    value={displayCell(task.managerInstructions)}
+                  />
+                </div>
+              ) : null}
             </ViewSection>
 
             <ViewSection title="Completion Information">
@@ -585,46 +712,80 @@ export default function TodayTaskReviewWizard({
             </ViewSection>
 
             <ViewSection title="Manager Review">
-              <p className="mb-3 text-sm text-gray-600">Manager Decision</p>
+              <p className="mb-3 text-sm text-gray-600">
+                {completionReviewMode ? 'Completion Decision' : 'Manager Decision'}
+              </p>
               <div className="mb-4 flex flex-wrap gap-2">
-                {showApprove ? (
-                  <Button
-                    type="button"
-                    disabled={busy}
-                    className="bg-green-600 text-white hover:bg-green-700"
-                    onClick={() => void handleApprove()}
-                  >
-                    Approve Task
-                  </Button>
-                ) : null}
-                {showVerify ? (
-                  <Button
-                    type="button"
-                    disabled={busy}
-                    className="bg-green-600 text-white hover:bg-green-700"
-                    onClick={() => void handleVerify()}
-                  >
-                    Verify Completion
-                  </Button>
-                ) : null}
-                {showRequestRevision ? (
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    disabled={busy}
-                    onClick={() => setRevisionOpen(true)}
-                  >
-                    Request Revision
-                  </Button>
-                ) : null}
-                {isTaskManagerReviewed(task) &&
-                !showApprove &&
-                !showVerify &&
-                !showRequestRevision ? (
-                  <p className="text-sm text-gray-600">
-                    This task has already been reviewed ({getWizardReviewIndicator(task)}).
-                  </p>
-                ) : null}
+                {completionReviewMode ? (
+                  <>
+                    {awaitingVerification ? (
+                      <Button
+                        type="button"
+                        disabled={busy || isTaskCompletionReviewed(task)}
+                        className="bg-green-600 text-white hover:bg-green-700"
+                        onClick={() => void handleVerify()}
+                      >
+                        Verify Completion
+                      </Button>
+                    ) : null}
+                    {!awaitingVerification && !isTaskCompletionReviewed(task) ? (
+                      <Button
+                        type="button"
+                        disabled={busy}
+                        className="bg-green-600 text-white hover:bg-green-700"
+                        onClick={() => void handleReviewCompletionOutcome()}
+                      >
+                        Mark Reviewed
+                      </Button>
+                    ) : null}
+                    {isTaskCompletionReviewed(task) ? (
+                      <p className="text-sm text-gray-600">
+                        This completion result has been reviewed.
+                      </p>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    {showApprove ? (
+                      <Button
+                        type="button"
+                        disabled={busy}
+                        className="bg-green-600 text-white hover:bg-green-700"
+                        onClick={() => void handleApprove()}
+                      >
+                        Approve Task
+                      </Button>
+                    ) : null}
+                    {showVerify ? (
+                      <Button
+                        type="button"
+                        disabled={busy}
+                        className="bg-green-600 text-white hover:bg-green-700"
+                        onClick={() => void handleVerify()}
+                      >
+                        Verify Completion
+                      </Button>
+                    ) : null}
+                    {showRequestRevision ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        disabled={busy}
+                        onClick={() => setRevisionOpen(true)}
+                      >
+                        Request Revision
+                      </Button>
+                    ) : null}
+                    {isTaskManagerReviewed(task) &&
+                    !showApprove &&
+                    !showVerify &&
+                    !showRequestRevision ? (
+                      <p className="text-sm text-gray-600">
+                        This task has already been reviewed ({getWizardReviewIndicator(task)}).
+                      </p>
+                    ) : null}
+                  </>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="manager-comments">Manager Comments (optional)</Label>
@@ -646,13 +807,24 @@ export default function TodayTaskReviewWizard({
             </p>
             <div className="mb-4 flex flex-wrap gap-1.5">
               {sortedTasks.map((t, idx) => {
-                const indicator = getWizardReviewIndicator(t);
+                const completionChecked = isTaskCompletionReviewed(t);
+                const indicator = completionReviewMode
+                  ? completionChecked
+                    ? 'approved'
+                    : 'pending'
+                  : getWizardReviewIndicator(t);
                 const style = INDICATOR_STYLES[indicator];
                 return (
                   <button
                     key={t.plannerTaskId}
                     type="button"
-                    title={style.label}
+                    title={
+                      completionReviewMode
+                        ? completionChecked
+                          ? 'Reviewed'
+                          : 'Pending review'
+                        : style.label
+                    }
                     disabled={busy}
                     onClick={() => setCurrentIndex(idx)}
                     className={cn(
@@ -693,19 +865,63 @@ export default function TodayTaskReviewWizard({
                 <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
                   Close
                 </Button>
+                {!completionReviewMode ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy || planFinalized}
+                    onClick={() => setAddTaskOpen(true)}
+                  >
+                    <Plus className="mr-1 h-4 w-4" />
+                    Add Task
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   className="bg-[#007BFF] hover:bg-[#0056b3]"
-                  disabled={!allReviewed || busy}
+                  disabled={
+                    busy ||
+                    (completionReviewMode ? !allReviewed : !allReviewed || planFinalized)
+                  }
                   onClick={() => void handleFinishReview()}
                 >
-                  Finish Review
+                  {completionReviewMode
+                    ? 'Submit'
+                    : planFinalized
+                      ? 'Finalized'
+                      : 'Finalize Plan'}
                 </Button>
               </div>
             </div>
           </div>
         </DialogContent>
       </Dialog>
+
+      <DailyPlannerCreateTaskModal
+        open={addTaskOpen}
+        date={reviewDate}
+        elevated
+        forEmployeeCode={employee.employeeCode}
+        skipPlanningWindowAssert
+        onClose={() => setAddTaskOpen(false)}
+        onSave={async (drafts) => {
+          const created: DailyPlannerTask[] = [];
+          for (const draft of drafts) {
+            const task = await createDailyPlannerTaskForEmployee({
+              ...draft,
+              employeeCode: employee.employeeCode,
+            });
+            created.push(task);
+          }
+          toast.success(
+            created.length === 1
+              ? 'Task added for employee'
+              : `${created.length} tasks added for employee`,
+          );
+          await onTasksUpdated(created);
+          setAddTaskOpen(false);
+        }}
+      />
 
       <Dialog open={revisionOpen} onOpenChange={(v) => !v && setRevisionOpen(false)}>
         <DialogContent className="max-w-lg">

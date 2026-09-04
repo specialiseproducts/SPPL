@@ -13,6 +13,7 @@ import {
   assertRegularPlanningAllowedOnDate,
   COMPANY_HOLIDAY_TASK_CREATE_MESSAGE,
   getPreviousWorkingDayDateKey,
+  getNextWorkingDayDateKey,
   isCompanyHolidayDateKey,
   isCompanyWorkingDayDateKey,
 } from './companyWorkingDays.js';
@@ -84,7 +85,22 @@ export const URGENT_TASK_TODAY_BLOCKED_MESSAGE =
 export const TASK_CREATE_DATE_BLOCKED_MESSAGE =
   'You can only create tasks for today or tomorrow according to the allowed task creation schedule.';
 
+export const EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE =
+  'Regular task planning is only allowed between 5:30 PM and 8:00 PM for the next working day.';
+
+export const EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE =
+  'Your minimum total hours planning is not completed. Please plan 7 hours.';
+
+export const MANAGER_REVIEW_WINDOW_MESSAGE =
+  'Manager review and plan finalization is only allowed between 8:00 PM and 9:30 AM.';
+
 export const URGENT_REASON_REQUIRED_MESSAGE = 'Urgent Task Reason is required.';
+
+export const USER_URGENT_FORBIDDEN_MESSAGE =
+  'You do not have permission to create Urgent Tasks.';
+
+export const USER_PRIORITY_FORBIDDEN_MESSAGE =
+  'You do not have permission to select or change Priority.';
 
 export function toIstDate(reference = new Date()) {
   return new Date(reference.getTime() + IST_OFFSET_MS);
@@ -127,9 +143,51 @@ export function isUrgentTodayCreationWindow(reference = new Date()) {
   return mins >= start && mins < end;
 }
 
+/** Manager review window: 8:00 PM IST through next calendar day 9:30 AM IST. */
+export function isManagerReviewWindow(reference = new Date()) {
+  const mins = getIstMinutesSinceMidnight(reference);
+  const eveningStart = minutesFrom(EVENING_END_HOUR, EVENING_END_MINUTE); // 20:00
+  const morningEnd = minutesFrom(9, 30);
+  return mins >= eveningStart || mins < morningEnd;
+}
+
+export function nextWorkingDayIstDateKey(reference = new Date(), location) {
+  const today = todayIstDateKey(reference);
+  return getNextWorkingDayDateKey(today, location);
+}
+
 export function assertTaskCreationNotOnHoliday(taskDateIso, location) {
   if (isCompanyHolidayDateKey(taskDateIso, location)) {
     const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+/**
+ * User-access employees: Regular tasks only for the next working day, 5:30–8:00 PM IST.
+ */
+export function assertEmployeeNextDayRegularAllowed(taskDateIso, reference = new Date(), location) {
+  assertTaskCreationNotOnHoliday(taskDateIso, location);
+  const target = String(taskDateIso || '').trim().slice(0, 10);
+  const nextWorking = nextWorkingDayIstDateKey(reference, location);
+  if (!nextWorking || target !== nextWorking) {
+    const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!isEveningPlanningWindow(reference)) {
+    const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+  return PLANNING_WINDOW_EVENING;
+}
+
+export function assertExactSevenPlannedHours(totalHours) {
+  const hours = Math.round((Number(totalHours) || 0) * 100) / 100;
+  if (hours !== MIN_PLANNED_HOURS_PER_WORKING_DAY) {
+    const err = new Error(EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE);
     err.statusCode = 400;
     throw err;
   }

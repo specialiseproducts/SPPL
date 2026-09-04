@@ -23,6 +23,8 @@ import {
   resolvePlanningWindowForRegularTask,
   assertRegularTaskAllowed,
   assertUrgentTaskAllowed,
+  assertEmployeeNextDayRegularAllowed,
+  USER_URGENT_FORBIDDEN_MESSAGE,
   getPlanningTargetDateMode,
   calculatePlanningScore,
   calculatePlannerBadge,
@@ -182,19 +184,11 @@ export async function awardPlanningScoreForRegularTask({
 }) {
   const code = String(employeeCode || '').trim();
   const targetDate = String(taskDateIso || '').trim().slice(0, 10);
-  const result = await recomputePlanningScoreForWorkingDay({
+  // Single monthly recompute path (recomputePlanningScoreForWorkingDay already updates monthly).
+  return recomputePlanningScoreForWorkingDay({
     employeeCode: code,
     workingDayDateKey: targetDate,
   });
-
-  const ym = parseYearMonthFromDateKey(targetDate);
-  if (!ym) return result;
-
-  const counters = await loadMonthlyCounters(code, ym.year, ym.month);
-  const monthlyRecord = await recomputeMonthlyPlanningScore(code, ym.year, ym.month, {
-    regularTaskCount: counters.regularTaskCount + 1,
-  });
-  return { ...result, monthlyRecord };
 }
 
 export async function validateRescheduleTargetDate(newDateIso, reference = new Date(), location) {
@@ -252,7 +246,8 @@ export async function recordPlanningImpactForUrgentTask({
   return { monthlyRecord };
 }
 
-export function validateTaskPlanningPayload(body, reference = new Date(), location) {
+export function validateTaskPlanningPayload(body, reference = new Date(), location, options = {}) {
+  const elevated = Boolean(options.elevated);
   const planningCategory = String(body.planningCategory || PLANNING_CATEGORY_REGULAR).trim();
   const taskDate = String(body.date || '').trim().slice(0, 10);
   const urgentReason = String(body.urgentReason || '').trim();
@@ -270,12 +265,22 @@ export function validateTaskPlanningPayload(body, reference = new Date(), locati
   }
 
   if (planningCategory === PLANNING_CATEGORY_URGENT) {
+    if (!elevated) {
+      const err = new Error(USER_URGENT_FORBIDDEN_MESSAGE);
+      err.statusCode = 403;
+      throw err;
+    }
     if (!urgentReason) {
       const err = new Error('Urgent Task Reason is required');
       err.statusCode = 400;
       throw err;
     }
-    assertUrgentTaskAllowed(taskDate, reference, location);
+    // Elevated creators may add urgent tasks for a working day (not past / not holiday).
+    if (!isCompanyWorkingDayDateKey(taskDate, location)) {
+      const err = new Error('Selected date must be a working day');
+      err.statusCode = 400;
+      throw err;
+    }
     return {
       planningCategory: PLANNING_CATEGORY_URGENT,
       urgentReason,
@@ -284,7 +289,25 @@ export function validateTaskPlanningPayload(body, reference = new Date(), locati
     };
   }
 
-  assertRegularTaskAllowed(taskDate, reference, location);
+  if (!elevated) {
+    const planningWindowUsed = assertEmployeeNextDayRegularAllowed(taskDate, reference, location);
+    return {
+      planningCategory: PLANNING_CATEGORY_REGULAR,
+      urgentReason: '',
+      planningWindowUsed,
+      planningTimestamp: reference.toISOString(),
+    };
+  }
+
+  // Elevated: keep prior Regular rules (today morning / tomorrow evening) for own planning,
+  // and also allow any future working day during manager review flows.
+  try {
+    assertRegularTaskAllowed(taskDate, reference, location);
+  } catch (err) {
+    if (!isCompanyWorkingDayDateKey(taskDate, location)) throw err;
+    // Manager adding tasks for a plan date outside employee windows.
+    if (getPlanningTargetDateMode(taskDate, reference) === 'past') throw err;
+  }
   const planningWindowUsed = resolvePlanningWindowForRegularTask(taskDate, reference);
 
   return {

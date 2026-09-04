@@ -8,7 +8,7 @@ import * as SalesPlannerEventsModel from '../models/SalesPlannerEvents.js';
 import * as PlanningRecognitionService from './planningRecognition.service.js';
 import * as TeamPerformanceService from './teamPerformance.service.js';
 import * as PlanningAnalyticsService from './planningAnalytics.service.js';
-import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, MIN_PLANNED_HOURS_PER_WORKING_DAY, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow } from '../utils/planningRecognition.js';
+import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, MIN_PLANNED_HOURS_PER_WORKING_DAY, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow, assertExactSevenPlannedHours, EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE, USER_PRIORITY_FORBIDDEN_MESSAGE, isManagerReviewWindow, MANAGER_REVIEW_WINDOW_MESSAGE, nextWorkingDayIstDateKey } from '../utils/planningRecognition.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
@@ -19,6 +19,10 @@ import * as AuditTrailService from './auditTrail.service.js';
 import { AUDIT_ACTIONS, AUDIT_MODULES } from '../constants/auditTrail.js';
 import * as NotificationService from './notification.service.js';
 import { NOTIFICATION_MODULES } from '../constants/notifications.js';
+import * as DailyPlannerProjectsModel from '../models/DailyPlannerProjects.js';
+import * as EmployeeMasterModel from '../models/EmployeeMaster.js';
+import { sendEmail } from './emailService.js';
+import { buildFinalPlanEmail } from './dailyPlannerFinalPlanEmail.js';
 
 const PRIORITY_ORDER = { High: 0, Medium: 1, Low: 2 };
 
@@ -299,7 +303,7 @@ export const listDayTasks = async (authUser, dateParam) => {
   return { tasks: sortDailyPlannerTasks(tasks), date };
 };
 
-export const createManualTask = async (body, authUser) => {
+export const createManualTask = async (body, authUser, effectiveRole, options = {}) => {
   const code = employeeCodeOf(authUser);
   const date = String(body.date || '').trim();
   const taskName = String(body.taskName || '').trim();
@@ -309,11 +313,59 @@ export const createManualTask = async (body, authUser) => {
     throw err;
   }
 
+  const elevated = canAccessAllRecords(effectiveRole);
   const now = new Date();
   const location = await getEmployeeLocation(code);
-  const planningMeta = PlanningRecognitionService.validateTaskPlanningPayload(body, now, location);
-  const priority = String(body.priority || 'Medium').trim();
+
+  // User-access: force Regular + Medium priority (ignore client overrides).
+  const requestBody = { ...body };
+  if (!elevated) {
+    requestBody.planningCategory = PLANNING_CATEGORY_REGULAR;
+    requestBody.urgentReason = '';
+    if (
+      body.priority != null &&
+      String(body.priority).trim() &&
+      String(body.priority).trim() !== 'Medium'
+    ) {
+      const err = new Error(USER_PRIORITY_FORBIDDEN_MESSAGE);
+      err.statusCode = 403;
+      throw err;
+    }
+    requestBody.priority = 'Medium';
+  }
+
+  const planningMeta = PlanningRecognitionService.validateTaskPlanningPayload(
+    requestBody,
+    now,
+    location,
+    // My Daily Planner self-create uses employee planning windows even for Admin/Developer.
+    // Manager add-for-employee keeps elevated via createTaskForEmployee.
+    { elevated: false },
+  );
+  const priority = normalizePriorityValue(
+    elevated ? requestBody.priority : 'Medium',
+    'Medium',
+  );
   const hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
+
+  // Users must end at exactly 7 hours (batch create skips per-task gate after validating the batch).
+  const revisesTaskIdEarly = String(body.revisesTaskId || '').trim();
+  if (!elevated && !revisesTaskIdEarly && !options.skipExactSevenCheck) {
+    const existing = await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date);
+    const existingHours = sumPlannedHoursForDate(existing, date);
+    assertExactSevenPlannedHours(Math.round((existingHours + hoursRequired) * 100) / 100);
+  }
+
+  const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
+  const projectName = isProjectBased ? String(body.projectName || '').trim() : '';
+  if (isProjectBased && !projectName) {
+    const err = new Error('Project Name is required when the task is project-based');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (projectName) {
+    await DailyPlannerProjectsModel.upsertProject(projectName, code);
+  }
 
   let planningScore = 0;
   if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
@@ -336,6 +388,11 @@ export const createManualTask = async (body, authUser) => {
     }
   }
 
+  const managerInstructions = elevated
+    ? String(body.managerInstructions || body.instructions || '').trim()
+    : '';
+
+  const autoApproved = elevated;
   const task = await DailyPlannerTasksModel.createTask({
     employeeCode: code,
     employeeName: employeeNameOf(authUser),
@@ -350,7 +407,18 @@ export const createManualTask = async (body, authUser) => {
     hoursRequiredEdited: false,
     taskType: 'Manual',
     source: 'MANUAL',
-    status: 'Pending',
+    status: autoApproved ? 'Approved' : 'Pending',
+    approved: autoApproved,
+    approvalStatus: autoApproved ? 'APPROVED' : '',
+    approvedBy: autoApproved ? code : '',
+    approvedByName: autoApproved ? employeeNameOf(authUser) : '',
+    approvedAt: autoApproved ? now.toISOString() : null,
+    approvedDate: autoApproved ? now.toISOString() : null,
+    managerComments: String(body.managerComments || '').trim(),
+    managerInstructions,
+    isProjectBased,
+    projectName,
+    createdByRole: elevated ? 'Manager' : 'User',
     planningCategory: planningMeta.planningCategory,
     urgentReason: planningMeta.urgentReason,
     planningWindowUsed: planningMeta.planningWindowUsed,
@@ -366,20 +434,24 @@ export const createManualTask = async (body, authUser) => {
   }
 
   let planningAward = null;
-  if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
-    planningAward = await PlanningRecognitionService.awardPlanningScoreForRegularTask({
-      employeeCode: code,
-      taskDateIso: date,
-      reference: now,
-    });
-  } else if (planningMeta.planningCategory === PLANNING_CATEGORY_URGENT) {
-    planningAward = await PlanningRecognitionService.recordPlanningImpactForUrgentTask({
-      employeeCode: code,
-      reference: now,
-    });
+  if (!options.skipPlanningAward) {
+    if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
+      planningAward = await PlanningRecognitionService.awardPlanningScoreForRegularTask({
+        employeeCode: code,
+        taskDateIso: date,
+        reference: now,
+      });
+    } else if (planningMeta.planningCategory === PLANNING_CATEGORY_URGENT) {
+      planningAward = await PlanningRecognitionService.recordPlanningImpactForUrgentTask({
+        employeeCode: code,
+        reference: now,
+      });
+    }
   }
 
-  await maybeNotifyMinimumHoursShortfall(code, date, location, employeeNameOf(authUser));
+  if (!options.skipHoursNotify) {
+    await maybeNotifyMinimumHoursShortfall(code, date, location, employeeNameOf(authUser));
+  }
 
   auditPlannerTask(authUser, AUDIT_ACTIONS.CREATE, task, 'Task Created', {
     newValues: {
@@ -394,10 +466,610 @@ export const createManualTask = async (body, authUser) => {
   return { task, planningAward };
 };
 
+/**
+ * User batch create for next-working-day plan — requires exact 7 hours total in the batch
+ * plus any already-planned hours for that date must still equal exactly 7 after insert.
+ * Prefer submitting the full plan in one batch so total === 7.
+ */
+export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
+  const drafts = Array.isArray(body?.tasks) ? body.tasks : [];
+  if (drafts.length === 0) {
+    const err = new Error('At least one task is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const elevated = canAccessAllRecords(effectiveRole);
+  const sharedDate = String(drafts[0]?.date || '').trim();
+  if (!sharedDate || drafts.some((d) => String(d.date || '').trim() !== sharedDate)) {
+    const err = new Error('All tasks must use the same date');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const batchHours = drafts.reduce((sum, d) => {
+    const h = Number(d.hoursRequired);
+    return sum + (Number.isFinite(h) && h > 0 ? h : 0);
+  }, 0);
+
+  if (!elevated) {
+    assertExactSevenPlannedHours(Math.round(batchHours * 100) / 100);
+
+    const code = employeeCodeOf(authUser);
+    const existing = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+      code,
+      sharedDate,
+      sharedDate,
+    );
+    const existingHours = sumPlannedHoursForDate(existing, sharedDate);
+    if (existingHours > 0) {
+      const err = new Error(
+        'A plan already exists for this date. Edit existing tasks or clear them before submitting a new 7-hour plan.',
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  const created = [];
+  for (const draft of drafts) {
+    const result = await createManualTask(draft, authUser, effectiveRole, {
+      skipExactSevenCheck: true,
+      skipPlanningAward: true,
+      skipHoursNotify: true,
+    });
+    created.push(result.task);
+  }
+
+  // One planning recompute + hours notify for the whole batch (avoids N× monthly score work).
+  const code = employeeCodeOf(authUser);
+  const location = await getEmployeeLocation(code);
+  const hasRegular = created.some(
+    (t) => String(t.planningCategory || '').trim() === PLANNING_CATEGORY_REGULAR,
+  );
+  const hasUrgent = created.some(
+    (t) => String(t.planningCategory || '').trim() === PLANNING_CATEGORY_URGENT,
+  );
+  if (hasRegular) {
+    await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+      employeeCode: code,
+      workingDayDateKey: sharedDate,
+    });
+  } else if (hasUrgent) {
+    await PlanningRecognitionService.recordPlanningImpactForUrgentTask({
+      employeeCode: code,
+      reference: new Date(),
+    });
+  }
+  // Notifications must not block Save response latency.
+  void maybeNotifyMinimumHoursShortfall(code, sharedDate, location, employeeNameOf(authUser));
+
+  return { tasks: created };
+};
+
+/**
+ * Manager/Admin creates a task for a team employee (auto-approved).
+ */
+export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const targetCode = String(body.employeeCode || '').trim();
+  if (!targetCode) {
+    const err = new Error('employeeCode is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const managerCode = employeeCodeOf(authUser);
+  if (!canAccessAllRecords(effectiveRole)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  // Allow Admin-tier to create for any employee; verify mapping when not global if needed.
+  const employee = await EmployeeMasterModel.getEmployeeByCode(targetCode);
+  const employeeName =
+    String(employee?.fullName || '').trim() ||
+    `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() ||
+    targetCode;
+
+  const date = String(body.date || '').trim();
+  const taskName = String(body.taskName || '').trim();
+  if (!date || !taskName) {
+    const err = new Error('date and taskName are required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const now = new Date();
+  const location = await getEmployeeLocation(targetCode);
+  const planningMeta = PlanningRecognitionService.validateTaskPlanningPayload(
+    body,
+    now,
+    location,
+    { elevated: true },
+  );
+  const priority = normalizePriorityValue(body.priority, 'Medium');
+  const hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
+  const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
+  const projectName = isProjectBased ? String(body.projectName || '').trim() : '';
+  if (isProjectBased && !projectName) {
+    const err = new Error('Project Name is required when the task is project-based');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (projectName) {
+    await DailyPlannerProjectsModel.upsertProject(projectName, managerCode);
+  }
+
+  const managerInstructions = String(body.managerInstructions || body.instructions || '').trim();
+  const task = await DailyPlannerTasksModel.createTask({
+    employeeCode: targetCode,
+    employeeName,
+    date,
+    taskName,
+    description: String(body.description || '').trim(),
+    priority,
+    originalPriority: priority,
+    currentPriority: priority,
+    hoursRequired,
+    originalHoursRequired: hoursRequired,
+    hoursRequiredEdited: false,
+    taskType: 'Manual',
+    source: 'MANUAL',
+    status: 'Approved',
+    approved: true,
+    approvalStatus: 'APPROVED',
+    approvedBy: managerCode,
+    approvedByName: employeeNameOf(authUser),
+    approvedAt: now.toISOString(),
+    approvedDate: now.toISOString(),
+    managerComments: String(body.managerComments || '').trim(),
+    managerInstructions,
+    isProjectBased,
+    projectName,
+    createdByRole: 'Manager',
+    planningCategory: planningMeta.planningCategory,
+    urgentReason: planningMeta.urgentReason,
+    planningWindowUsed: planningMeta.planningWindowUsed,
+    planningTimestamp: planningMeta.planningTimestamp,
+    planningScore: 0,
+    completionScore: 0,
+    finalScore: 0,
+  });
+
+  if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
+    await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+      employeeCode: targetCode,
+      workingDayDateKey: date,
+    });
+  } else if (planningMeta.planningCategory === PLANNING_CATEGORY_URGENT) {
+    await PlanningRecognitionService.recordPlanningImpactForUrgentTask({
+      employeeCode: targetCode,
+      reference: now,
+    });
+  }
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.CREATE, task, 'Manager Task Created', {
+    newValues: { taskName, date, employeeCode: targetCode, status: 'Approved' },
+  });
+
+  return { task };
+};
+
+export const listProjects = async () => {
+  const projects = await DailyPlannerProjectsModel.listProjects();
+  return { projects };
+};
+
+export const upsertProject = async (body, authUser) => {
+  const project = await DailyPlannerProjectsModel.upsertProject(
+    body?.projectName,
+    employeeCodeOf(authUser),
+  );
+  return { project };
+};
+
+/**
+ * Finalize employee plan for a date: require exactly 7 hours, stamp tasks, email officialEmail.
+ */
+export const finalizeEmployeePlan = async (body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const now = new Date();
+  if (!isManagerReviewWindow(now) && !canAccessAllRecords(effectiveRole)) {
+    const err = new Error(MANAGER_REVIEW_WINDOW_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const employeeCode = String(body.employeeCode || '').trim();
+  const date = String(body.date || '').trim().slice(0, 10);
+  if (!employeeCode || !date) {
+    const err = new Error('employeeCode and date are required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    employeeCode,
+    date,
+    date,
+  );
+  const activeTasks = (tasks || []).filter((t) => String(t.status || '').trim() !== 'Rescheduled');
+  if (activeTasks.some((t) => Boolean(t.planFinalizedAt))) {
+    const err = new Error('This plan has already been finalized');
+    err.statusCode = 400;
+    throw err;
+  }
+  const totalHours = sumPlannedHoursForDate(activeTasks, date);
+  if (Math.round(totalHours * 100) / 100 !== MIN_PLANNED_HOURS_PER_WORKING_DAY) {
+    const err = new Error(
+      `Final plan must total exactly ${MIN_PLANNED_HOURS_PER_WORKING_DAY} hours (currently ${totalHours}).`,
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const pending = activeTasks.filter((t) => String(t.status || '').trim() === 'Pending');
+  if (pending.length > 0) {
+    const err = new Error(
+      'All tasks must be reviewed (Approved or otherwise finalized) before finishing the plan.',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const finalizedAt = now.toISOString();
+  const finalizedBy = employeeCodeOf(authUser);
+  await Promise.all(
+    activeTasks.map((task) =>
+      DailyPlannerTasksModel.updateTask(task.plannerTaskId, {
+        planFinalizedAt: finalizedAt,
+        planFinalizedBy: finalizedBy,
+      }),
+    ),
+  );
+
+  const employee = await EmployeeMasterModel.getEmployeeByCode(employeeCode);
+  const officialEmail = String(
+    employee?.officialEmail || employee?.official_email || employee?.email || '',
+  ).trim();
+  const employeeName =
+    String(employee?.fullName || '').trim() ||
+    `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() ||
+    activeTasks[0]?.employeeName ||
+    employeeCode;
+
+  const [y, m, d] = date.split('-').map(Number);
+  const dateLabel = new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+
+  const refreshed = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    employeeCode,
+    date,
+    date,
+  );
+  const finalTasks = (refreshed || []).filter(
+    (t) => String(t.status || '').trim() !== 'Rescheduled',
+  );
+
+  let emailResult = { ok: false, skipped: true, queued: false };
+  if (officialEmail) {
+    const mail = buildFinalPlanEmail({
+      employeeName,
+      dateLabel,
+      totalHours,
+      tasks: finalTasks,
+    });
+    // Do not block the API response on SES/SMTP latency.
+    emailResult = { ok: true, skipped: false, queued: true };
+    void sendEmail({
+      to: officialEmail,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+    }).catch((err) => {
+      console.error('Final plan email failed:', err);
+    });
+  }
+
+  void notifyUser(
+    employeeCode,
+    'Daily plan finalized',
+    `Your plan for ${dateLabel} has been finalized by your manager.`,
+    'INFO',
+    { plannerDate: date, reminderType: 'plan_finalized' },
+  );
+
+  return {
+    employeeCode,
+    date,
+    totalHours,
+    tasks: finalTasks,
+    emailSent: Boolean(emailResult?.ok),
+    emailQueued: Boolean(emailResult?.queued),
+    emailError: null,
+  };
+};
+
+export const getNextWorkingDay = async (authUser) => {
+  const code = employeeCodeOf(authUser);
+  const location = await getEmployeeLocation(code);
+  const nextWorkingDay = nextWorkingDayIstDateKey(new Date(), location);
+  return { nextWorkingDay, todayIst: todayIstDateKey() };
+};
+
+const EMPLOYEE_COMPLETION_OUTCOME_STATUSES = new Set([
+  'Awaiting Verification',
+  'Completed',
+  'Terminated',
+  'Rescheduled',
+  'Verified Complete',
+  'Not Completed',
+]);
+
+function tasksForDayCompletion(tasks) {
+  return (tasks || []).filter((t) => {
+    const status = String(t.status || '').trim();
+    // Exclude Needs Revision parents still awaiting employee revision action.
+    return status !== 'Needs Revision' && status !== 'Rejected';
+  });
+}
+
+/**
+ * Employee submits the day's completion package after every task has an outcome.
+ */
+export const submitDayCompletion = async (body, authUser) => {
+  const code = employeeCodeOf(authUser);
+  const date = String(body?.date || '').trim().slice(0, 10);
+  if (!code || !date) {
+    const err = new Error('date is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date);
+  const dayTasks = tasksForDayCompletion(tasks);
+  if (dayTasks.length === 0) {
+    const err = new Error('No tasks found for this date');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (dayTasks.every((t) => Boolean(t.dayCompletionSubmittedAt))) {
+    return { tasks: dayTasks, alreadySubmitted: true };
+  }
+
+  const incomplete = dayTasks.filter(
+    (t) => !EMPLOYEE_COMPLETION_OUTCOME_STATUSES.has(String(t.status || '').trim()),
+  );
+  if (incomplete.length > 0) {
+    const err = new Error(
+      'All tasks must have a completion outcome (Completed, Not Completed, or Rescheduled) before submitting.',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const nowIso = new Date().toISOString();
+  const updated = await Promise.all(
+    dayTasks.map((task) =>
+      DailyPlannerTasksModel.updateTask(task.plannerTaskId, {
+        dayCompletionSubmittedAt: nowIso,
+        dayCompletionSubmittedBy: code,
+      }),
+    ),
+  );
+
+  const managers = await listActiveManagersForEmployee(code);
+  const name = employeeNameOf(authUser);
+  for (const manager of managers) {
+    if (manager.managerCode === code) continue;
+    void notifyUser(
+      manager.managerCode,
+      'Pending Completion Approval',
+      `${name} submitted completion results for ${date}.`,
+      'WARNING',
+      {
+        plannerDate: date,
+        employeeCode: code,
+        reminderType: 'pending_completion_approval',
+      },
+    );
+  }
+
+  return { tasks: updated, alreadySubmitted: false };
+};
+
+/**
+ * Manager marks a non-verify completion outcome as reviewed (Terminated / Rescheduled / etc.).
+ */
+export const reviewTaskCompletion = async (taskId, body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing) {
+    const err = new Error('Task not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!existing.dayCompletionSubmittedAt) {
+    const err = new Error('Employee has not submitted completion for this day yet');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const status = String(existing.status || '').trim();
+  if (status === 'Awaiting Verification' || status === 'Completed') {
+    return verifyTaskCompletion(taskId, body, authUser, effectiveRole);
+  }
+
+  const nowIso = new Date().toISOString();
+  const task = await DailyPlannerTasksModel.updateTask(taskId, {
+    completionManagerReviewedAt: nowIso,
+    completionManagerReviewedBy: employeeCodeOf(authUser),
+    managerComments: String(body?.comments || existing.managerComments || '').trim(),
+  });
+  return { task };
+};
+
+/**
+ * Manager submits the full day completion review after reviewing every task.
+ */
+export const submitDayCompletionReview = async (body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const employeeCode = String(body?.employeeCode || '').trim();
+  const date = String(body?.date || '').trim().slice(0, 10);
+  if (!employeeCode || !date) {
+    const err = new Error('employeeCode and date are required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    employeeCode,
+    date,
+    date,
+  );
+  const dayTasks = tasksForDayCompletion(tasks);
+  if (dayTasks.length === 0) {
+    const err = new Error('No tasks found for this date');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!dayTasks.every((t) => Boolean(t.dayCompletionSubmittedAt))) {
+    const err = new Error('Employee has not submitted completion for this day yet');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const unreviewed = dayTasks.filter((t) => {
+    if (t.completionManagerReviewedAt) return false;
+    if (String(t.status || '').trim() === 'Verified Complete') return false;
+    if (String(t.verificationStatus || '').trim() === 'VERIFIED_COMPLETED') return false;
+    return true;
+  });
+  if (unreviewed.length > 0) {
+    const err = new Error('All task completions must be reviewed before submitting');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const nowIso = new Date().toISOString();
+  const reviewer = employeeCodeOf(authUser);
+  const updated = await Promise.all(
+    dayTasks.map((task) =>
+      DailyPlannerTasksModel.updateTask(task.plannerTaskId, {
+        dayCompletionReviewSubmittedAt: nowIso,
+        dayCompletionReviewSubmittedBy: reviewer,
+      }),
+    ),
+  );
+
+  void notifyUser(
+    employeeCode,
+    'Completion review finished',
+    `Your manager finished reviewing completion results for ${date}.`,
+    'INFO',
+    { plannerDate: date, reminderType: 'completion_review_submitted' },
+  );
+
+  return { tasks: updated };
+};
+
+/**
+ * Pending completion approvals for Team Daily Planner (manager/admin).
+ * Uses existing GSI_EmployeeDate per team member — no Sales sync, no table scan of all tasks.
+ * Groups by employee+date where dayCompletionSubmittedAt is set and dayCompletionReviewSubmittedAt is not.
+ */
+export const listPendingCompletionApprovals = async (authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const managerCode = employeeCodeOf(authUser);
+  const employeeCodes = await resolveTeamEmployeeCodes(managerCode, effectiveRole);
+  if (employeeCodes.length === 0) {
+    return { approvals: [] };
+  }
+
+  const endDate = todayIstDateKey();
+  const startDate = shiftIsoDateKey(endDate, -14);
+  const tasks = await DailyPlannerTasksModel.listTasksForEmployees(
+    employeeCodes,
+    startDate,
+    endDate,
+  );
+
+  const byKey = new Map();
+  for (const task of tasks || []) {
+    const code = String(task.employeeCode || '').trim();
+    const date = String(task.date || '').trim().slice(0, 10);
+    if (!code || !date) continue;
+    const key = `${code}#${date}`;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(task);
+  }
+
+  const approvals = [];
+  for (const [, dayTasksRaw] of byKey) {
+    const dayTasks = tasksForDayCompletion(dayTasksRaw);
+    if (dayTasks.length === 0) continue;
+    if (!dayTasks.every((t) => Boolean(t.dayCompletionSubmittedAt))) continue;
+    if (dayTasks.every((t) => Boolean(t.dayCompletionReviewSubmittedAt))) continue;
+
+    const sorted = [...dayTasks].sort((a, b) =>
+      String(a.taskName || '').localeCompare(String(b.taskName || '')),
+    );
+    const submittedAt =
+      sorted
+        .map((t) => t.dayCompletionSubmittedAt || '')
+        .filter(Boolean)
+        .sort()
+        .at(-1) || null;
+
+    approvals.push({
+      employeeCode: String(sorted[0].employeeCode || '').trim(),
+      employeeName: String(sorted[0].employeeName || '').trim(),
+      date: String(sorted[0].date || '').trim().slice(0, 10),
+      taskCount: sorted.length,
+      submittedAt,
+      status: 'Pending',
+      tasks: sorted,
+    });
+  }
+
+  approvals.sort((a, b) => {
+    const byDate = String(b.date || '').localeCompare(String(a.date || ''));
+    if (byDate !== 0) return byDate;
+    return String(a.employeeName || '').localeCompare(String(b.employeeName || ''));
+  });
+
+  return { approvals };
+};
+
+function shiftIsoDateKey(dateKey, deltaDays) {
+  const key = String(dateKey || '').trim().slice(0, 10);
+  const parts = key.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return key;
+  const dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + Number(deltaDays || 0)));
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(dt.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+const MAPPINGS_CACHE_TTL_MS = 60_000;
+let mappingsCache = { at: 0, items: null };
+
 async function listActiveManagersForEmployee(employeeCode) {
   const code = String(employeeCode || '').trim();
   if (!code) return [];
-  const mappings = await DailyPlannerTeamMappingsModel.listAllMappings();
+  let mappings = mappingsCache.items;
+  if (!mappings || Date.now() - mappingsCache.at > MAPPINGS_CACHE_TTL_MS) {
+    mappings = await DailyPlannerTeamMappingsModel.listAllMappings();
+    mappingsCache = { at: Date.now(), items: mappings };
+  }
   return mappings
     .filter((m) => m.status === 'Active' && String(m.employeeCode || '').trim() === code)
     .map((m) => ({
@@ -893,6 +1565,9 @@ export const listTeamTasks = async (authUser, effectiveRole, filters = {}) => {
     endDate = parsed.endDate;
   }
 
+  // Warm shared SalesPlannerEvents scan once before parallel per-employee syncs.
+  await SalesPlannerEventsModel.warmSalesEventsCache();
+
   const syncedBatches = await Promise.all(
     employeeCodes.map((code) =>
       syncSalesPlannerImports(code, '', startDate, endDate, year, month),
@@ -1002,7 +1677,8 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
 
   const location = await getEmployeeLocation(existing.employeeCode);
   if (isCompanyWorkingDayDateKey(existing.date, location)) {
-    await notifyHoursShortfallForDate(
+    // Fire-and-forget: hours shortfall path may scan team mappings.
+    void notifyHoursShortfallForDate(
       existing.employeeCode,
       existing.date,
       existing.employeeName,
@@ -1111,6 +1787,8 @@ export const verifyTaskCompletion = async (taskId, body, authUser, effectiveRole
     verifiedBy: employeeCodeOf(authUser),
     verifiedByName: employeeNameOf(authUser),
     verifiedAt: nowIso,
+    completionManagerReviewedAt: nowIso,
+    completionManagerReviewedBy: employeeCodeOf(authUser),
     managerComments: String(body.comments || existing.managerComments || '').trim(),
   });
 

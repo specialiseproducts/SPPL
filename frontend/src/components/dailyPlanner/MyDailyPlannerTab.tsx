@@ -22,6 +22,7 @@ import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQuer
 import type { DailyPlannerTask } from '../../types/dailyPlanner';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerDayTasksModal from './DailyPlannerDayTasksModal';
+import DailyPlannerPlanSummaryDialog from './DailyPlannerPlanSummaryDialog';
 import DailyPlannerTaskChip from './DailyPlannerTaskChip';
 import CalendarHolidayDayHeader from '../calendar/CalendarHolidayDayHeader';
 import PlanningPerformanceDashboard from './PlanningPerformanceDashboard';
@@ -37,8 +38,10 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import {
   evaluateMyDailyPlannerCreateEligibility,
-  REGULAR_TASK_TODAY_BLOCKED_MESSAGE,
 } from '../../utils/planningRecognition';
+import { canManageDailyPlannerTeam } from '../../utils/accessControl';
+import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
+import { getDailyPlannerDateMode } from './dailyPlannerDateRules';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -133,9 +136,10 @@ function PlannerDayCell({
   );
 }
 
-export default function MyDailyPlannerTab() {
+export default function MyDailyPlannerTab({ moduleRole }: { moduleRole?: string } = {}) {
   const { user } = useAuth();
   const employeeLocation = user?.location || 'Office';
+  const elevated = canManageDailyPlannerTeam(String(moduleRole || user?.role || ''));
   const now = new Date();
   const [view, setView] = useState({ year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 });
   const { year, month } = view;
@@ -144,6 +148,7 @@ export default function MyDailyPlannerTab() {
   const [createBlockedReason, setCreateBlockedReason] = useState<string | null>(null);
   const [reviseTaskId, setReviseTaskId] = useState<string | null>(null);
   const [dayDate, setDayDate] = useState<string | null>(null);
+  const [finalPlanOpen, setFinalPlanOpen] = useState(false);
 
   const monthQuery = useDailyPlannerMonthQuery(year, month);
   const planningConfigQuery = usePlanningConfigQuery();
@@ -162,6 +167,14 @@ export default function MyDailyPlannerTab() {
     () => (dayDate ? tasks.filter((t) => t.date === dayDate) : []),
     [tasks, dayDate],
   );
+  const dayPlanFinalized = useMemo(
+    () => dayTasks.some((t) => Boolean(t.planFinalizedAt)),
+    [dayTasks],
+  );
+  const nextWorkingDayIst = useMemo(() => {
+    const today = planningConfigQuery.data?.todayIst || todayIso();
+    return getNextWorkingDayDateKey(today, employeeLocation) || planningConfigQuery.data?.tomorrowIst || tomorrowIso();
+  }, [planningConfigQuery.data?.todayIst, planningConfigQuery.data?.tomorrowIst, employeeLocation]);
 
   const yearOptions = useMemo(() => {
     const base = now.getUTCFullYear();
@@ -246,23 +259,29 @@ export default function MyDailyPlannerTab() {
       return;
     }
 
-    const eligibility = evaluateMyDailyPlannerCreateEligibility(iso, config);
+    // My Daily Planner always uses employee planning-window rules (including Admin on this tab).
+    // Team Daily Planner / for-employee flows keep elevated manager privileges separately.
+    const eligibility = evaluateMyDailyPlannerCreateEligibility(iso, config, {
+      elevated: false,
+      nextWorkingDayIst,
+    });
     if (!eligibility.allowed) {
       toast.error(eligibility.message);
       return;
     }
 
     setReviseTaskId(revisesTaskId || null);
-    if (eligibility.mode === 'urgent') {
-      setCreateBlockedReason(REGULAR_TASK_TODAY_BLOCKED_MESSAGE);
-      setCreateDate(iso);
-      return;
-    }
-
     setCreateBlockedReason(null);
     setCreateDate(iso);
   };
-  const openDay = (iso: string) => setDayDate(iso);
+  const openDay = (iso: string) => {
+    setDayDate(iso);
+    const dayList = tasks.filter((t) => t.date === iso);
+    const finalized = dayList.some((t) => Boolean(t.planFinalizedAt));
+    // Show structured final-plan summary for upcoming finalized days; keep day modal
+    // for today/past so completion and status updates still work.
+    setFinalPlanOpen(finalized && getDailyPlannerDateMode(iso) === 'future');
+  };
 
   const handlePlanTomorrow = () => {
     const config = planningConfigQuery.data;
@@ -270,15 +289,18 @@ export default function MyDailyPlannerTab() {
       toast.error('Planning window information is loading. Please try again.');
       return;
     }
-    const tomorrow = config.tomorrowIst || tomorrowIso();
-    const eligibility = evaluateMyDailyPlannerCreateEligibility(tomorrow, config);
+    const planDate = nextWorkingDayIst;
+    const eligibility = evaluateMyDailyPlannerCreateEligibility(planDate, config, {
+      elevated: false,
+      nextWorkingDayIst,
+    });
     if (!eligibility.allowed) {
       toast.error(eligibility.message);
       return;
     }
     setReviseTaskId(null);
     setCreateBlockedReason(null);
-    setCreateDate(tomorrow);
+    setCreateDate(planDate);
   };
 
   const toggleCellExpand = (iso: string) => {
@@ -456,6 +478,7 @@ export default function MyDailyPlannerTab() {
           date={createDate ?? ''}
           planningConfig={planningConfigQuery.data}
           regularCreationBlockedMessage={createBlockedReason}
+          elevated={elevated}
           onClose={() => {
             setCreateDate(null);
             setCreateBlockedReason(null);
@@ -468,7 +491,11 @@ export default function MyDailyPlannerTab() {
                     index === 0 ? { ...draft, revisesTaskId: reviseTaskId } : draft,
                   )
                 : drafts;
-            const created = await createDailyPlannerTasks(payload, planningConfigQuery.data);
+            const created = await createDailyPlannerTasks(payload, planningConfigQuery.data, {
+              elevated,
+              nextWorkingDayIst,
+              useBatch: !elevated && !reviseTaskId,
+            });
             toast.success(
               drafts.length === 1 ? 'Task created' : `${drafts.length} tasks created`,
             );
@@ -483,7 +510,7 @@ export default function MyDailyPlannerTab() {
         />
 
         <DailyPlannerDayTasksModal
-          open={!!dayDate}
+          open={!!dayDate && !finalPlanOpen}
           date={dayDate ?? ''}
           tasks={dayTasks}
           planningConfig={planningConfigQuery.data}
@@ -492,6 +519,27 @@ export default function MyDailyPlannerTab() {
           onAddTask={(revisesTaskId) => {
             if (!dayDate) return;
             openCreate(dayDate, revisesTaskId);
+          }}
+          onViewFinalPlan={dayPlanFinalized ? () => setFinalPlanOpen(true) : undefined}
+        />
+
+        <DailyPlannerPlanSummaryDialog
+          open={Boolean(dayDate && finalPlanOpen && dayPlanFinalized)}
+          date={dayDate ?? ''}
+          tasks={dayTasks}
+          employeeName={
+            [user?.firstName, user?.lastName].filter(Boolean).join(' ') ||
+            user?.employeeCode ||
+            ''
+          }
+          title="Final Daily Plan"
+          readOnly
+          onClose={() => {
+            setFinalPlanOpen(false);
+            // Keep dayDate so employee can return to task actions for today.
+            if (dayDate && getDailyPlannerDateMode(dayDate) === 'future') {
+              setDayDate(null);
+            }
           }}
         />
       </div>
