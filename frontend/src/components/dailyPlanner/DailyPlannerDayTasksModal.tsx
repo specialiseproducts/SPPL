@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -13,10 +13,27 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
-import type { DailyPlannerNotCompletedAction, DailyPlannerTask } from '../../types/dailyPlanner';
+import type {
+  DailyPlannerNotCompletedAction,
+  DailyPlannerPriority,
+  DailyPlannerTask,
+} from '../../types/dailyPlanner';
 import type { PlanningConfig } from '../../utils/planningRecognition';
-import { canUpdateTasksOnDate, TASK_UPDATES_READONLY_MESSAGE } from '../../utils/planningRecognition';
-import { getDailyTaskChipStyle, getDailyTaskStatusLabel, getDailyTaskVisualKey, isPermanentlyClosedTask, isRescheduledTask, visibleEmployeePlannerTasks } from './dailyPlannerUtils';
+import {
+  canUpdateTasksOnDate,
+  formatDurationLabel,
+  partsToDecimalHours,
+  TASK_UPDATES_READONLY_MESSAGE,
+} from '../../utils/planningRecognition';
+import {
+  getDailyTaskChipStyle,
+  getDailyTaskStatusLabel,
+  getDailyTaskVisualKey,
+  isPermanentlyClosedTask,
+  isRescheduledTask,
+  sortDailyPlannerTasksByPriority,
+  visibleEmployeePlannerTasks,
+} from './dailyPlannerUtils';
 import {
   canCompleteTasksOnDate,
   canPlanTasksOnDate,
@@ -29,6 +46,7 @@ import {
   completeDailyPlannerTask,
   notCompletedDailyPlannerTask,
   submitDayCompletion,
+  updateDailyPlannerTask,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import BulletPointList from './BulletPointList';
@@ -37,10 +55,25 @@ import { isCompanyHoliday } from '../../utils/companyWorkingDays';
 import { todayIso } from './dailyPlannerUtils';
 import { useAuth } from '../../context/AuthContext';
 import { hasEmployeeCompletionOutcome } from './todayTaskReviewWizardUtils';
+import HoursMinutesFields from './HoursMinutesFields';
 
 /** Display-only message for the day-tasks modal (does not change global planning rules). */
 const DAY_TASK_UPDATES_READONLY_DISPLAY_MESSAGE =
-  'Task updates are only allowed during the planning windows (05:30 PM–08:00 PM).';
+  'Task updates are only allowed during the planning windows (5:30 PM–11:00 AM next day).';
+
+function calcDurationFromTimes(startTime: string, endTime: string): number | null {
+  const start = String(startTime || '').trim();
+  const end = String(endTime || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return null;
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  if (![sh, sm, eh, em].every((n) => Number.isFinite(n))) return null;
+  const startMins = sh * 60 + sm;
+  const endMins = eh * 60 + em;
+  if (endMins < startMins) return null;
+  const diff = endMins - startMins;
+  return partsToDecimalHours(Math.floor(diff / 60), diff % 60);
+}
 
 interface DailyPlannerDayTasksModalProps {
   open: boolean;
@@ -69,25 +102,56 @@ export default function DailyPlannerDayTasksModal({
 }: DailyPlannerDayTasksModalProps) {
   const { user } = useAuth();
   const employeeLocation = user?.location || 'Office';
-  const visibleTasks = useMemo(() => visibleEmployeePlannerTasks(tasks), [tasks]);
+  const visibleTasks = useMemo(
+    () => sortDailyPlannerTasksByPriority(visibleEmployeePlannerTasks(tasks)),
+    [tasks],
+  );
   const [reasonTaskId, setReasonTaskId] = useState<string | null>(null);
   const [notCompletedAction, setNotCompletedAction] = useState<DailyPlannerNotCompletedAction>('terminate');
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [completeTaskId, setCompleteTaskId] = useState<string | null>(null);
+  const [completeStartTime, setCompleteStartTime] = useState('');
+  const [completeEndTime, setCompleteEndTime] = useState('');
+  const [editTaskId, setEditTaskId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPriority, setEditPriority] = useState<DailyPlannerPriority>('Medium');
+  const [editHours, setEditHours] = useState<number | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [submittingDay, setSubmittingDay] = useState(false);
   const workDoneEditorRef = useRef<BulletPointEditorHandle>(null);
   const reasonEditorRef = useRef<BulletPointEditorHandle>(null);
+  const editDescriptionRef = useRef<BulletPointEditorHandle>(null);
 
   const dateMode = useMemo(() => getDailyPlannerDateMode(date), [date]);
   const isPastDate = dateMode === 'past';
-  const canPlan = canPlanTasksOnDate(date);
+  const dayPlanFinalized = useMemo(
+    () =>
+      visibleTasks.some(
+        (t) =>
+          Boolean(t.planFinalizedAt) && String(t.status || '').trim() !== 'Rescheduled',
+      ),
+    [visibleTasks],
+  );
+  const canPlan = canPlanTasksOnDate(date) && !dayPlanFinalized;
   const canCompleteByDate = canCompleteTasksOnDate(date);
   const canModifyTasks = useMemo(
     () => canCompleteByDate && canUpdateTasksOnDate(date, planningConfig),
     [canCompleteByDate, date, planningConfig],
   );
   const isReadOnlyWindow = canCompleteByDate && !canModifyTasks;
+  const canEditPlanTasks = !isPastDate && !dayPlanFinalized;
+
+  const completeDurationPreview = useMemo(
+    () => calcDurationFromTimes(completeStartTime, completeEndTime),
+    [completeStartTime, completeEndTime],
+  );
+
+  useEffect(() => {
+    if (!completeTaskId) {
+      setCompleteStartTime('');
+      setCompleteEndTime('');
+    }
+  }, [completeTaskId]);
 
   const allHaveCompletionOutcomes =
     visibleTasks.length > 0 && visibleTasks.every(hasEmployeeCompletionOutcome);
@@ -97,6 +161,54 @@ export default function DailyPlannerDayTasksModal({
     allHaveCompletionOutcomes &&
     !completionAlreadySubmitted &&
     !submittingDay;
+
+  const openEdit = (task: DailyPlannerTask) => {
+    setEditTaskId(task.plannerTaskId);
+    setEditName(task.taskName || '');
+    setEditPriority((task.currentPriority || task.priority || 'Medium') as DailyPlannerPriority);
+    setEditHours(
+      task.hoursRequired != null && Number.isFinite(Number(task.hoursRequired))
+        ? Number(task.hoursRequired)
+        : null,
+    );
+  };
+
+  const closeEdit = () => {
+    setEditTaskId(null);
+    setEditName('');
+    setEditPriority('Medium');
+    setEditHours(null);
+  };
+
+  const submitEdit = async () => {
+    if (!editTaskId) return;
+    if (!editName.trim()) {
+      toast.error('Task name is required');
+      return;
+    }
+    const hoursValue = Number(editHours);
+    if (editHours == null || !Number.isFinite(hoursValue) || hoursValue <= 0) {
+      toast.error('Hours Required to Complete must be greater than 0');
+      return;
+    }
+    const description = editDescriptionRef.current?.getFormattedValue() ?? '';
+    setBusyId(editTaskId);
+    try {
+      const updated = await updateDailyPlannerTask(editTaskId, {
+        taskName: editName.trim(),
+        description,
+        priority: editPriority,
+        hoursRequired: Math.round(hoursValue * 100) / 100,
+      });
+      toast.success('Task updated');
+      closeEdit();
+      onChanged({ upsert: [updated] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Update failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const handleSubmitDayCompletion = async () => {
     if (!canSubmitDayCompletion) {
@@ -137,6 +249,15 @@ export default function DailyPlannerDayTasksModal({
       setCompleteTaskId(null);
       return;
     }
+    if (!completeStartTime.trim() || !completeEndTime.trim()) {
+      toast.error('Start Time and End Time are required');
+      return;
+    }
+    const duration = calcDurationFromTimes(completeStartTime, completeEndTime);
+    if (duration == null) {
+      toast.error('End Time must be the same as or after Start Time');
+      return;
+    }
     const editor = workDoneEditorRef.current;
     if (!editor?.hasContent()) {
       toast.error('Work done is required');
@@ -150,6 +271,18 @@ export default function DailyPlannerDayTasksModal({
         workDone,
         task?.date ?? date,
         planningConfig ?? undefined,
+        {
+          startTime: completeStartTime.trim(),
+          endTime: completeEndTime.trim(),
+        },
+      );
+      const taskDuration =
+        result.completionDurationHours ?? result.task.completionDurationHours ?? duration;
+      const dayTotal = result.dayCompletedHours;
+      toast.success(
+        dayTotal != null
+          ? `Task duration ${formatDurationLabel(taskDuration)}. Day total ${formatDurationLabel(dayTotal)}.`
+          : `Task duration ${formatDurationLabel(taskDuration)}.`,
       );
       setCompleteTaskId(null);
       onChanged({
@@ -253,6 +386,11 @@ export default function DailyPlannerDayTasksModal({
     }
   };
 
+  const editingTask = editTaskId
+    ? visibleTasks.find((t) => t.plannerTaskId === editTaskId) ||
+      tasks.find((t) => t.plannerTaskId === editTaskId)
+    : null;
+
   return (
     <>
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -296,6 +434,15 @@ export default function DailyPlannerDayTasksModal({
                 visibleTasks.map((task) => {
                   const isClosed = isPermanentlyClosedTask(task);
                   const showCompletionCheckbox = !isRescheduledTask(task);
+                  const canEditThisTask =
+                    canEditPlanTasks &&
+                    !isClosed &&
+                    !isRescheduledTask(task) &&
+                    task.taskType === 'Manual' &&
+                    task.source !== 'SALES_FORECASTING' &&
+                    task.status !== 'Awaiting Verification' &&
+                    task.status !== 'Completed' &&
+                    task.status !== 'Verified Complete';
                   return (
                   <div key={task.plannerTaskId} className="rounded-lg border border-gray-200 p-3">
                     <div className="flex items-start gap-3">
@@ -347,30 +494,46 @@ export default function DailyPlannerDayTasksModal({
                           <p className="text-xs text-gray-600">—</p>
                         )}
                         <p className="mt-1 text-xs text-gray-500">
-                          {task.taskType} · {task.currentPriority} · {getDailyTaskStatusLabel(task.status)}
+                          {task.taskType} · {task.currentPriority || task.priority}
+                          {task.hoursRequired != null
+                            ? ` · ${formatDurationLabel(task.hoursRequired)}`
+                            : ''}{' '}
+                          · {getDailyTaskStatusLabel(task.status)}
                           {task.priorityEdited && task.approvedByName
                             ? ` · Approved by ${task.approvedByName}`
                             : ''}
                         </p>
-                        {canModifyTasks &&
-                        task.status !== 'Awaiting Verification' &&
-                        task.status !== 'Completed' &&
-                        task.status !== 'Verified Complete' &&
-                        task.status !== 'Not Completed' &&
-                        !(task.status === 'Needs Revision' && !task.revisionOutcome) &&
-                        task.status !== 'Terminated' &&
-                        task.status !== 'Rescheduled' ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="mt-2"
-                            disabled={busyId === task.plannerTaskId}
-                            onClick={() => setReasonTaskId(task.plannerTaskId)}
-                          >
-                            Mark Not Completed
-                          </Button>
-                        ) : null}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {canEditThisTask ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={busyId === task.plannerTaskId}
+                              onClick={() => openEdit(task)}
+                            >
+                              Edit Task
+                            </Button>
+                          ) : null}
+                          {canModifyTasks &&
+                          task.status !== 'Awaiting Verification' &&
+                          task.status !== 'Completed' &&
+                          task.status !== 'Verified Complete' &&
+                          task.status !== 'Not Completed' &&
+                          !(task.status === 'Needs Revision' && !task.revisionOutcome) &&
+                          task.status !== 'Terminated' &&
+                          task.status !== 'Rescheduled' ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={busyId === task.plannerTaskId}
+                              onClick={() => setReasonTaskId(task.plannerTaskId)}
+                            >
+                              Mark Not Completed
+                            </Button>
+                          ) : null}
+                        </div>
                         {(task.status === 'Awaiting Verification' ||
                           task.status === 'Completed' ||
                           task.status === 'Verified Complete') &&
@@ -382,6 +545,14 @@ export default function DailyPlannerDayTasksModal({
                                 : 'Work Done'}
                             </p>
                             <BulletPointList text={task.reason} />
+                            {task.completionStartTime && task.completionEndTime ? (
+                              <p className="mt-1 text-gray-600">
+                                {task.completionStartTime} – {task.completionEndTime}
+                                {task.completionDurationHours != null
+                                  ? ` · ${formatDurationLabel(task.completionDurationHours)}`
+                                  : ''}
+                              </p>
+                            ) : null}
                           </div>
                         ) : null}
                         {task.managerComments ? (
@@ -426,7 +597,7 @@ export default function DailyPlannerDayTasksModal({
                                 Number.isFinite(Number(task.replacementTask.hoursRequired)) ? (
                                   <p>
                                     <span className="font-medium">Hours Required To Complete:</span>{' '}
-                                    {task.replacementTask.hoursRequired}
+                                    {formatDurationLabel(task.replacementTask.hoursRequired)}
                                   </p>
                                 ) : null}
                                 {task.replacementTask.expectedOutcome ? (
@@ -447,6 +618,15 @@ export default function DailyPlannerDayTasksModal({
                                 onClick={() => void acceptSuggestion(task)}
                               >
                                 Accept Suggestion
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={busyId === task.plannerTaskId}
+                                onClick={() => onAddTask(task.plannerTaskId)}
+                              >
+                                Revision
                               </Button>
                             </div>
                           </div>
@@ -511,19 +691,111 @@ export default function DailyPlannerDayTasksModal({
           <DialogHeader>
             <DialogTitle>Mark Completed</DialogTitle>
           </DialogHeader>
-          <BulletPointEditor
-            key={completeTaskId ?? 'complete-closed'}
-            ref={workDoneEditorRef}
-            id="work-done"
-            label="Work Done"
-            required
-          />
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="complete-start-time">Start Time *</Label>
+                <Input
+                  id="complete-start-time"
+                  type="time"
+                  value={completeStartTime}
+                  onChange={(e) => setCompleteStartTime(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="complete-end-time">End Time *</Label>
+                <Input
+                  id="complete-end-time"
+                  type="time"
+                  value={completeEndTime}
+                  onChange={(e) => setCompleteEndTime(e.target.value)}
+                />
+              </div>
+            </div>
+            {completeDurationPreview != null ? (
+              <p className="text-sm text-gray-600">
+                Duration: {formatDurationLabel(completeDurationPreview)}
+              </p>
+            ) : completeStartTime && completeEndTime ? (
+              <p className="text-sm text-red-600">End Time must be on or after Start Time.</p>
+            ) : null}
+            <BulletPointEditor
+              key={completeTaskId ?? 'complete-closed'}
+              ref={workDoneEditorRef}
+              id="work-done"
+              label="Work Done"
+              required
+            />
+          </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setCompleteTaskId(null)}>
               Cancel
             </Button>
             <Button type="button" onClick={() => void submitCompleted()} disabled={!!busyId}>
               Submit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!editTaskId && Boolean(editingTask)}
+        onOpenChange={(v) => {
+          if (!v) closeEdit();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Task</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-task-name">Task Name *</Label>
+              <Input
+                id="edit-task-name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+              />
+            </div>
+            <BulletPointEditor
+              key={editTaskId ?? 'edit-closed'}
+              ref={editDescriptionRef}
+              id="edit-task-description"
+              label="Task Description"
+              defaultValue={editingTask?.description || ''}
+            />
+            <div className="space-y-2">
+              <Label>Priority *</Label>
+              <Select
+                value={editPriority}
+                onValueChange={(v) => setEditPriority(v as DailyPlannerPriority)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Urgent">Urgent</SelectItem>
+                  <SelectItem value="High">High</SelectItem>
+                  <SelectItem value="Medium">Medium</SelectItem>
+                  <SelectItem value="Low">Low</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Hours Required to Complete *</Label>
+              <HoursMinutesFields
+                idPrefix="edit-hours"
+                value={editHours}
+                onChange={setEditHours}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={closeEdit}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void submitEdit()} disabled={!!busyId}>
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>

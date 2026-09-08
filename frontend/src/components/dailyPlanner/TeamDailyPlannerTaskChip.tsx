@@ -31,7 +31,9 @@ export default function TeamDailyPlannerTaskChip({
   const displayLabel = getDailyTaskDisplayLabel(task);
   const employeeLabel = String(task.employeeName || task.employeeCode || '').trim();
   const visualKey = getDailyTaskVisualKey(task);
-  const urgent = isUrgentTask(task.planningCategory);
+  const urgent =
+    isUrgentTask(task.planningCategory) ||
+    String(task.currentPriority || task.priority || '').trim() === 'Urgent';
   const isSalesVisit = visualKey === 'Sales Visit';
   const chipStyle = {
     ...getDailyTaskChipStyle(visualKey),

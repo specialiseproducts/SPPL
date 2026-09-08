@@ -25,7 +25,10 @@ export function getTaskOriginLabel(task: DailyPlannerTask): TaskOriginLabel {
     return 'Sales Forecasting';
   }
 
-  if (isUrgentTask(task.planningCategory)) {
+  if (
+    isUrgentTask(task.planningCategory) ||
+    String(task.currentPriority || task.priority || '').trim() === 'Urgent'
+  ) {
     return 'Urgent Task';
   }
 

@@ -21,7 +21,7 @@ import {
   isTaskEligibleForPlanningScore,
   countPendingEveningReviewTasks,
   sumPlannedHoursForDate,
-  MIN_PLANNED_HOURS_PER_WORKING_DAY,
+  getMinPlannedHoursForLocation,
   buildMinimumHoursWarningMessage,
   buildMinimumHoursManagerWarningMessage,
 } from '../utils/planningRecognition.js';
@@ -375,22 +375,23 @@ export async function runMorningMinimumTasksValidationJob(reference = new Date()
         today,
       );
       const plannedHours = sumPlannedHoursForDate(tasks, today);
-      if (plannedHours >= MIN_PLANNED_HOURS_PER_WORKING_DAY) continue;
+      const minRequired = getMinPlannedHoursForLocation(location);
+      if (plannedHours >= minRequired) continue;
 
       const remaining =
-        Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - plannedHours) * 100) / 100;
+        Math.round((minRequired - plannedHours) * 100) / 100;
       const employeeName = String(employee.employeeName || employee.employeeCode || '').trim();
 
       await notifyUser(
         employee.employeeCode,
         'Minimum daily hours required',
-        buildMinimumHoursWarningMessage(plannedHours, dayLabel),
+        buildMinimumHoursWarningMessage(plannedHours, dayLabel, location),
         'WARNING',
         {
           date: today,
           plannedHours,
           remainingHours: remaining,
-          minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+          minRequired,
           reminderType: 'morning_minimum_hours',
         },
       );
@@ -399,6 +400,7 @@ export async function runMorningMinimumTasksValidationJob(reference = new Date()
         employeeName,
         plannedHours,
         dayLabel,
+        location,
       );
       const managers = allMappings.filter(
         (m) =>
@@ -419,7 +421,7 @@ export async function runMorningMinimumTasksValidationJob(reference = new Date()
             employeeName,
             plannedHours,
             remainingHours: remaining,
-            minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+            minRequired,
             reminderType: 'morning_minimum_hours_manager',
           },
         );
@@ -432,15 +434,15 @@ export async function runMorningMinimumTasksValidationJob(reference = new Date()
           message: managerMessage,
           createdBy: 'system',
           actionType: 'View',
-          actionId: 'team-daily-planner',
           actionUrl: '/daily-planner',
+          actionId: 'team-daily-planner',
           metadata: {
             date: today,
             employeeCode: employee.employeeCode,
             employeeName,
             plannedHours,
             remainingHours: remaining,
-            minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+            minRequired,
             reminderType: 'morning_minimum_hours_admin',
           },
         },

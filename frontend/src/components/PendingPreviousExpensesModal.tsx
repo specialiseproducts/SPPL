@@ -9,7 +9,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import type { ExpenseRecord } from '../types/expenses';
 
 const MONTH_NAMES = [
@@ -117,11 +117,21 @@ export default function PendingPreviousExpensesModal({
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && onCancel()}>
       {/*
-        Override DialogContent default sm:max-w-lg so the table has room.
-        Modal shell stays fixed; only the table body scrolls.
+        DialogContent defaults to CSS grid, which sizes to the table and ignores
+        flex/max-height. Inline height + flex is required so header/footer stay
+        in view and only the row area scrolls.
       */}
       <DialogContent
-        className="flex w-[min(100%-1.5rem,960px)] max-h-[min(90vh,720px)] min-h-0 max-w-[960px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px]"
+        className="w-[min(100%-1.5rem,960px)] max-w-[960px] gap-0 overflow-hidden p-0 sm:max-w-[960px]"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: 'min(90dvh, calc(100dvh - 2rem))',
+          maxHeight: 'min(90dvh, calc(100dvh - 2rem))',
+          overflow: 'hidden',
+          padding: 0,
+          gap: 0,
+        }}
       >
         <DialogHeader className="shrink-0 space-y-2 px-6 pt-6 pb-4 pr-12 text-left sm:text-left">
           <DialogTitle>Pending Previous Expenses</DialogTitle>
@@ -131,7 +141,10 @@ export default function PendingPreviousExpensesModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 px-6 pb-2">
+        <div
+          className="flex flex-col gap-4 px-6 pb-2"
+          style={{ flex: '1 1 0%', minHeight: 0, overflow: 'hidden' }}
+        >
           <div className="grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-md border px-4 py-3">
               <div className="text-sm text-muted-foreground">Total Pending Amount</div>
@@ -161,8 +174,11 @@ export default function PendingPreviousExpensesModal({
             </label>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto rounded-md border">
-            <Table className="table-fixed w-full min-w-[720px]">
+          <div
+            className="rounded-md border"
+            style={{ flex: '1 1 0%', minHeight: 0, overflowY: 'auto', overflowX: 'auto' }}
+          >
+            <table className="w-full min-w-[720px] table-fixed caption-bottom text-sm">
               <TableHeader className="sticky top-0 z-10 bg-background">
                 <TableRow>
                   <TableHead className="w-14 whitespace-nowrap px-3">Include</TableHead>
@@ -207,11 +223,14 @@ export default function PendingPreviousExpensesModal({
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+            </table>
           </div>
         </div>
 
-        <DialogFooter className="shrink-0 gap-3 border-t bg-background px-6 py-4 sm:justify-end sm:gap-3">
+        <DialogFooter
+          className="shrink-0 gap-3 border-t bg-background px-6 py-4 sm:justify-end sm:gap-3"
+          style={{ flexShrink: 0 }}
+        >
           <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
             Cancel
           </Button>

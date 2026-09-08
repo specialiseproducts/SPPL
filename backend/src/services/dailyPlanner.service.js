@@ -8,11 +8,11 @@ import * as SalesPlannerEventsModel from '../models/SalesPlannerEvents.js';
 import * as PlanningRecognitionService from './planningRecognition.service.js';
 import * as TeamPerformanceService from './teamPerformance.service.js';
 import * as PlanningAnalyticsService from './planningAnalytics.service.js';
-import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, MIN_PLANNED_HOURS_PER_WORKING_DAY, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow, assertExactSevenPlannedHours, EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE, USER_PRIORITY_FORBIDDEN_MESSAGE, isManagerReviewWindow, MANAGER_REVIEW_WINDOW_MESSAGE, nextWorkingDayIstDateKey } from '../utils/planningRecognition.js';
+import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, isTaskCountedTowardDailyMinimum, getMinPlannedHoursForLocation, formatDurationLabel, PRIORITY_SORT_ORDER, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow, assertExactSevenPlannedHours, isManagerReviewWindow, MANAGER_REVIEW_WINDOW_MESSAGE, nextWorkingDayIstDateKey } from '../utils/planningRecognition.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
-import { canAccessAllRecords } from '../utils/accessControl.js';
+import { canAccessAllRecords, isSuperAdmin } from '../utils/accessControl.js';
 import { notifyUser } from '../utils/notifications.js';
 import * as PlannerNotificationEmitters from './notificationEmitters.js';
 import * as AuditTrailService from './auditTrail.service.js';
@@ -22,9 +22,9 @@ import { NOTIFICATION_MODULES } from '../constants/notifications.js';
 import * as DailyPlannerProjectsModel from '../models/DailyPlannerProjects.js';
 import * as EmployeeMasterModel from '../models/EmployeeMaster.js';
 import { sendEmail } from './emailService.js';
-import { buildFinalPlanEmail } from './dailyPlannerFinalPlanEmail.js';
+import { buildFinalPlanEmail, buildRevisedPlanEmail } from './dailyPlannerFinalPlanEmail.js';
 
-const PRIORITY_ORDER = { High: 0, Medium: 1, Low: 2 };
+const PRIORITY_ORDER = PRIORITY_SORT_ORDER;
 
 function auditPlannerTask(authUser, action, task, description, extra = {}) {
   const id = String(task?.plannerTaskId || task?.taskId || '').trim();
@@ -142,8 +142,206 @@ function assertCanModerateTeamTask(effectiveRole) {
 
 function normalizePriorityValue(value, fallback = 'Medium') {
   const p = String(value || '').trim();
-  if (p === 'High' || p === 'Medium' || p === 'Low') return p;
+  if (p === 'Urgent' || p === 'High' || p === 'Medium' || p === 'Low') return p;
   return fallback;
+}
+
+function planningCategoryFromPriority(priority) {
+  return String(priority || '').trim() === 'Urgent'
+    ? PLANNING_CATEGORY_URGENT
+    : PLANNING_CATEGORY_REGULAR;
+}
+
+function formatPlanDateLabel(dateKey) {
+  const [y, m, d] = String(dateKey || '')
+    .slice(0, 10)
+    .split('-')
+    .map(Number);
+  if (!y || !m || !d) return String(dateKey || '').trim();
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+function finalizedFieldSnapshot(task) {
+  const hours = Number(task?.hoursRequired);
+  return {
+    taskName: String(task?.taskName || '').trim(),
+    description: String(task?.description || '').trim(),
+    priority: String(task?.currentPriority || task?.priority || 'Medium').trim(),
+    hoursRequired: Number.isFinite(hours) ? Math.round(hours * 100) / 100 : 0,
+    managerInstructions: String(task?.managerInstructions || '').trim(),
+    managerComments: String(task?.managerComments || '').trim(),
+  };
+}
+
+function readFinalizedSnapshot(task) {
+  const raw = task?.lastFinalizedSnapshot;
+  if (!raw || typeof raw !== 'object') return null;
+  return finalizedFieldSnapshot(raw);
+}
+
+function isTaskAddedAfterFinalize(task) {
+  const snapshot = readFinalizedSnapshot(task);
+  if (snapshot) return false;
+  const createdAt = String(task?.createdAt || '').trim();
+  const finalizedAt = String(task?.planFinalizedAt || '').trim();
+  if (!finalizedAt) return true;
+  if (!createdAt) return false;
+  return createdAt > finalizedAt;
+}
+
+function collectFinalPlanChanges(tasks) {
+  const changes = [];
+  for (const task of tasks || []) {
+    const current = finalizedFieldSnapshot(task);
+    const previous = readFinalizedSnapshot(task);
+    if (!previous) {
+      if (isTaskAddedAfterFinalize(task)) {
+        changes.push({
+          label: `Added Task: "${current.taskName || 'Untitled'}"`,
+          details: [],
+        });
+      }
+      continue;
+    }
+    const details = [];
+    if (previous.taskName !== current.taskName) {
+      details.push(`Task Name: ${previous.taskName || '—'} → ${current.taskName || '—'}`);
+    }
+    if (previous.description !== current.description) {
+      details.push('Task Description updated');
+    }
+    if (previous.priority !== current.priority) {
+      details.push(`Priority: ${previous.priority} → ${current.priority}`);
+    }
+    if (previous.hoursRequired !== current.hoursRequired) {
+      details.push(
+        `Hours Planned: ${formatDurationLabel(previous.hoursRequired)} → ${formatDurationLabel(current.hoursRequired)}`,
+      );
+    }
+    const prevRemark = [previous.managerInstructions, previous.managerComments].filter(Boolean).join(' | ');
+    const nextRemark = [current.managerInstructions, current.managerComments].filter(Boolean).join(' | ');
+    if (prevRemark !== nextRemark) {
+      details.push('Instruction / Comment updated');
+    }
+    if (details.length > 0) {
+      changes.push({
+        label: `Edited Task: "${current.taskName || previous.taskName || 'Untitled'}"`,
+        details,
+      });
+    }
+  }
+  return changes;
+}
+
+/**
+ * Fire-and-forget revised plan email when manager changes a finalized day plan.
+ */
+async function sendRevisedPlanEmailForEmployee({
+  employeeCode,
+  date,
+  changes,
+}) {
+  const code = String(employeeCode || '').trim();
+  const dateKey = String(date || '').trim().slice(0, 10);
+  if (!code || !dateKey) return;
+
+  const [employee, tasks] = await Promise.all([
+    EmployeeMasterModel.getEmployeeByCode(code),
+    DailyPlannerTasksModel.listTasksForEmployeeMonth(code, dateKey, dateKey),
+  ]);
+  const officialEmail = String(
+    employee?.officialEmail || employee?.official_email || employee?.email || '',
+  ).trim();
+  if (!officialEmail) return;
+
+  const activeTasks = (tasks || []).filter((t) => String(t.status || '').trim() !== 'Rescheduled');
+  const sorted = [...activeTasks].sort((a, b) => {
+    const pa = PRIORITY_ORDER[a.currentPriority || a.priority] ?? 2;
+    const pb = PRIORITY_ORDER[b.currentPriority || b.priority] ?? 2;
+    if (pa !== pb) return pa - pb;
+    return String(a.taskName || '').localeCompare(String(b.taskName || ''), undefined, {
+      sensitivity: 'base',
+    });
+  });
+  const totalHours = sumPlannedHoursForDate(sorted, dateKey);
+  const employeeName =
+    String(employee?.fullName || '').trim() ||
+    `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() ||
+    sorted[0]?.employeeName ||
+    code;
+
+  const mail = buildRevisedPlanEmail({
+    employeeName,
+    dateLabel: formatPlanDateLabel(dateKey),
+    totalHours,
+    tasks: sorted,
+    changes: changes || [],
+  });
+  void sendEmail({
+    to: officialEmail,
+    subject: mail.subject,
+    text: mail.text,
+    html: mail.html,
+  }).catch((err) => {
+    console.error('Revised plan email failed:', err);
+  });
+}
+
+/** Parse HH:mm / H:mm into minutes since midnight; returns null if invalid. */
+function parseTimeToMinutes(value) {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function durationHoursFromStartEnd(startTime, endTime) {
+  const startMins = parseTimeToMinutes(startTime);
+  const endMins = parseTimeToMinutes(endTime);
+  if (startMins == null || endMins == null) {
+    const err = new Error('startTime and endTime are required in HH:mm format');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (endMins < startMins) {
+    const err = new Error('endTime must be on or after startTime (same day)');
+    err.statusCode = 400;
+    throw err;
+  }
+  return Math.round(((endMins - startMins) / 60) * 100) / 100;
+}
+
+function normalizeClockTime(value) {
+  const mins = parseTimeToMinutes(value);
+  if (mins == null) return String(value || '').trim();
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function completedHoursForTask(task) {
+  const completion = Number(task?.completionDurationHours);
+  if (Number.isFinite(completion) && completion >= 0) return completion;
+  const planned = Number(task?.hoursRequired);
+  return Number.isFinite(planned) && planned > 0 ? planned : 0;
+}
+
+function sumDayCompletedHours(tasks) {
+  const done = new Set(['Completed', 'Awaiting Verification', 'Verified Complete']);
+  return Math.round(
+    (tasks || [])
+      .filter((t) => done.has(String(t.status || '').trim()))
+      .reduce((sum, t) => sum + completedHoursForTask(t), 0) * 100,
+  ) / 100;
 }
 
 export function sortDailyPlannerTasks(tasks) {
@@ -317,22 +515,13 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
   const now = new Date();
   const location = await getEmployeeLocation(code);
 
-  // User-access: force Regular + Medium priority (ignore client overrides).
-  const requestBody = { ...body };
-  if (!elevated) {
-    requestBody.planningCategory = PLANNING_CATEGORY_REGULAR;
-    requestBody.urgentReason = '';
-    if (
-      body.priority != null &&
-      String(body.priority).trim() &&
-      String(body.priority).trim() !== 'Medium'
-    ) {
-      const err = new Error(USER_PRIORITY_FORBIDDEN_MESSAGE);
-      err.statusCode = 403;
-      throw err;
-    }
-    requestBody.priority = 'Medium';
-  }
+  const priority = normalizePriorityValue(body.priority, 'Medium');
+  // Priority Urgent maps to Urgent planning category for scoring; else Regular.
+  const requestBody = {
+    ...body,
+    priority,
+    planningCategory: planningCategoryFromPriority(priority),
+  };
 
   const planningMeta = PlanningRecognitionService.validateTaskPlanningPayload(
     requestBody,
@@ -342,18 +531,31 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     // Manager add-for-employee keeps elevated via createTaskForEmployee.
     { elevated: false },
   );
-  const priority = normalizePriorityValue(
-    elevated ? requestBody.priority : 'Medium',
-    'Medium',
-  );
   const hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
 
-  // Users must end at exactly 7 hours (batch create skips per-task gate after validating the batch).
+  // Self-create must meet minimum planned hours for the day (existing + this task).
+  // Applies to all roles on My Daily Planner; Team for-employee uses createTaskForEmployee.
   const revisesTaskIdEarly = String(body.revisesTaskId || '').trim();
-  if (!elevated && !revisesTaskIdEarly && !options.skipExactSevenCheck) {
-    const existing = await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date);
-    const existingHours = sumPlannedHoursForDate(existing, date);
-    assertExactSevenPlannedHours(Math.round((existingHours + hoursRequired) * 100) / 100);
+  const existingForDate = await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date);
+  if (
+    !revisesTaskIdEarly &&
+    (existingForDate || []).some(
+      (t) =>
+        Boolean(t.planFinalizedAt) && String(t.status || '').trim() !== 'Rescheduled',
+    )
+  ) {
+    const err = new Error(
+      'This daily plan has been finalized. No further planning is allowed for this date.',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!revisesTaskIdEarly && !options.skipExactSevenCheck) {
+    const existingHours = sumPlannedHoursForDate(existingForDate, date);
+    assertExactSevenPlannedHours(
+      Math.round((existingHours + hoursRequired) * 100) / 100,
+      location,
+    );
   }
 
   const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
@@ -392,7 +594,12 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     ? String(body.managerInstructions || body.instructions || '').trim()
     : '';
 
-  const autoApproved = elevated;
+  // My Daily Planner self-create is Pending for User/Admin/Developer.
+  // Super Admin own tasks (this endpoint always assigns the logged-in user) are self-approved
+  // because Super Admin users have no reporting manager. Team Daily Planner uses
+  // createTaskForEmployee and is unchanged. Employee custom revision is also self-approved.
+  const autoApproved = Boolean(revisesTaskId) || isSuperAdmin(effectiveRole);
+  const parentFinalizedAt = revisionParent?.planFinalizedAt || null;
   const task = await DailyPlannerTasksModel.createTask({
     employeeCode: code,
     employeeName: employeeNameOf(authUser),
@@ -427,6 +634,10 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     completionScore,
     finalScore,
     parentTaskId: revisesTaskId || null,
+    planFinalizedAt: autoApproved ? parentFinalizedAt : null,
+    planFinalizedBy: autoApproved
+      ? String(revisionParent?.planFinalizedBy || '').trim()
+      : '',
   });
 
   if (revisionParent) {
@@ -467,9 +678,8 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
 };
 
 /**
- * User batch create for next-working-day plan — requires exact 7 hours total in the batch
- * plus any already-planned hours for that date must still equal exactly 7 after insert.
- * Prefer submitting the full plan in one batch so total === 7.
+ * User batch create for next-working-day plan — requires at least 7 hours total
+ * (existing planned hours for that date + this batch).
  */
 export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
   const drafts = Array.isArray(body?.tasks) ? body.tasks : [];
@@ -479,7 +689,6 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
     throw err;
   }
 
-  const elevated = canAccessAllRecords(effectiveRole);
   const sharedDate = String(drafts[0]?.date || '').trim();
   if (!sharedDate || drafts.some((d) => String(d.date || '').trim() !== sharedDate)) {
     const err = new Error('All tasks must use the same date');
@@ -492,24 +701,31 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
     return sum + (Number.isFinite(h) && h > 0 ? h : 0);
   }, 0);
 
-  if (!elevated) {
-    assertExactSevenPlannedHours(Math.round(batchHours * 100) / 100);
-
-    const code = employeeCodeOf(authUser);
-    const existing = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
-      code,
-      sharedDate,
-      sharedDate,
+  const code = employeeCodeOf(authUser);
+  const existing = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    code,
+    sharedDate,
+    sharedDate,
+  );
+  if (
+    (existing || []).some(
+      (t) =>
+        Boolean(t.planFinalizedAt) && String(t.status || '').trim() !== 'Rescheduled',
+    )
+  ) {
+    const err = new Error(
+      'This daily plan has been finalized. No further planning is allowed for this date.',
     );
-    const existingHours = sumPlannedHoursForDate(existing, sharedDate);
-    if (existingHours > 0) {
-      const err = new Error(
-        'A plan already exists for this date. Edit existing tasks or clear them before submitting a new 7-hour plan.',
-      );
-      err.statusCode = 400;
-      throw err;
-    }
+    err.statusCode = 400;
+    throw err;
   }
+  // Batch create is the My Daily Planner plan submit path — enforce minimum hours for all roles.
+  const location = await getEmployeeLocation(code);
+  const existingHours = sumPlannedHoursForDate(existing, sharedDate);
+  assertExactSevenPlannedHours(
+    Math.round((existingHours + batchHours) * 100) / 100,
+    location,
+  );
 
   const created = [];
   for (const draft of drafts) {
@@ -522,8 +738,6 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
   }
 
   // One planning recompute + hours notify for the whole batch (avoids N× monthly score work).
-  const code = employeeCodeOf(authUser);
-  const location = await getEmployeeLocation(code);
   const hasRegular = created.some(
     (t) => String(t.planningCategory || '').trim() === PLANNING_CATEGORY_REGULAR,
   );
@@ -583,13 +797,29 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
 
   const now = new Date();
   const location = await getEmployeeLocation(targetCode);
+  const existingForEmployeeDate = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    targetCode,
+    date,
+    date,
+  );
+  const wasPlanFinalized = (existingForEmployeeDate || []).some(
+    (t) =>
+      Boolean(t.planFinalizedAt) && String(t.status || '').trim() !== 'Rescheduled',
+  );
+  const finalizedSample = (existingForEmployeeDate || []).find((t) => Boolean(t.planFinalizedAt));
+
+  const priority = normalizePriorityValue(body.priority, 'Medium');
+  const requestBody = {
+    ...body,
+    priority,
+    planningCategory: planningCategoryFromPriority(priority),
+  };
   const planningMeta = PlanningRecognitionService.validateTaskPlanningPayload(
-    body,
+    requestBody,
     now,
     location,
     { elevated: true },
   );
-  const priority = normalizePriorityValue(body.priority, 'Medium');
   const hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
   const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
   const projectName = isProjectBased ? String(body.projectName || '').trim() : '';
@@ -636,6 +866,11 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     planningScore: 0,
     completionScore: 0,
     finalScore: 0,
+    // Keep new task inside the finalized plan when Team adds after finalize.
+    planFinalizedAt: wasPlanFinalized ? finalizedSample?.planFinalizedAt || now.toISOString() : null,
+    planFinalizedBy: wasPlanFinalized
+      ? String(finalizedSample?.planFinalizedBy || managerCode).trim()
+      : '',
   });
 
   if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
@@ -647,6 +882,22 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     await PlanningRecognitionService.recordPlanningImpactForUrgentTask({
       employeeCode: targetCode,
       reference: now,
+    });
+  }
+
+  if (wasPlanFinalized && body?.skipRevisedEmail !== true) {
+    void sendRevisedPlanEmailForEmployee({
+      employeeCode: targetCode,
+      date,
+      changes: [
+        {
+          label: `Added Task: "${taskName}"`,
+          details: [
+            `Priority: ${priority}`,
+            `Hours Planned: ${formatDurationLabel(hoursRequired)}`,
+          ],
+        },
+      ],
     });
   }
 
@@ -671,7 +922,7 @@ export const upsertProject = async (body, authUser) => {
 };
 
 /**
- * Finalize employee plan for a date: require exactly 7 hours, stamp tasks, email officialEmail.
+ * Finalize employee plan for a date: require location minimum hours, stamp tasks, email officialEmail.
  */
 export const finalizeEmployeePlan = async (body, authUser, effectiveRole) => {
   assertCanModerateTeamTask(effectiveRole);
@@ -690,21 +941,28 @@ export const finalizeEmployeePlan = async (body, authUser, effectiveRole) => {
     throw err;
   }
 
+  const location = await getEmployeeLocation(employeeCode);
+  const minHours = getMinPlannedHoursForLocation(location);
+
   const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
     employeeCode,
     date,
     date,
   );
-  const activeTasks = (tasks || []).filter((t) => String(t.status || '').trim() !== 'Rescheduled');
-  if (activeTasks.some((t) => Boolean(t.planFinalizedAt))) {
+  // Authoritative plan = countable tasks only (excludes Rescheduled originals and
+  // handled Needs Revision parents that were replaced by a revised child).
+  const activeTasks = (tasks || []).filter((t) => isTaskCountedTowardDailyMinimum(t));
+  const alreadyFinalized = activeTasks.some((t) => Boolean(t.planFinalizedAt));
+  const refinalize = body?.refinalize === true;
+  if (alreadyFinalized && !refinalize) {
     const err = new Error('This plan has already been finalized');
     err.statusCode = 400;
     throw err;
   }
   const totalHours = sumPlannedHoursForDate(activeTasks, date);
-  if (Math.round(totalHours * 100) / 100 !== MIN_PLANNED_HOURS_PER_WORKING_DAY) {
+  if (Math.round(totalHours * 100) / 100 < minHours) {
     const err = new Error(
-      `Final plan must total exactly ${MIN_PLANNED_HOURS_PER_WORKING_DAY} hours (currently ${totalHours}).`,
+      `Final plan must total at least ${formatDurationLabel(minHours)} (currently ${formatDurationLabel(totalHours)}).`,
     );
     err.statusCode = 400;
     throw err;
@@ -721,11 +979,13 @@ export const finalizeEmployeePlan = async (body, authUser, effectiveRole) => {
 
   const finalizedAt = now.toISOString();
   const finalizedBy = employeeCodeOf(authUser);
+  const planChanges = refinalize ? collectFinalPlanChanges(activeTasks) : [];
   await Promise.all(
     activeTasks.map((task) =>
       DailyPlannerTasksModel.updateTask(task.plannerTaskId, {
         planFinalizedAt: finalizedAt,
         planFinalizedBy: finalizedBy,
+        lastFinalizedSnapshot: finalizedFieldSnapshot(task),
       }),
     ),
   );
@@ -740,31 +1000,40 @@ export const finalizeEmployeePlan = async (body, authUser, effectiveRole) => {
     activeTasks[0]?.employeeName ||
     employeeCode;
 
-  const [y, m, d] = date.split('-').map(Number);
-  const dateLabel = new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
+  const dateLabel = formatPlanDateLabel(date);
 
   const refreshed = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
     employeeCode,
     date,
     date,
   );
-  const finalTasks = (refreshed || []).filter(
-    (t) => String(t.status || '').trim() !== 'Rescheduled',
+  const finalTasks = [...(refreshed || []).filter((t) => isTaskCountedTowardDailyMinimum(t))].sort(
+    (a, b) => {
+    const pa = PRIORITY_ORDER[a.currentPriority || a.priority] ?? 2;
+    const pb = PRIORITY_ORDER[b.currentPriority || b.priority] ?? 2;
+    if (pa !== pb) return pa - pb;
+    return String(a.taskName || '').localeCompare(String(b.taskName || ''), undefined, {
+      sensitivity: 'base',
+    });
+  },
   );
 
   let emailResult = { ok: false, skipped: true, queued: false };
-  if (officialEmail) {
-    const mail = buildFinalPlanEmail({
-      employeeName,
-      dateLabel,
-      totalHours,
-      tasks: finalTasks,
-    });
+  if (officialEmail && (!refinalize || planChanges.length > 0)) {
+    const mail = refinalize
+      ? buildRevisedPlanEmail({
+          employeeName,
+          dateLabel,
+          totalHours,
+          tasks: finalTasks,
+          changes: planChanges,
+        })
+      : buildFinalPlanEmail({
+          employeeName,
+          dateLabel,
+          totalHours,
+          tasks: finalTasks,
+        });
     // Do not block the API response on SES/SMTP latency.
     emailResult = { ok: true, skipped: false, queued: true };
     void sendEmail({
@@ -1109,16 +1378,17 @@ async function maybeNotifyMinimumHoursShortfall(
 
 async function notifyHoursShortfallForDate(employeeCode, dateKey, employeeName = '') {
   const targetDate = String(dateKey || '').trim().slice(0, 10);
+  const location = await getEmployeeLocation(employeeCode);
+  const minRequired = getMinPlannedHoursForLocation(location);
   const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
     employeeCode,
     targetDate,
     targetDate,
   );
   const plannedHours = sumPlannedHoursForDate(tasks, targetDate);
-  if (plannedHours >= MIN_PLANNED_HOURS_PER_WORKING_DAY) return;
+  if (plannedHours >= minRequired) return;
 
-  const remaining =
-    Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - plannedHours) * 100) / 100;
+  const remaining = Math.round((minRequired - plannedHours) * 100) / 100;
   const dayLabel = formatPlannerDateLabel(targetDate);
   const name =
     String(employeeName || '').trim() ||
@@ -1128,18 +1398,23 @@ async function notifyHoursShortfallForDate(employeeCode, dateKey, employeeName =
   void notifyUser(
     employeeCode,
     'Minimum daily hours required',
-    buildMinimumHoursWarningMessage(plannedHours, dayLabel),
+    buildMinimumHoursWarningMessage(plannedHours, dayLabel, location),
     'WARNING',
     {
       date: targetDate,
       plannedHours,
       remainingHours: remaining,
-      minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+      minRequired,
       reminderType: 'minimum_hours',
     },
   );
 
-  const managerMessage = buildMinimumHoursManagerWarningMessage(name, plannedHours, dayLabel);
+  const managerMessage = buildMinimumHoursManagerWarningMessage(
+    name,
+    plannedHours,
+    dayLabel,
+    location,
+  );
   const managers = await listActiveManagersForEmployee(employeeCode);
   for (const manager of managers) {
     if (manager.managerCode === employeeCode) continue;
@@ -1154,7 +1429,7 @@ async function notifyHoursShortfallForDate(employeeCode, dateKey, employeeName =
         employeeName: name,
         plannedHours,
         remainingHours: remaining,
-        minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+        minRequired,
         reminderType: 'minimum_hours_manager',
       },
     );
@@ -1175,7 +1450,7 @@ async function notifyHoursShortfallForDate(employeeCode, dateKey, employeeName =
         employeeName: name,
         plannedHours,
         remainingHours: remaining,
-        minRequired: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+        minRequired,
         reminderType: 'minimum_hours_admin',
       },
     },
@@ -1200,16 +1475,24 @@ export const updateManualTask = async (taskId, body, authUser) => {
     err.statusCode = 400;
     throw err;
   }
+  if (existing.planFinalizedAt) {
+    const err = new Error(
+      'This daily plan has been finalized. You cannot edit tasks for this date.',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
   assertTaskNotPermanentlyClosed(existing);
 
   const patch = {};
   if (body.taskName !== undefined) patch.taskName = String(body.taskName || '').trim();
   if (body.description !== undefined) patch.description = String(body.description || '').trim();
   if (body.priority !== undefined) {
-    const p = String(body.priority || 'Medium').trim();
+    const p = normalizePriorityValue(body.priority, existing.currentPriority || 'Medium');
     patch.priority = p;
     patch.currentPriority = p;
     patch.originalPriority = existing.originalPriority || p;
+    patch.planningCategory = planningCategoryFromPriority(p);
   }
   if (body.hoursRequired !== undefined) {
     patch.hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
@@ -1278,6 +1561,147 @@ export const updateManualTask = async (taskId, body, authUser) => {
   return { task };
 };
 
+/**
+ * Manager/Admin updates a team employee's task (allowed even after plan finalize).
+ * When the plan was finalized, sends a revised plan email describing the changes.
+ */
+export const updateTaskForEmployee = async (taskId, body, authUser, effectiveRole) => {
+  assertCanModerateTeamTask(effectiveRole);
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing) {
+    const err = new Error('Task not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (existing.taskType === 'Sales Visit' || existing.source === 'SALES_FORECASTING') {
+    const err = new Error('Sales Visit tasks cannot be edited');
+    err.statusCode = 400;
+    throw err;
+  }
+  assertTaskNotPermanentlyClosed(existing);
+
+  const wasFinalized = Boolean(existing.planFinalizedAt);
+  const allowFinalizedEdit = body?.allowFinalizedEdit === true;
+  if (wasFinalized && !allowFinalizedEdit) {
+    const err = new Error(
+      'This plan is finalized. Priority, hours, and other plan fields cannot be edited until Edit is used.',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const patch = {};
+  const changes = [];
+
+  if (body.taskName !== undefined) {
+    const next = String(body.taskName || '').trim();
+    if (next && next !== existing.taskName) {
+      patch.taskName = next;
+      changes.push(`Task name: "${existing.taskName}" → "${next}"`);
+    }
+  }
+  if (body.description !== undefined) {
+    const next = String(body.description || '').trim();
+    if (next !== String(existing.description || '').trim()) {
+      patch.description = next;
+      changes.push(`Description updated for "${existing.taskName}"`);
+    }
+  }
+  if (body.priority !== undefined) {
+    const p = normalizePriorityValue(
+      body.priority,
+      existing.currentPriority || existing.priority || 'Medium',
+    );
+    const prev = existing.currentPriority || existing.priority || 'Medium';
+    if (p !== prev) {
+      patch.priority = p;
+      patch.currentPriority = p;
+      patch.originalPriority = existing.originalPriority || prev;
+      patch.planningCategory = planningCategoryFromPriority(p);
+      changes.push(`Priority for "${existing.taskName}": ${prev} → ${p}`);
+    }
+  }
+  if (body.hoursRequired !== undefined) {
+    const nextHours = assertValidHoursRequired(body.hoursRequired, { required: true });
+    const prevHours = Number(existing.hoursRequired);
+    if (!Number.isFinite(prevHours) || prevHours !== nextHours) {
+      patch.hoursRequired = nextHours;
+      if (
+        existing.originalHoursRequired === undefined ||
+        existing.originalHoursRequired === null ||
+        existing.originalHoursRequired === ''
+      ) {
+        patch.originalHoursRequired = nextHours;
+      }
+      changes.push(
+        `Hours for "${existing.taskName}": ${formatDurationLabel(prevHours || 0)} → ${formatDurationLabel(nextHours)}`,
+      );
+    }
+  }
+  if (body.managerInstructions !== undefined || body.instructions !== undefined) {
+    const next = String(body.managerInstructions ?? body.instructions ?? '').trim();
+    if (next !== String(existing.managerInstructions || '').trim()) {
+      patch.managerInstructions = next;
+      changes.push(`Instruction updated for "${existing.taskName}"`);
+    }
+  }
+  if (body.managerComments !== undefined || body.comments !== undefined) {
+    const next = String(body.managerComments ?? body.comments ?? '').trim();
+    if (next !== String(existing.managerComments || '').trim()) {
+      patch.managerComments = next;
+      changes.push(`Comment updated for "${existing.taskName}"`);
+    }
+  }
+
+  if (wasFinalized && changes.length > 0 && !readFinalizedSnapshot(existing)) {
+    patch.lastFinalizedSnapshot = finalizedFieldSnapshot(existing);
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return { task: existing };
+  }
+
+  const task = await DailyPlannerTasksModel.updateTask(taskId, patch);
+
+  if (
+    (existing.planningCategory === PLANNING_CATEGORY_REGULAR ||
+      patch.planningCategory === PLANNING_CATEGORY_REGULAR) &&
+    existing.source === 'MANUAL'
+  ) {
+    await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+      employeeCode: existing.employeeCode,
+      workingDayDateKey: existing.date,
+    });
+  } else if (patch.planningCategory === PLANNING_CATEGORY_URGENT) {
+    await PlanningRecognitionService.recordPlanningImpactForUrgentTask({
+      employeeCode: existing.employeeCode,
+      reference: new Date(),
+    });
+  }
+
+  if (wasFinalized && changes.length > 0 && body?.skipRevisedEmail !== true && !allowFinalizedEdit) {
+    void sendRevisedPlanEmailForEmployee({
+      employeeCode: existing.employeeCode,
+      date: existing.date,
+      changes,
+    });
+  }
+
+  const fieldDiff = AuditTrailService.diffChangedFields(existing, task, [
+    'taskName',
+    'description',
+    'priority',
+    'currentPriority',
+    'hoursRequired',
+  ]);
+  auditPlannerTask(authUser, AUDIT_ACTIONS.UPDATE, task, 'Manager Task Edited', {
+    oldValues: fieldDiff.oldValues,
+    newValues: fieldDiff.newValues,
+  });
+
+  return { task };
+};
+
 async function listTasksCoveringDateKeys(employeeCode, dateKeys) {
   const months = new Set();
   for (const raw of dateKeys || []) {
@@ -1338,6 +1762,12 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     err.statusCode = 400;
     throw err;
   }
+  const startTimeRaw = body?.startTime ?? body?.completionStartTime;
+  const endTimeRaw = body?.endTime ?? body?.completionEndTime;
+  const completionDurationHours = durationHoursFromStartEnd(startTimeRaw, endTimeRaw);
+  const completionStartTime = normalizeClockTime(startTimeRaw);
+  const completionEndTime = normalizeClockTime(endTimeRaw);
+
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing || existing.employeeCode !== employeeCodeOf(authUser)) {
     const err = new Error('Forbidden');
@@ -1353,6 +1783,9 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     status: 'Awaiting Verification',
     reason: workDone,
     verificationStatus: 'AWAITING_VERIFICATION',
+    completionStartTime,
+    completionEndTime,
+    completionDurationHours,
     completionScore,
     finalScore: planningScore + completionScore,
   });
@@ -1371,7 +1804,24 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     oldValues: { status: existing.status },
     newValues: { status: task.status, reason: workDone },
   });
-  return { task, cancelledRescheduledTasks };
+
+  const dayTasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    existing.employeeCode,
+    existing.date,
+    existing.date,
+  );
+  const dayCompletedHours = sumDayCompletedHours(
+    (dayTasks || []).map((t) =>
+      t.plannerTaskId === task.plannerTaskId ? { ...t, ...task } : t,
+    ),
+  );
+
+  return {
+    task,
+    cancelledRescheduledTasks,
+    completionDurationHours,
+    dayCompletedHours,
+  };
 };
 
 export const markTaskNotCompleted = async (taskId, body, authUser) => {
@@ -1598,9 +2048,17 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
 
   // Persist Manager Comments only (Finish Review flush) — do not change status/workflow.
   if (body?.commentsOnly === true || body?.persistCommentsOnly === true) {
-    const task = await DailyPlannerTasksModel.updateTask(taskId, {
-      managerComments: String(body.comments ?? body.managerComments ?? '').trim(),
-    });
+    const nextComments = String(body.comments ?? body.managerComments ?? '').trim();
+    const commentChanged = nextComments !== String(existing.managerComments || '').trim();
+    const patch = { managerComments: nextComments };
+    if (
+      existing.planFinalizedAt &&
+      commentChanged &&
+      !readFinalizedSnapshot(existing)
+    ) {
+      patch.lastFinalizedSnapshot = finalizedFieldSnapshot(existing);
+    }
+    const task = await DailyPlannerTasksModel.updateTask(taskId, patch);
     return { task };
   }
 
@@ -1619,6 +2077,17 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
   };
 
   const requestedPriority = body.priority != null ? String(body.priority).trim() : '';
+  const hoursRequested =
+    body.hoursRequired !== undefined &&
+    body.hoursRequired !== null &&
+    String(body.hoursRequired).trim() !== '';
+  if (existing.planFinalizedAt && (requestedPriority || hoursRequested) && body?.allowFinalizedEdit !== true) {
+    const err = new Error(
+      'This plan is finalized. Priority and Hours Required to Complete cannot be changed.',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
   if (requestedPriority) {
     const nextPriority = normalizePriorityValue(
       requestedPriority,
@@ -1891,6 +2360,8 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
     planningScore: 0,
     completionScore: 0,
     finalScore: 0,
+    planFinalizedAt: existing.planFinalizedAt || null,
+    planFinalizedBy: String(existing.planFinalizedBy || '').trim(),
   });
 
   const task = await markRevisionHandled(
@@ -1912,7 +2383,13 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
 export const editTaskPriority = async (taskId, body, authUser, effectiveRole) => {
   assertCanModerateTeamTask(effectiveRole);
   const newPriority = normalizePriorityValue(body.priority, '');
-  if (!newPriority || (newPriority !== 'High' && newPriority !== 'Medium' && newPriority !== 'Low')) {
+  if (
+    !newPriority ||
+    (newPriority !== 'Urgent' &&
+      newPriority !== 'High' &&
+      newPriority !== 'Medium' &&
+      newPriority !== 'Low')
+  ) {
     const err = new Error('priority is required');
     err.statusCode = 400;
     throw err;
@@ -1935,6 +2412,7 @@ export const editTaskPriority = async (taskId, body, authUser, effectiveRole) =>
     priorityEditedBy: employeeCodeOf(authUser),
     priorityEditedByName: employeeNameOf(authUser),
     priorityEditedAt: nowIso,
+    planningCategory: planningCategoryFromPriority(newPriority),
     managerComments: String(body.comments || existing.managerComments || '').trim(),
     approved: existing.approved,
     status: existing.status === 'Pending' ? 'Pending' : existing.status,

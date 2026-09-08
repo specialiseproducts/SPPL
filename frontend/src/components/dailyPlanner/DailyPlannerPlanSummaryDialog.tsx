@@ -9,7 +9,8 @@ import {
 } from '../ui/dialog';
 import { Button } from '../ui/button';
 import BulletPointList from './BulletPointList';
-import { isUrgentTask, PLANNING_CATEGORY_REGULAR } from '../../utils/planningRecognition';
+import { formatDurationLabel } from '../../utils/planningRecognition';
+import { sortDailyPlannerTasksByPriority } from './dailyPlannerUtils';
 
 function displayCell(value: string | number | undefined | null): string {
   if (value === undefined || value === null) return '—';
@@ -67,7 +68,6 @@ type SummaryItem = {
   description: string;
   priority: string;
   hoursRequired: number | null;
-  planningCategory: string;
   isProjectBased?: boolean;
   projectName?: string;
   managerInstructions?: string;
@@ -75,26 +75,44 @@ type SummaryItem = {
   status?: string;
 };
 
+const PRIORITY_ORDER: Record<string, number> = {
+  Urgent: 0,
+  High: 1,
+  Medium: 2,
+  Low: 3,
+};
+
+function sortSummaryItems(items: SummaryItem[]): SummaryItem[] {
+  return [...items].sort((a, b) => {
+    const pa = PRIORITY_ORDER[a.priority] ?? 2;
+    const pb = PRIORITY_ORDER[b.priority] ?? 2;
+    if (pa !== pb) return pa - pb;
+    return String(a.taskName || '').localeCompare(String(b.taskName || ''), undefined, {
+      sensitivity: 'base',
+    });
+  });
+}
+
 function toItemsFromDrafts(drafts: DailyPlannerTaskDraft[]): SummaryItem[] {
-  return drafts.map((d) => ({
-    taskName: d.taskName,
-    description: d.description,
-    priority: d.priority,
-    hoursRequired: d.hoursRequired,
-    planningCategory: d.planningCategory || PLANNING_CATEGORY_REGULAR,
-    isProjectBased: d.isProjectBased,
-    projectName: d.projectName,
-    managerInstructions: d.managerInstructions,
-  }));
+  return sortSummaryItems(
+    drafts.map((d) => ({
+      taskName: d.taskName,
+      description: d.description,
+      priority: d.priority,
+      hoursRequired: d.hoursRequired,
+      isProjectBased: d.isProjectBased,
+      projectName: d.projectName,
+      managerInstructions: d.managerInstructions,
+    })),
+  );
 }
 
 function toItemsFromTasks(tasks: DailyPlannerTask[]): SummaryItem[] {
-  return tasks.map((t) => ({
+  return sortDailyPlannerTasksByPriority(tasks).map((t) => ({
     taskName: t.taskName,
     description: t.description,
     priority: t.currentPriority || t.priority,
     hoursRequired: t.hoursRequired ?? null,
-    planningCategory: t.planningCategory || PLANNING_CATEGORY_REGULAR,
     isProjectBased: t.isProjectBased,
     projectName: t.projectName,
     managerInstructions: t.managerInstructions,
@@ -152,7 +170,7 @@ export default function DailyPlannerPlanSummaryDialog({
           <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
             <ViewField label="Date" value={formatReviewDate(date)} />
             {employeeName ? <ViewField label="Employee" value={employeeName} /> : null}
-            <ViewField label="Total Planned Hours" value={`${totalHours} Hours`} />
+            <ViewField label="Total Planned Hours" value={formatDurationLabel(totalHours)} />
           </div>
         </DialogHeader>
 
@@ -166,14 +184,14 @@ export default function DailyPlannerPlanSummaryDialog({
               <ViewSection key={`${item.taskName}-${index}`} title={`Task ${index + 1}`}>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <ViewField label="Task Name" value={displayCell(item.taskName)} />
-                  <ViewField
-                    label="Type"
-                    value={isUrgentTask(item.planningCategory) ? 'Urgent' : 'Regular'}
-                  />
                   <ViewField label="Priority" value={displayCell(item.priority)} />
                   <ViewField
                     label="Hours Required"
-                    value={item.hoursRequired != null ? `${item.hoursRequired}` : '—'}
+                    value={
+                      item.hoursRequired != null
+                        ? formatDurationLabel(item.hoursRequired)
+                        : '—'
+                    }
                   />
                   {item.status ? (
                     <ViewField label="Status" value={displayCell(item.status)} />

@@ -18,7 +18,9 @@ interface DailyPlannerTaskChipProps {
 export default function DailyPlannerTaskChip({ task, onSelect }: DailyPlannerTaskChipProps) {
   const displayLabel = getDailyTaskDisplayLabel(task);
   const visualKey = getDailyTaskVisualKey(task);
-  const urgent = isUrgentTask(task.planningCategory);
+  const urgent =
+    isUrgentTask(task.planningCategory) ||
+    String(task.currentPriority || task.priority || '').trim() === 'Urgent';
   const chipStyle = {
     ...getDailyTaskChipStyle(visualKey),
     ...(urgent ? { border: '2px solid #DC2626', boxShadow: 'inset 0 0 0 1px #FECACA' } : {}),

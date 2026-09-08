@@ -15,47 +15,49 @@ export type PlanningCategory =
   | typeof PLANNING_CATEGORY_URGENT;
 
 export const REGULAR_TASK_BLOCKED_MESSAGE =
-  'Regular tasks can only be planned during the planning windows.\n\n' +
-  'Next working day: 05:30 PM – 08:00 PM\n\n' +
-  'Managers may create Urgent Tasks when reviewing team plans.';
+  'Tasks can only be planned during the planning window.\n\n' +
+  'Planning window: 5:30 PM – 11:00 AM next day (IST)\n\n' +
+  'Future working days may be planned during this window.';
 
 export const REGULAR_TASK_TODAY_BLOCKED_MESSAGE =
-  'A Regular Task for today can only be created before 11:00 AM (managers/admins only).';
+  'Tasks for today can only be created before 11:00 AM during the planning window.';
 
 export const REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE =
-  'A Regular Task for the next working day can only be created between 5:30 PM and 8:00 PM today.';
+  'Future working-day planning is only allowed between 5:30 PM and 11:00 AM next day (IST).';
 
 export const URGENT_TASK_TODAY_BLOCKED_MESSAGE =
-  'Urgent Tasks for today can only be created between 11:00 AM and 5:30 PM (managers/admins only).';
+  'Task creation outside the planning window is not allowed.';
 
 export const TASK_CREATE_DATE_BLOCKED_MESSAGE =
-  'You can only create tasks for today or tomorrow according to the allowed task creation schedule.';
+  'You can only create tasks for today or future working days during the planning window.';
 
 export const EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE =
-  'Regular task planning is only allowed between 5:30 PM and 8:00 PM for the next working day.';
+  'Task planning is only allowed between 5:30 PM and 11:00 AM next day (IST) for today and future working days.';
 
 export const EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE =
-  'Your minimum total hours planning is not completed. Please plan 7 hours.';
+  'Your minimum total hours planning is not completed. Please plan the required hours for your location.';
 
 export const USER_URGENT_FORBIDDEN_MESSAGE =
-  'You do not have permission to create Urgent Tasks.';
+  'You do not have permission to create tasks with Urgent priority outside the allowed workflow.';
 
 export const PLANNING_WINDOW_CLOSED_MESSAGE =
   'The planning window is currently closed.\n\n' +
-  'Employee Regular Tasks for the next working day are allowed from 5:30 PM–8:00 PM.\n\n' +
+  'Employee planning is allowed from 5:30 PM until 11:00 AM the next day (IST).\n\n' +
   'Manager review runs from 8:00 PM until 9:30 AM the next day.';
 
 export const TASK_UPDATES_READONLY_MESSAGE =
-  'Task updates are only allowed during the planning windows (08:00–11:00 AM and 05:30–08:00 PM).';
+  'Task updates are only allowed during the planning windows (before 11:00 AM and from 5:30 PM onward).';
 
+/** @deprecated Prefer getMinPlannedHours(config). Factory fallback. */
 export const MIN_PLANNED_HOURS_PER_WORKING_DAY = 7;
+export const MIN_PLANNED_HOURS_FACTORY = 7;
+export const MIN_PLANNED_HOURS_OFFICE = 7.5;
 
 export type PlanningWindowUiState = 'morning' | 'closed' | 'evening' | 'urgent-only';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const MORNING_END_MINUTES = 11 * 60;
 const EVENING_START_MINUTES = 17 * 60 + 30;
-const EVENING_END_MINUTES = 20 * 60;
 
 export interface PlanningConfig {
   timezone: string;
@@ -130,6 +132,60 @@ function getIstMinutesFromServerTime(serverTimeIso: string): number {
   return ist.getUTCHours() * 60 + ist.getUTCMinutes();
 }
 
+/** Location / config-based daily minimum planned hours (Office 7.5, Factory 7). */
+export function getMinPlannedHours(config?: PlanningConfig | null, location?: string | null): number {
+  if (
+    config?.minPlannedHoursPerWorkingDay != null &&
+    Number.isFinite(Number(config.minPlannedHoursPerWorkingDay))
+  ) {
+    return Number(config.minPlannedHoursPerWorkingDay);
+  }
+  const loc = String(location || config?.employeeLocation || '').trim();
+  return loc === 'Factory' ? MIN_PLANNED_HOURS_FACTORY : MIN_PLANNED_HOURS_OFFICE;
+}
+
+export function buildMinimumHoursRequirementMessage(
+  config?: PlanningConfig | null,
+  location?: string | null,
+): string {
+  const min = getMinPlannedHours(config, location);
+  if (min === MIN_PLANNED_HOURS_OFFICE) {
+    return 'Your minimum total hours planning is not completed. Please plan 7 Hours 30 Minutes.';
+  }
+  return 'Your minimum total hours planning is not completed. Please plan 7 Hours.';
+}
+
+/** Convert decimal hours to { hours, minutes } without losing minute precision. */
+export function decimalHoursToParts(decimalHours: number | null | undefined): {
+  hours: number;
+  minutes: number;
+} {
+  const totalMinutes = Math.round((Number(decimalHours) || 0) * 60);
+  const safe = Math.max(0, totalMinutes);
+  return {
+    hours: Math.floor(safe / 60),
+    minutes: safe % 60,
+  };
+}
+
+/** Convert hours + minutes (0–59) to decimal hours (2 d.p.). */
+export function partsToDecimalHours(hoursPart: number | string, minutesPart: number | string): number {
+  const h = Math.max(0, Math.floor(Number(hoursPart) || 0));
+  let m = Number(minutesPart);
+  if (!Number.isFinite(m)) m = 0;
+  m = Math.max(0, Math.min(59, Math.round(m)));
+  return Math.round((h + m / 60) * 100) / 100;
+}
+
+export function formatDurationLabel(decimalHours: number | null | undefined): string {
+  const { hours, minutes } = decimalHoursToParts(decimalHours);
+  const hLabel = hours === 1 ? '1 Hour' : `${hours} Hours`;
+  if (minutes <= 0) return hLabel;
+  const mLabel = minutes === 1 ? '1 Minute' : `${minutes} Minutes`;
+  if (hours <= 0) return mLabel;
+  return `${hLabel} ${mLabel}`;
+}
+
 export function getPlanningTargetDateMode(
   taskDateIso: string,
   config: PlanningConfig,
@@ -153,7 +209,10 @@ export function isUrgentTodayCreationWindow(config: PlanningConfig): boolean {
 export function isRegularTaskAllowed(taskDateIso: string, config: PlanningConfig): boolean {
   const target = getPlanningTargetDateMode(taskDateIso, config);
   if (target === 'today' && isRegularTodayCreationWindow(config)) return true;
-  if (target === 'tomorrow' && config.windows.evening.active) return true;
+  if ((target === 'tomorrow' || target === 'other') && config.windows.evening.active) {
+    const normalized = String(taskDateIso || '').trim().slice(0, 10);
+    if (normalized > config.todayIst) return true;
+  }
   return false;
 }
 
@@ -165,7 +224,7 @@ export function isUrgentTaskAllowed(taskDateIso: string, config: PlanningConfig)
 /**
  * Central eligibility for My Daily Planner create entry points (before opening the form).
  * Holiday always takes priority.
- * User-access: next working day only, evening window, Regular only.
+ * Employees: any today/future working day during 5:30 PM → 11:00 AM window; always Regular mode.
  * Elevated (Admin/Manager/Developer): prior today morning / urgent / tomorrow evening rules.
  */
 export function evaluateMyDailyPlannerCreateEligibility(
@@ -178,22 +237,30 @@ export function evaluateMyDailyPlannerCreateEligibility(
   }
 
   const elevated = Boolean(options?.elevated);
-  const nextWorking =
-    String(options?.nextWorkingDayIst || '').trim().slice(0, 10) || config.tomorrowIst;
   const normalized = String(taskDateIso || '').trim().slice(0, 10);
+  const mins = getIstMinutesFromServerTime(config.serverTimeIso);
 
   if (!elevated) {
-    if (normalized !== nextWorking) {
-      return { allowed: false, message: EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE };
-    }
+    // Backend sets evening.active true for the full 5:30 PM → 11:00 AM span.
     if (!config.windows.evening.active) {
       return { allowed: false, message: EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE };
     }
+    if (!normalized || normalized < config.todayIst) {
+      return { allowed: false, message: TASK_CREATE_DATE_BLOCKED_MESSAGE };
+    }
+    if (normalized === config.todayIst) {
+      // Today only during morning portion (< 11:00).
+      if (mins >= MORNING_END_MINUTES) {
+        return { allowed: false, message: EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE };
+      }
+      return { allowed: true, mode: 'regular' };
+    }
+    // Future working day during active planning window.
     return { allowed: true, mode: 'regular' };
   }
 
   const target = getPlanningTargetDateMode(taskDateIso, config);
-  if (target === 'past' || target === 'other') {
+  if (target === 'past') {
     return { allowed: false, message: TASK_CREATE_DATE_BLOCKED_MESSAGE };
   }
 
@@ -207,7 +274,7 @@ export function evaluateMyDailyPlannerCreateEligibility(
     return { allowed: false, message: URGENT_TASK_TODAY_BLOCKED_MESSAGE };
   }
 
-  // tomorrow / next working day evening for elevated own planning
+  // Future working days during evening/active planning window for elevated own planning
   if (config.windows.evening.active) {
     return { allowed: true, mode: 'regular' };
   }
@@ -228,17 +295,14 @@ export function assertCanCreateRegularTask(
     return;
   }
   const target = getPlanningTargetDateMode(taskDateIso, config);
-  if (target === 'past' || target === 'other') {
+  if (target === 'past') {
     throw new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
   }
   if (isRegularTaskAllowed(taskDateIso, config)) return;
   if (target === 'today') {
     throw new Error(REGULAR_TASK_TODAY_BLOCKED_MESSAGE);
   }
-  if (target === 'tomorrow') {
-    throw new Error(REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE);
-  }
-  throw new Error(config.regularTaskBlockedMessage || REGULAR_TASK_BLOCKED_MESSAGE);
+  throw new Error(REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE);
 }
 
 export function assertCanCreateUrgentTask(
@@ -253,9 +317,11 @@ export function assertCanCreateUrgentTask(
     throw new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
   }
   const target = getPlanningTargetDateMode(taskDateIso, config);
-  if (target === 'past' || target === 'other' || target === 'tomorrow') {
+  if (target === 'past') {
     throw new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
   }
+  // Urgent is now a priority; creation still requires planning window eligibility.
+  if (config.windows.evening.active || isRegularTodayCreationWindow(config)) return;
   if (isUrgentTaskAllowed(taskDateIso, config)) return;
   throw new Error(URGENT_TASK_TODAY_BLOCKED_MESSAGE);
 }
@@ -266,8 +332,8 @@ export function isUrgentTask(category: PlanningCategory | string | undefined): b
 
 /**
  * UI states for create chrome.
- * Creation windows: Regular today until 11:00; Urgent 11:00–17:30; Regular tomorrow 17:30–20:00.
- * After 20:00 there is no urgent-only create path.
+ * Morning: before 11:00; evening: from 5:30 PM (spans past midnight via config);
+ * closed: 11:00–17:30.
  */
 export function getPlanningWindowUiState(
   config: PlanningConfig | null | undefined,
@@ -277,8 +343,7 @@ export function getPlanningWindowUiState(
   const minutes = getIstMinutesFromServerTime(config.serverTimeIso);
   if (minutes < MORNING_END_MINUTES) return 'morning';
   if (minutes < EVENING_START_MINUTES) return 'closed';
-  if (minutes < EVENING_END_MINUTES) return 'evening';
-  return 'closed';
+  return 'evening';
 }
 
 /** Task type from server IST planning windows (optional manual urgent during closed window). */
@@ -301,7 +366,7 @@ export function isPlanningWindowClosed(config: PlanningConfig | null | undefined
 
 /**
  * Whether today's tasks can be updated (complete, edit, delete) in the current window.
- * Preserves scoring-window update times: morning (config API) or evening.
+ * Uses morning.active or evening.active (evening spans midnight through 11:00 AM).
  */
 export function canUpdateTasksOnDate(
   taskDateIso: string,

@@ -105,6 +105,10 @@ export function toDailyPlannerTaskDto(row) {
     projectName: String(row.projectName || '').trim(),
     planFinalizedAt: row.planFinalizedAt || null,
     planFinalizedBy: String(row.planFinalizedBy || '').trim(),
+    lastFinalizedSnapshot:
+      row.lastFinalizedSnapshot && typeof row.lastFinalizedSnapshot === 'object'
+        ? row.lastFinalizedSnapshot
+        : null,
     createdByRole: String(row.createdByRole || '').trim(),
     dayCompletionSubmittedAt: row.dayCompletionSubmittedAt || null,
     dayCompletionSubmittedBy: String(row.dayCompletionSubmittedBy || '').trim(),
@@ -112,6 +116,16 @@ export function toDailyPlannerTaskDto(row) {
     completionManagerReviewedBy: String(row.completionManagerReviewedBy || '').trim(),
     dayCompletionReviewSubmittedAt: row.dayCompletionReviewSubmittedAt || null,
     dayCompletionReviewSubmittedBy: String(row.dayCompletionReviewSubmittedBy || '').trim(),
+    completionStartTime: row.completionStartTime
+      ? String(row.completionStartTime).trim()
+      : null,
+    completionEndTime: row.completionEndTime ? String(row.completionEndTime).trim() : null,
+    completionDurationHours:
+      row.completionDurationHours === undefined ||
+      row.completionDurationHours === null ||
+      row.completionDurationHours === ''
+        ? null
+        : Number(row.completionDurationHours),
     verifiedBy: String(row.verifiedBy || '').trim(),
     verifiedByName: String(row.verifiedByName || '').trim(),
     verifiedAt: row.verifiedAt || null,
@@ -317,6 +331,18 @@ export async function createTask(payload) {
     completionManagerReviewedBy: String(payload.completionManagerReviewedBy || '').trim(),
     dayCompletionReviewSubmittedAt: payload.dayCompletionReviewSubmittedAt || null,
     dayCompletionReviewSubmittedBy: String(payload.dayCompletionReviewSubmittedBy || '').trim(),
+    completionStartTime: payload.completionStartTime
+      ? String(payload.completionStartTime).trim()
+      : null,
+    completionEndTime: payload.completionEndTime
+      ? String(payload.completionEndTime).trim()
+      : null,
+    completionDurationHours:
+      payload.completionDurationHours === undefined ||
+      payload.completionDurationHours === null ||
+      payload.completionDurationHours === ''
+        ? null
+        : Number(payload.completionDurationHours),
     planningCategory: String(payload.planningCategory || 'Regular').trim(),
     urgentReason: String(payload.urgentReason || '').trim(),
     planningWindowUsed: payload.planningWindowUsed ? String(payload.planningWindowUsed).trim() : null,

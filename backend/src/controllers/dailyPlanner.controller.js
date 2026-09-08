@@ -160,6 +160,21 @@ export const updateTask = async (req, res, next) => {
   }
 };
 
+export const updateTaskForEmployee = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.updateTaskForEmployee(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner updateTaskForEmployee error:', error);
+    next(error);
+  }
+};
+
 export const completeTask = async (req, res, next) => {
   try {
     const data = await DailyPlannerService.markTaskCompleted(req.params.id, req.body || {}, req.user);

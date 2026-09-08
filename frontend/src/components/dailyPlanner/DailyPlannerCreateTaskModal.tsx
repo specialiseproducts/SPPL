@@ -12,40 +12,39 @@ import { Button } from '../ui/button';
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
-import type { DailyPlannerPriority, DailyPlannerTaskDraft } from '../../types/dailyPlanner';
+import type { DailyPlannerPriority, DailyPlannerTask, DailyPlannerTaskDraft } from '../../types/dailyPlanner';
 import type { PlanningConfig } from '../../utils/planningRecognition';
 import {
   assertCanCreateRegularTask,
-  assertCanCreateUrgentTask,
-  EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE,
+  buildMinimumHoursRequirementMessage,
+  formatDurationLabel,
+  getMinPlannedHours,
   getPlanningWindowUiState,
-  isUrgentTask,
-  MIN_PLANNED_HOURS_PER_WORKING_DAY,
   PLANNING_CATEGORY_REGULAR,
   PLANNING_CATEGORY_URGENT,
   PLANNING_WINDOW_CLOSED_MESSAGE,
 } from '../../utils/planningRecognition';
 import { hasBulletContent, parseBulletPoints } from './bulletPointUtils';
+import { sumPlannedHoursForDate } from './dailyPlannerUtils';
 import { cn } from '../ui/utils';
 import { fetchDailyPlannerProjects } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import DailyPlannerPlanSummaryDialog from './DailyPlannerPlanSummaryDialog';
+import HoursMinutesFields from './HoursMinutesFields';
 
 type TaskSectionState = {
   id: string;
   taskName: string;
   priority: DailyPlannerPriority;
-  hoursRequired: string;
+  hoursRequired: number | null;
   isProjectBased: 'Yes' | 'No';
   projectName: string;
   managerInstructions: string;
-  planningCategory: 'Regular' | 'Urgent';
 };
 
 type SectionErrors = Record<
   string,
   {
     taskName?: boolean;
-    urgentReason?: boolean;
     hoursRequired?: boolean;
     projectName?: boolean;
   }
@@ -56,25 +55,16 @@ function createEmptySection(): TaskSectionState {
     id: crypto.randomUUID(),
     taskName: '',
     priority: 'Medium',
-    hoursRequired: '',
+    hoursRequired: null,
     isProjectBased: 'No',
     projectName: '',
     managerInstructions: '',
-    planningCategory: 'Regular',
   };
 }
 
-function isSectionEmpty(
-  taskName: string,
-  description: string,
-  urgentMode: boolean,
-  urgentReason: string,
-): boolean {
+function isSectionEmpty(taskName: string, description: string): boolean {
   const hasDescription = hasBulletContent(parseBulletPoints(description));
-  const hasUrgentReason = urgentMode
-    ? hasBulletContent(parseBulletPoints(urgentReason))
-    : false;
-  return !taskName.trim() && !hasDescription && !hasUrgentReason;
+  return !taskName.trim() && !hasDescription;
 }
 
 interface TaskSectionRowProps {
@@ -84,13 +74,11 @@ interface TaskSectionRowProps {
   elevated: boolean;
   projectOptions: string[];
   showTaskNameError: boolean;
-  showUrgentReasonError: boolean;
   showHoursRequiredError: boolean;
   showProjectNameError: boolean;
   onChange: (patch: Partial<TaskSectionState>) => void;
   onRemove: () => void;
   onDescriptionRef: (handle: BulletPointEditorHandle | null) => void;
-  onUrgentReasonRef: (handle: BulletPointEditorHandle | null) => void;
 }
 
 function TaskSectionRow({
@@ -100,16 +88,12 @@ function TaskSectionRow({
   elevated,
   projectOptions,
   showTaskNameError,
-  showUrgentReasonError,
   showHoursRequiredError,
   showProjectNameError,
   onChange,
   onRemove,
   onDescriptionRef,
-  onUrgentReasonRef,
 }: TaskSectionRowProps) {
-  const urgentMode = elevated && section.planningCategory === PLANNING_CATEGORY_URGENT;
-
   return (
     <div className="rounded-lg border border-gray-200 bg-gray-50/40 p-4 space-y-4">
       <div className="flex items-center justify-between gap-2">
@@ -128,26 +112,6 @@ function TaskSectionRow({
           </Button>
         ) : null}
       </div>
-
-      {elevated ? (
-        <div className="space-y-2">
-          <Label>Task Type</Label>
-          <Select
-            value={section.planningCategory}
-            onValueChange={(v) =>
-              onChange({ planningCategory: v as 'Regular' | 'Urgent' })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Regular">Regular Task</SelectItem>
-              <SelectItem value="Urgent">Urgent Task</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      ) : null}
 
       <div className="space-y-2">
         <Label htmlFor={`task-name-${section.id}`}>Task Name *</Label>
@@ -170,57 +134,36 @@ function TaskSectionRow({
         label="Task Description"
       />
 
-      {urgentMode ? (
-        <div className="space-y-1">
-          <BulletPointEditor
-            key={`${section.id}-urgent`}
-            ref={onUrgentReasonRef}
-            id={`urgent-reason-${section.id}`}
-            label="Urgent Task Reason *"
-          />
-          {showUrgentReasonError ? (
-            <p className="text-xs text-red-600">Urgent Task Reason is required.</p>
-          ) : null}
-        </div>
-      ) : null}
-
       <div className="space-y-2">
-        <Label htmlFor={`hours-required-${section.id}`}>Hours Required to Complete *</Label>
-        <Input
-          id={`hours-required-${section.id}`}
-          type="number"
-          inputMode="decimal"
-          min={0.25}
-          step={0.25}
-          placeholder="e.g. 1.5"
+        <Label>Hours Required to Complete *</Label>
+        <HoursMinutesFields
+          idPrefix={`hours-required-${section.id}`}
           value={section.hoursRequired}
-          onChange={(e) => onChange({ hoursRequired: e.target.value })}
-          className={cn(showHoursRequiredError && 'border-red-500 focus-visible:ring-red-500/30')}
-          aria-invalid={showHoursRequiredError}
+          onChange={(decimal) => onChange({ hoursRequired: decimal })}
+          error={showHoursRequiredError}
         />
         {showHoursRequiredError ? (
-          <p className="text-xs text-red-600">Enter a valid number of hours greater than 0.</p>
+          <p className="text-xs text-red-600">Enter hours and minutes greater than 0.</p>
         ) : null}
       </div>
 
-      {elevated ? (
-        <div className="space-y-2">
-          <Label>Priority</Label>
-          <Select
-            value={section.priority}
-            onValueChange={(v) => onChange({ priority: v as DailyPlannerPriority })}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="High">High</SelectItem>
-              <SelectItem value="Medium">Medium</SelectItem>
-              <SelectItem value="Low">Low</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      ) : null}
+      <div className="space-y-2">
+        <Label>Priority *</Label>
+        <Select
+          value={section.priority}
+          onValueChange={(v) => onChange({ priority: v as DailyPlannerPriority })}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Urgent">Urgent</SelectItem>
+            <SelectItem value="High">High</SelectItem>
+            <SelectItem value="Medium">Medium</SelectItem>
+            <SelectItem value="Low">Low</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       <div className="space-y-2">
         <Label>Is this task based on the project?</Label>
@@ -285,14 +228,16 @@ interface DailyPlannerCreateTaskModalProps {
   open: boolean;
   date: string;
   planningConfig?: PlanningConfig | null;
-  /** When set, normal task fields stay hidden until Create Urgent Task (managers only). */
+  /** When set, normal task fields stay hidden until Create Task (managers only). */
   regularCreationBlockedMessage?: string | null;
-  /** Admin / Manager / Developer — Priority, Urgent, Instructions, flexible hours. */
+  /** Admin / Manager / Developer — Instructions, flexible hours. */
   elevated?: boolean;
   /** When creating for a team employee from review. */
   forEmployeeCode?: string;
   /** Skip employee evening-window assert (manager creating for employee). */
   skipPlanningWindowAssert?: boolean;
+  /** Existing tasks already planned for `date` (same set the calendar uses for that day). */
+  existingTasksForDate?: DailyPlannerTask[];
   onClose: () => void;
   onSave: (drafts: DailyPlannerTaskDraft[]) => Promise<void>;
 }
@@ -305,28 +250,29 @@ export default function DailyPlannerCreateTaskModal({
   elevated = false,
   forEmployeeCode,
   skipPlanningWindowAssert = false,
+  existingTasksForDate = [],
   onClose,
   onSave,
 }: DailyPlannerCreateTaskModalProps) {
   const [sections, setSections] = useState<TaskSectionState[]>([createEmptySection()]);
   const [errors, setErrors] = useState<SectionErrors>({});
   const [saving, setSaving] = useState(false);
-  const [manualUrgentMode, setManualUrgentMode] = useState(false);
+  const [manualOutsideWindowMode, setManualOutsideWindowMode] = useState(false);
   const [projectOptions, setProjectOptions] = useState<string[]>([]);
   const [hoursAlert, setHoursAlert] = useState<string | null>(null);
   const [summaryDrafts, setSummaryDrafts] = useState<DailyPlannerTaskDraft[] | null>(null);
   const descriptionRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
-  const urgentReasonRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
 
-  const requireExactSeven = !elevated && !forEmployeeCode;
+  const requireMinHours = !elevated && !forEmployeeCode;
+  const minPlannedHours = getMinPlannedHours(planningConfig);
 
   const windowState = useMemo(
     () => getPlanningWindowUiState(planningConfig),
     [planningConfig],
   );
-  const windowClosedUi = elevated && windowState === 'closed' && !manualUrgentMode;
+  const windowClosedUi = elevated && windowState === 'closed' && !manualOutsideWindowMode;
   const dateBlockedUi =
-    elevated && Boolean(regularCreationBlockedMessage) && !manualUrgentMode;
+    elevated && Boolean(regularCreationBlockedMessage) && !manualOutsideWindowMode;
   const planningClosed = !elevated
     ? false
     : windowClosedUi || dateBlockedUi;
@@ -338,33 +284,32 @@ export default function DailyPlannerCreateTaskModal({
     if (open) {
       setSections([createEmptySection()]);
       setErrors({});
-      setManualUrgentMode(false);
+      setManualOutsideWindowMode(false);
       setHoursAlert(null);
       setSummaryDrafts(null);
       descriptionRefs.current = {};
-      urgentReasonRefs.current = {};
       void fetchDailyPlannerProjects()
         .then((projects) => setProjectOptions(projects.map((p) => p.projectName).filter(Boolean)))
         .catch(() => setProjectOptions([]));
     }
   }, [open, date, elevated]);
 
-  const liveTotalHours = useMemo(() => {
+  const existingPlannedHours = useMemo(
+    () => sumPlannedHoursForDate(existingTasksForDate, date),
+    [existingTasksForDate, date],
+  );
+
+  const liveFormHours = useMemo(() => {
     return sections.reduce((sum, section) => {
       const h = Number(section.hoursRequired);
       return sum + (Number.isFinite(h) && h > 0 ? h : 0);
     }, 0);
   }, [sections]);
 
-  const totalHoursDisplay = Math.round(liveTotalHours * 100) / 100;
+  const liveTotalHours = Math.round((existingPlannedHours + liveFormHours) * 100) / 100;
 
   const handleClose = () => {
     onClose();
-  };
-
-  const addSection = () => {
-    setSections((prev) => [...prev, createEmptySection()]);
-    setHoursAlert(null);
   };
 
   const updateSection = (id: string, patch: Partial<TaskSectionState>) => {
@@ -380,13 +325,17 @@ export default function DailyPlannerCreateTaskModal({
     }
   };
 
+  const addSection = () => {
+    setSections((prev) => [...prev, createEmptySection()]);
+    setHoursAlert(null);
+  };
+
   const removeSection = (id: string) => {
     setSections((prev) => {
       if (prev.length <= 1) return prev;
       return prev.filter((s) => s.id !== id);
     });
     delete descriptionRefs.current[id];
-    delete urgentReasonRefs.current[id];
     setHoursAlert(null);
     setErrors((prev) => {
       if (!prev[id]) return prev;
@@ -403,14 +352,8 @@ export default function DailyPlannerCreateTaskModal({
     for (const section of sections) {
       const description =
         descriptionRefs.current[section.id]?.getFormattedValue() ?? '';
-      const urgentReason =
-        urgentReasonRefs.current[section.id]?.getFormattedValue() ?? '';
-      const urgentMode =
-        elevated &&
-        (section.planningCategory === PLANNING_CATEGORY_URGENT ||
-          (manualUrgentMode && section.planningCategory !== PLANNING_CATEGORY_REGULAR));
 
-      if (isSectionEmpty(section.taskName, description, urgentMode, urgentReason)) {
+      if (isSectionEmpty(section.taskName, description)) {
         continue;
       }
 
@@ -419,17 +362,9 @@ export default function DailyPlannerCreateTaskModal({
         continue;
       }
 
-      if (urgentMode && !hasBulletContent(parseBulletPoints(urgentReason))) {
-        validationErrors[section.id] = {
-          ...(validationErrors[section.id] || {}),
-          urgentReason: true,
-        };
-        continue;
-      }
-
       const hoursValue = Number(section.hoursRequired);
       if (
-        !String(section.hoursRequired || '').trim() ||
+        section.hoursRequired == null ||
         !Number.isFinite(hoursValue) ||
         hoursValue <= 0
       ) {
@@ -448,20 +383,17 @@ export default function DailyPlannerCreateTaskModal({
         continue;
       }
 
-      const category = !elevated
-        ? PLANNING_CATEGORY_REGULAR
-        : urgentMode || section.planningCategory === PLANNING_CATEGORY_URGENT
-          ? PLANNING_CATEGORY_URGENT
-          : PLANNING_CATEGORY_REGULAR;
+      const category =
+        section.priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR;
 
       drafts.push({
         date,
         taskName: section.taskName.trim(),
         description,
-        priority: elevated ? section.priority : 'Medium',
+        priority: section.priority,
         hoursRequired: Math.round(hoursValue * 100) / 100,
         planningCategory: category,
-        urgentReason: category === PLANNING_CATEGORY_URGENT ? urgentReason : '',
+        urgentReason: '',
         isProjectBased: section.isProjectBased === 'Yes',
         projectName: section.isProjectBased === 'Yes' ? section.projectName.trim() : '',
         managerInstructions: elevated ? section.managerInstructions.trim() : '',
@@ -507,24 +439,22 @@ export default function DailyPlannerCreateTaskModal({
       return;
     }
 
-    const total = Math.round(
+    const draftHours = Math.round(
       drafts.reduce((sum, d) => sum + (Number(d.hoursRequired) || 0), 0) * 100,
     ) / 100;
+    const total = Math.round((existingPlannedHours + draftHours) * 100) / 100;
 
-    if (requireExactSeven && total !== MIN_PLANNED_HOURS_PER_WORKING_DAY) {
-      setHoursAlert(EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE);
-      toast.error(EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE);
+    if (requireMinHours && total < minPlannedHours) {
+      const message = buildMinimumHoursRequirementMessage(planningConfig);
+      setHoursAlert(message);
+      toast.error(message);
       return;
     }
 
     if (!skipPlanningWindowAssert && planningConfig) {
       try {
         for (const draft of drafts) {
-          if (isUrgentTask(draft.planningCategory)) {
-            assertCanCreateUrgentTask(draft.date, planningConfig, { elevated });
-          } else {
-            assertCanCreateRegularTask(draft.date, planningConfig, { elevated });
-          }
+          assertCanCreateRegularTask(draft.date, planningConfig, { elevated });
         }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Cannot create task for this date');
@@ -535,7 +465,7 @@ export default function DailyPlannerCreateTaskModal({
     setErrors({});
     setHoursAlert(null);
 
-    if (requireExactSeven) {
+    if (requireMinHours) {
       setSummaryDrafts(drafts);
       return;
     }
@@ -556,7 +486,12 @@ export default function DailyPlannerCreateTaskModal({
         'rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-[#212529] shrink-0 text-right',
       )}
     >
-      Total Planned Hours: {totalHoursDisplay} Hours
+      Total Planned Hours: {formatDurationLabel(liveTotalHours)}
+      {existingPlannedHours > 0 ? (
+        <span className="mt-0.5 block text-xs font-normal text-gray-500">
+          Existing: {formatDurationLabel(existingPlannedHours)}
+        </span>
+      ) : null}
     </div>
   );
 
@@ -591,9 +526,9 @@ export default function DailyPlannerCreateTaskModal({
                           type="button"
                           variant="outline"
                           className="border-amber-300 bg-white hover:bg-amber-100"
-                          onClick={() => setManualUrgentMode(true)}
+                          onClick={() => setManualOutsideWindowMode(true)}
                         >
-                          Create Urgent Task
+                          Create Task Anyway
                         </Button>
                       </div>
                     ) : null}
@@ -610,16 +545,12 @@ export default function DailyPlannerCreateTaskModal({
                         elevated={elevated}
                         projectOptions={projectOptions}
                         showTaskNameError={Boolean(errors[section.id]?.taskName)}
-                        showUrgentReasonError={Boolean(errors[section.id]?.urgentReason)}
                         showHoursRequiredError={Boolean(errors[section.id]?.hoursRequired)}
                         showProjectNameError={Boolean(errors[section.id]?.projectName)}
                         onChange={(patch) => updateSection(section.id, patch)}
                         onRemove={() => removeSection(section.id)}
                         onDescriptionRef={(handle) => {
                           descriptionRefs.current[section.id] = handle;
-                        }}
-                        onUrgentReasonRef={(handle) => {
-                          urgentReasonRefs.current[section.id] = handle;
                         }}
                       />
                     ))
@@ -628,9 +559,6 @@ export default function DailyPlannerCreateTaskModal({
             </div>
 
             <div className="shrink-0 space-y-3 border-t border-gray-200 bg-white px-6 py-4">
-              {hoursAlert ? (
-                <p className="text-sm text-red-600 whitespace-pre-wrap">{hoursAlert}</p>
-              ) : null}
               {!planningClosed ? (
                 <Button
                   type="button"
@@ -642,6 +570,9 @@ export default function DailyPlannerCreateTaskModal({
                   <Plus className="mr-2 h-4 w-4" />
                   New Task
                 </Button>
+              ) : null}
+              {hoursAlert ? (
+                <p className="text-sm text-red-600 whitespace-pre-wrap">{hoursAlert}</p>
               ) : null}
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {!planningClosed ? totalHoursIndicator : null}

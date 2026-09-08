@@ -29,6 +29,7 @@ import PlanningPerformanceDashboard from './PlanningPerformanceDashboard';
 import {
   buildDailyMonthGrid,
   DAILY_STATUS_LEGEND,
+  sortDailyPlannerTasksByPriority,
   todayIso,
   tomorrowIso,
   visibleEmployeePlannerTasks,
@@ -39,7 +40,6 @@ import { useAuth } from '../../context/AuthContext';
 import {
   evaluateMyDailyPlannerCreateEligibility,
 } from '../../utils/planningRecognition';
-import { canManageDailyPlannerTeam } from '../../utils/accessControl';
 import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
 import { getDailyPlannerDateMode } from './dailyPlannerDateRules';
 
@@ -136,10 +136,9 @@ function PlannerDayCell({
   );
 }
 
-export default function MyDailyPlannerTab({ moduleRole }: { moduleRole?: string } = {}) {
+export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleRole?: string } = {}) {
   const { user } = useAuth();
   const employeeLocation = user?.location || 'Office';
-  const elevated = canManageDailyPlannerTeam(String(moduleRole || user?.role || ''));
   const now = new Date();
   const [view, setView] = useState({ year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 });
   const { year, month } = view;
@@ -164,7 +163,10 @@ export default function MyDailyPlannerTab({ moduleRole }: { moduleRole?: string 
     [year, month, tasks, employeeLocation],
   );
   const dayTasks = useMemo(
-    () => (dayDate ? tasks.filter((t) => t.date === dayDate) : []),
+    () =>
+      dayDate
+        ? sortDailyPlannerTasksByPriority(tasks.filter((t) => t.date === dayDate))
+        : [],
     [tasks, dayDate],
   );
   const dayPlanFinalized = useMemo(
@@ -259,6 +261,20 @@ export default function MyDailyPlannerTab({ moduleRole }: { moduleRole?: string 
       return;
     }
 
+    const dateKey = String(iso || '').trim().slice(0, 10);
+    const dayAlreadyFinalized = tasks.some(
+      (t) =>
+        String(t.date || '').trim().slice(0, 10) === dateKey &&
+        Boolean(t.planFinalizedAt) &&
+        String(t.status || '').trim() !== 'Rescheduled',
+    );
+    if (dayAlreadyFinalized && !revisesTaskId) {
+      toast.error(
+        'This daily plan has been finalized. No further planning is allowed for this date.',
+      );
+      return;
+    }
+
     // My Daily Planner always uses employee planning-window rules (including Admin on this tab).
     // Team Daily Planner / for-employee flows keep elevated manager privileges separately.
     const eligibility = evaluateMyDailyPlannerCreateEligibility(iso, config, {
@@ -290,6 +306,18 @@ export default function MyDailyPlannerTab({ moduleRole }: { moduleRole?: string 
       return;
     }
     const planDate = nextWorkingDayIst;
+    const dayAlreadyFinalized = tasks.some(
+      (t) =>
+        String(t.date || '').trim().slice(0, 10) === planDate &&
+        Boolean(t.planFinalizedAt) &&
+        String(t.status || '').trim() !== 'Rescheduled',
+    );
+    if (dayAlreadyFinalized) {
+      toast.error(
+        'This daily plan has been finalized. No further planning is allowed for this date.',
+      );
+      return;
+    }
     const eligibility = evaluateMyDailyPlannerCreateEligibility(planDate, config, {
       elevated: false,
       nextWorkingDayIst,
@@ -478,7 +506,12 @@ export default function MyDailyPlannerTab({ moduleRole }: { moduleRole?: string 
           date={createDate ?? ''}
           planningConfig={planningConfigQuery.data}
           regularCreationBlockedMessage={createBlockedReason}
-          elevated={elevated}
+          elevated={false}
+          existingTasksForDate={
+            createDate
+              ? tasks.filter((t) => String(t.date || '').trim().slice(0, 10) === createDate)
+              : []
+          }
           onClose={() => {
             setCreateDate(null);
             setCreateBlockedReason(null);
@@ -491,10 +524,11 @@ export default function MyDailyPlannerTab({ moduleRole }: { moduleRole?: string 
                     index === 0 ? { ...draft, revisesTaskId: reviseTaskId } : draft,
                   )
                 : drafts;
+            // My Daily Planner always uses the employee create path (same form + rules for Admin).
             const created = await createDailyPlannerTasks(payload, planningConfigQuery.data, {
-              elevated,
+              elevated: false,
               nextWorkingDayIst,
-              useBatch: !elevated && !reviseTaskId,
+              useBatch: !reviseTaskId,
             });
             toast.success(
               drafts.length === 1 ? 'Task created' : `${drafts.length} tasks created`,

@@ -6,7 +6,7 @@ import {
   useTeamDailyPlannerQuery,
   useTeamMappingsQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
-import { upsertPlannerTasksInCache } from '../../hooks/dailyPlanner/dailyPlannerCache';
+import { upsertPlannerTasksInCache, replacePlannerDayTasksInCache } from '../../hooks/dailyPlanner/dailyPlannerCache';
 import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQueryKeys';
 import { useAuth } from '../../context/AuthContext';
 import { isQueryColdLoading } from '../../utils/queryLoading';
@@ -16,11 +16,14 @@ import CalendarHolidayDayHeader from '../calendar/CalendarHolidayDayHeader';
 import {
   buildDailyMonthGrid,
   DAILY_STATUS_LEGEND,
+  sortDailyPlannerTasksByPriority,
   todayIso,
+  visibleEmployeePlannerTasks,
   WEEKDAY_LABELS,
   type DailyCalendarDayCell,
 } from './dailyPlannerUtils';
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
+import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerCompletionApprovalsPanel from './DailyPlannerCompletionApprovalsPanel';
 import { isTaskManagerReviewed } from './todayTaskReviewWizardUtils';
 import { Card } from '../ui/card';
@@ -30,10 +33,12 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
+import { getNextWorkingDayDateKey, isCompanyWorkingDay } from '../../utils/companyWorkingDays';
+import { createDailyPlannerTaskForEmployee, finalizeEmployeeDailyPlan } from '../../hooks/dailyPlanner/dailyPlannerApi';
+import { toast } from 'sonner';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-const EVENING_END_MINUTES = 20 * 60;
+const EVENING_START_MINUTES = 17 * 60 + 30;
 
 function resolveTeamReviewDate(
   today: string,
@@ -46,8 +51,8 @@ function resolveTeamReviewDate(
   if (Number.isNaN(ref.getTime())) return today;
   const ist = new Date(ref.getTime() + IST_OFFSET_MS);
   const minutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  // After 8:00 PM IST managers review next-working-day plans submitted in the evening window.
-  if (minutes >= EVENING_END_MINUTES) {
+  // After 5:30 PM IST managers review next-working-day plans submitted in the evening window.
+  if (minutes >= EVENING_START_MINUTES) {
     return getNextWorkingDayDateKey(today, location) || tomorrowIst || today;
   }
   return today;
@@ -88,6 +93,7 @@ function TeamPlannerDayCell({
   expanded,
   onToggleExpand,
   onSelectTask,
+  onCreateForDate,
   showEmployeeName,
 }: {
   cell: DailyCalendarDayCell;
@@ -95,6 +101,7 @@ function TeamPlannerDayCell({
   expanded: boolean;
   onToggleExpand: () => void;
   onSelectTask: (task: DailyPlannerTask) => void;
+  onCreateForDate: (iso: string) => void;
   showEmployeeName: boolean;
 }) {
   const weekRow = Math.floor(cellIndex / 7);
@@ -109,8 +116,13 @@ function TeamPlannerDayCell({
         weekRow > 0 && 'border-t border-gray-200',
         weekRow > 0 && weekRow % 2 === 0 && 'border-t-gray-300',
         !cell.inMonth ? 'bg-gray-50/70' : 'bg-white',
+        cell.inMonth && 'cursor-pointer hover:bg-gray-50/80',
       )}
       style={{ minHeight: '7.5rem' }}
+      onDoubleClick={() => {
+        if (!cell.inMonth) return;
+        onCreateForDate(cell.iso);
+      }}
     >
       <CalendarHolidayDayHeader
         dayNumber={cell.date.getUTCDate()}
@@ -170,6 +182,7 @@ export default function TeamDailyPlannerTab() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardTaskIndex, setWizardTaskIndex] = useState(0);
   const [wizardDismissedForEmployee, setWizardDismissedForEmployee] = useState('');
+  const [createDate, setCreateDate] = useState<string | null>(null);
   const hadPendingReviewsRef = useRef(false);
   const today = todayIso();
   const planningConfigQuery = usePlanningConfigQuery();
@@ -249,12 +262,24 @@ export default function TeamDailyPlannerTab() {
       employeeName: mapping?.employeeName || emp?.name || emp?.employee_name || code,
       department: emp?.department || '',
       designation: emp?.designation || '',
+      location: emp?.location || selectedEmployeeLocation || '',
     };
-  }, [selectedEmployeeCode, employeesQuery.data, mappingsQuery.data, managerCode]);
+  }, [
+    selectedEmployeeCode,
+    employeesQuery.data,
+    mappingsQuery.data,
+    managerCode,
+    selectedEmployeeLocation,
+  ]);
 
   const todayTasks = useMemo(() => {
     const list = todayTasksQuery.data ?? [];
-    return [...list].sort((a, b) => a.taskName.localeCompare(b.taskName));
+    // Match My Daily Planner / finalize semantics: hide handled revision parents
+    // and Rescheduled originals so Team Review matches the authoritative plan.
+    const visible = visibleEmployeePlannerTasks(list).filter(
+      (task) => String(task.status || '').trim() !== 'Rescheduled',
+    );
+    return sortDailyPlannerTasksByPriority(visible);
   }, [todayTasksQuery.data]);
 
   // Plan-review pending only (never reuse completion submission as plan-review state).
@@ -277,23 +302,23 @@ export default function TeamDailyPlannerTab() {
   useEffect(() => {
     if (!selectedEmployeeCode || todayTasksLoading) return;
 
-    if (pendingReviewCount === 0) {
+    // Auto-open when the employee has tasks for the review date (even if all already reviewed).
+    if (todayTasks.length === 0) {
       hadPendingReviewsRef.current = false;
-      // No pending plan reviews — never auto-open (fixes reopen after all reviews complete).
       return;
     }
 
-    const newlyArrivedPending = !hadPendingReviewsRef.current;
+    const newlyArrivedTasks = !hadPendingReviewsRef.current;
     hadPendingReviewsRef.current = true;
 
     if (wizardDismissedForEmployee === selectedEmployeeCode) {
-      // Closed while pending remained — stay closed unless a fresh pending queue appeared.
-      if (!newlyArrivedPending) return;
+      // Closed by manager — stay closed unless a fresh task set arrived for this employee.
+      if (!newlyArrivedTasks) return;
       setWizardDismissedForEmployee('');
     }
 
     // Don't reset the wizard while the manager is already reviewing.
-    if (wizardOpen && !newlyArrivedPending) return;
+    if (wizardOpen && !newlyArrivedTasks) return;
 
     const firstPendingIndex = firstPendingTaskId
       ? Math.max(
@@ -329,9 +354,37 @@ export default function TeamDailyPlannerTab() {
     setWizardOpen(true);
   };
 
-  const refreshTasks = (updatedTasks?: DailyPlannerTask[]) => {
+  const handleCreateForDate = (iso: string) => {
+    const dateKey = String(iso || '').trim().slice(0, 10);
+    if (!selectedEmployeeCode) {
+      toast.error('Select an employee before creating a task.');
+      return;
+    }
+    if (!dateKey) return;
+    if (!isCompanyWorkingDay(dateKey, selectedEmployeeLocation)) {
+      toast.error('Tasks can only be created on a working day.');
+      return;
+    }
+    const todayKey = String(planningConfigQuery.data?.todayIst || today).slice(0, 10);
+    if (dateKey < todayKey) {
+      toast.error('Cannot create tasks for past dates.');
+      return;
+    }
+    setCreateDate(dateKey);
+  };
+
+  const refreshTasks = (
+    updatedTasks?: DailyPlannerTask[],
+    options?: { replaceEmployeeDate?: boolean },
+  ) => {
     if (updatedTasks?.length) {
-      upsertPlannerTasksInCache(queryClient, updatedTasks);
+      if (options?.replaceEmployeeDate) {
+        const code = String(updatedTasks[0]?.employeeCode || selectedEmployeeCode || '').trim();
+        const date = String(updatedTasks[0]?.date || reviewDate || '').trim().slice(0, 10);
+        replacePlannerDayTasksInCache(queryClient, code, date, updatedTasks);
+      } else {
+        upsertPlannerTasksInCache(queryClient, updatedTasks);
+      }
       void queryClient.invalidateQueries({
         queryKey: dailyPlannerQueryKeys.planningProfile(),
       });
@@ -341,6 +394,15 @@ export default function TeamDailyPlannerTab() {
       void queryClient.invalidateQueries({
         queryKey: dailyPlannerQueryKeys.completionApprovalsPending(),
       });
+      // Ensure team day/month refetch so UI cannot keep stale draft rows after finalize.
+      if (options?.replaceEmployeeDate) {
+        void queryClient.invalidateQueries({
+          queryKey: [...dailyPlannerQueryKeys.all, 'team'],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: [...dailyPlannerQueryKeys.all, 'teamMonth'],
+        });
+      }
       return;
     }
     invalidate();
@@ -545,6 +607,7 @@ export default function TeamDailyPlannerTab() {
                   expanded={expandedCells.has(cell.iso)}
                   onToggleExpand={() => toggleCellExpand(cell.iso)}
                   onSelectTask={handleSelectTask}
+                  onCreateForDate={handleCreateForDate}
                   showEmployeeName={false}
                 />
               ))}
@@ -581,6 +644,54 @@ export default function TeamDailyPlannerTab() {
             setWizardDismissedForEmployee(selectedEmployeeCode);
           }}
           onTasksUpdated={refreshTasks}
+        />
+      ) : null}
+
+      {selectedEmployeeCode && createDate ? (
+        <DailyPlannerCreateTaskModal
+          open={Boolean(createDate)}
+          date={createDate}
+          planningConfig={planningConfigQuery.data}
+          elevated
+          forEmployeeCode={selectedEmployeeCode}
+          skipPlanningWindowAssert
+          existingTasksForDate={tasks.filter(
+            (task) => String(task.date || '').trim().slice(0, 10) === createDate,
+          )}
+          onClose={() => setCreateDate(null)}
+          onSave={async (drafts) => {
+            const created: DailyPlannerTask[] = [];
+            for (const draft of drafts) {
+              const createdTask = await createDailyPlannerTaskForEmployee({
+                ...draft,
+                date: createDate,
+                employeeCode: selectedEmployeeCode,
+                skipRevisedEmail: true,
+              });
+              created.push(createdTask);
+            }
+            const dayWasFinalized = created.some((task) => Boolean(task.planFinalizedAt));
+            if (dayWasFinalized) {
+              const finalized = await finalizeEmployeeDailyPlan(
+                selectedEmployeeCode,
+                createDate,
+                { refinalize: true },
+              );
+              if (finalized.tasks.length) {
+                await refreshTasks(finalized.tasks, { replaceEmployeeDate: true });
+              } else {
+                await refreshTasks(created);
+              }
+            } else {
+              await refreshTasks(created);
+            }
+            toast.success(
+              created.length === 1
+                ? 'Task added for employee'
+                : `${created.length} tasks added for employee`,
+            );
+            setCreateDate(null);
+          }}
         />
       ) : null}
     </TooltipPrimitive.Provider>

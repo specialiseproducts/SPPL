@@ -28,8 +28,12 @@ export const MORNING_END_MINUTE = 0;
 
 export const EVENING_START_HOUR = 17;
 export const EVENING_START_MINUTE = 30;
+/** @deprecated Legacy 8:00 PM evening end — employee planning now spans to next-day 11:00 AM. */
 export const EVENING_END_HOUR = 20;
 export const EVENING_END_MINUTE = 0;
+/** Employee planning window closes next calendar day at 11:00 AM IST. */
+export const EMPLOYEE_PLANNING_WINDOW_END_HOUR = 11;
+export const EMPLOYEE_PLANNING_WINDOW_END_MINUTE = 0;
 
 /** @deprecated Legacy window caps — retained for config API compatibility. */
 export const MORNING_PLANNING_SCORE = 0.5;
@@ -38,13 +42,20 @@ export const DAILY_PLANNING_SCORE_CAP = 30;
 
 /**
  * Score ceiling still assumes an ideal day of up to 10 scored tasks × (+1 plan + +2 complete).
- * Daily *compliance* minimum is hours-based (see MIN_PLANNED_HOURS_PER_WORKING_DAY).
+ * Daily *compliance* minimum is hours-based (see getMinPlannedHoursForLocation).
  */
 export const IDEAL_SCORED_TASKS_PER_WORKING_DAY = 10;
 /** @deprecated Use IDEAL_SCORED_TASKS_PER_WORKING_DAY — retained for score ceiling only. */
 export const MIN_PLANNED_TASKS_PER_WORKING_DAY = IDEAL_SCORED_TASKS_PER_WORKING_DAY;
-/** Minimum total Hours Required planned per employee per working day. */
-export const MIN_PLANNED_HOURS_PER_WORKING_DAY = 7;
+/** Factory default minimum planned hours per working day. */
+export const MIN_PLANNED_HOURS_FACTORY = 7;
+/** Office minimum planned hours per working day (7 hours 30 minutes). */
+export const MIN_PLANNED_HOURS_OFFICE = 7.5;
+/**
+ * @deprecated Prefer getMinPlannedHoursForLocation(location). Kept as Factory fallback for callers
+ * that have not yet been updated to pass location.
+ */
+export const MIN_PLANNED_HOURS_PER_WORKING_DAY = MIN_PLANNED_HOURS_FACTORY;
 export const TASK_PLANNING_SCORE_PREVIOUS_DAY = 1;
 export const TASK_PLANNING_SCORE_MORNING = 0.5;
 export const TASK_COMPLETION_SCORE_COMPLETED = 2;
@@ -68,39 +79,41 @@ export const PLANNING_SOURCE_IMPORTED = 'SALES_FORECASTING';
 export const PLANNING_SOURCE_RESCHEDULED = 'RESCHEDULED';
 
 export const REGULAR_TASK_BLOCKED_MESSAGE =
-  'Regular tasks can only be planned during the planning windows.\n\n' +
-  'Today: 12:00 AM – 11:00 AM\n' +
-  'Tomorrow: 05:30 PM – 08:00 PM\n\n' +
-  'If this work is urgent, please create it as an Urgent Task.';
+  'Tasks can only be planned during the planning window.\n\n' +
+  'Planning window: 5:30 PM – 11:00 AM next day (IST)\n\n' +
+  'Future working days may be planned during this window.';
 
 export const REGULAR_TASK_TODAY_BLOCKED_MESSAGE =
-  'A Regular Task for today can only be created before 11:00 AM.';
+  'Tasks for today can only be created before 11:00 AM during the planning window.';
 
 export const REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE =
-  'A Regular Task for tomorrow can only be created between 5:30 PM and 8:00 PM today.';
+  'Future working-day planning is only allowed between 5:30 PM and 11:00 AM next day (IST).';
 
 export const URGENT_TASK_TODAY_BLOCKED_MESSAGE =
-  'Urgent Tasks for today can only be created between 11:00 AM and 5:30 PM.';
+  'Task creation outside the planning window is not allowed.';
 
 export const TASK_CREATE_DATE_BLOCKED_MESSAGE =
-  'You can only create tasks for today or tomorrow according to the allowed task creation schedule.';
+  'You can only create tasks for today or future working days during the planning window.';
 
 export const EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE =
-  'Regular task planning is only allowed between 5:30 PM and 8:00 PM for the next working day.';
+  'Task planning is only allowed between 5:30 PM and 11:00 AM next day (IST) for today and future working days.';
 
 export const EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE =
-  'Your minimum total hours planning is not completed. Please plan 7 hours.';
+  'Your minimum total hours planning is not completed. Please plan the required hours for your location.';
 
 export const MANAGER_REVIEW_WINDOW_MESSAGE =
   'Manager review and plan finalization is only allowed between 8:00 PM and 9:30 AM.';
 
-export const URGENT_REASON_REQUIRED_MESSAGE = 'Urgent Task Reason is required.';
+export const URGENT_REASON_REQUIRED_MESSAGE = 'Urgent priority reason is required.';
 
 export const USER_URGENT_FORBIDDEN_MESSAGE =
-  'You do not have permission to create Urgent Tasks.';
+  'You do not have permission to create tasks with Urgent priority outside the allowed workflow.';
 
 export const USER_PRIORITY_FORBIDDEN_MESSAGE =
   'You do not have permission to select or change Priority.';
+
+export const PRIORITY_VALUES = ['Urgent', 'High', 'Medium', 'Low'];
+export const PRIORITY_SORT_ORDER = { Urgent: 0, High: 1, Medium: 2, Low: 3 };
 
 export function toIstDate(reference = new Date()) {
   return new Date(reference.getTime() + IST_OFFSET_MS);
@@ -122,11 +135,23 @@ export function isMorningPlanningWindow(reference = new Date()) {
   return mins >= start && mins < end;
 }
 
-export function isEveningPlanningWindow(reference = new Date()) {
+/**
+ * Employee planning window: 5:30 PM IST → 11:00 AM next calendar day IST.
+ * Active when minutes >= 17:30 OR minutes < 11:00.
+ */
+export function isEmployeePlanningWindow(reference = new Date()) {
   const mins = getIstMinutesSinceMidnight(reference);
   const start = minutesFrom(EVENING_START_HOUR, EVENING_START_MINUTE);
-  const end = minutesFrom(EVENING_END_HOUR, EVENING_END_MINUTE);
-  return mins >= start && mins < end;
+  const end = minutesFrom(
+    EMPLOYEE_PLANNING_WINDOW_END_HOUR,
+    EMPLOYEE_PLANNING_WINDOW_END_MINUTE,
+  );
+  return mins >= start || mins < end;
+}
+
+/** @deprecated Use isEmployeePlanningWindow — evening now spans midnight to 11:00 AM. */
+export function isEveningPlanningWindow(reference = new Date()) {
+  return isEmployeePlanningWindow(reference);
 }
 
 /** Regular today: midnight (inclusive) until 11:00 AM (exclusive). */
@@ -135,7 +160,7 @@ export function isRegularTodayCreationWindow(reference = new Date()) {
   return mins < minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE);
 }
 
-/** Urgent today: 11:00 AM (inclusive) until 5:30 PM (exclusive). */
+/** Midday gap between morning close and evening open (11:00–17:30) — no employee planning. */
 export function isUrgentTodayCreationWindow(reference = new Date()) {
   const mins = getIstMinutesSinceMidnight(reference);
   const start = minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE);
@@ -149,6 +174,54 @@ export function isManagerReviewWindow(reference = new Date()) {
   const eveningStart = minutesFrom(EVENING_END_HOUR, EVENING_END_MINUTE); // 20:00
   const morningEnd = minutesFrom(9, 30);
   return mins >= eveningStart || mins < morningEnd;
+}
+
+export function normalizeEmployeeLocationLabel(location) {
+  const value = String(location || '').trim();
+  return value === 'Factory' ? 'Factory' : 'Office';
+}
+
+/** Location-based daily minimum planned hours (Office 7.5, Factory 7). */
+export function getMinPlannedHoursForLocation(location) {
+  return normalizeEmployeeLocationLabel(location) === 'Factory'
+    ? MIN_PLANNED_HOURS_FACTORY
+    : MIN_PLANNED_HOURS_OFFICE;
+}
+
+export function buildMinimumHoursRequirementMessage(location) {
+  const min = getMinPlannedHoursForLocation(location);
+  if (min === MIN_PLANNED_HOURS_OFFICE) {
+    return 'Your minimum total hours planning is not completed. Please plan 7 Hours 30 Minutes.';
+  }
+  return 'Your minimum total hours planning is not completed. Please plan 7 Hours.';
+}
+
+/** Convert decimal hours to { hours, minutes } without losing minute precision. */
+export function decimalHoursToParts(decimalHours) {
+  const totalMinutes = Math.round((Number(decimalHours) || 0) * 60);
+  const safe = Math.max(0, totalMinutes);
+  return {
+    hours: Math.floor(safe / 60),
+    minutes: safe % 60,
+  };
+}
+
+/** Convert hours + minutes (0–59) to decimal hours (2 d.p.). */
+export function partsToDecimalHours(hoursPart, minutesPart) {
+  const h = Math.max(0, Math.floor(Number(hoursPart) || 0));
+  let m = Number(minutesPart);
+  if (!Number.isFinite(m)) m = 0;
+  m = Math.max(0, Math.min(59, Math.round(m)));
+  return Math.round((h + m / 60) * 100) / 100;
+}
+
+export function formatDurationLabel(decimalHours) {
+  const { hours, minutes } = decimalHoursToParts(decimalHours);
+  const hLabel = hours === 1 ? '1 Hour' : `${hours} Hours`;
+  if (minutes <= 0) return hLabel;
+  const mLabel = minutes === 1 ? '1 Minute' : `${minutes} Minutes`;
+  if (hours <= 0) return mLabel;
+  return `${hLabel} ${mLabel}`;
 }
 
 export function nextWorkingDayIstDateKey(reference = new Date(), location) {
@@ -165,29 +238,55 @@ export function assertTaskCreationNotOnHoliday(taskDateIso, location) {
 }
 
 /**
- * User-access employees: Regular tasks only for the next working day, 5:30–8:00 PM IST.
+ * Employee My Daily Planner create: any today/future working day during
+ * 5:30 PM → next day 11:00 AM planning window.
  */
 export function assertEmployeeNextDayRegularAllowed(taskDateIso, reference = new Date(), location) {
   assertTaskCreationNotOnHoliday(taskDateIso, location);
   const target = String(taskDateIso || '').trim().slice(0, 10);
-  const nextWorking = nextWorkingDayIstDateKey(reference, location);
-  if (!nextWorking || target !== nextWorking) {
+  const today = todayIstDateKey(reference);
+
+  if (!isEmployeePlanningWindow(reference)) {
     const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
     err.statusCode = 400;
     throw err;
   }
-  if (!isEveningPlanningWindow(reference)) {
+
+  if (!target || target < today) {
+    const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Evening portion (after 5:30 PM): future working days only (strictly after today).
+  // Morning portion (before 11:00 AM): today and future working days.
+  const mins = getIstMinutesSinceMidnight(reference);
+  const morningEnd = minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE);
+  if (mins >= minutesFrom(EVENING_START_HOUR, EVENING_START_MINUTE) && target <= today) {
     const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
     err.statusCode = 400;
     throw err;
   }
-  return PLANNING_WINDOW_EVENING;
+  if (mins < morningEnd && target < today) {
+    const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!isCompanyWorkingDayDateKey(target, location)) {
+    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return mins < morningEnd ? PLANNING_WINDOW_MORNING : PLANNING_WINDOW_EVENING;
 }
 
-export function assertExactSevenPlannedHours(totalHours) {
+export function assertExactSevenPlannedHours(totalHours, location) {
   const hours = Math.round((Number(totalHours) || 0) * 100) / 100;
-  if (hours !== MIN_PLANNED_HOURS_PER_WORKING_DAY) {
-    const err = new Error(EMPLOYEE_EXACT_SEVEN_HOURS_MESSAGE);
+  const minRequired = getMinPlannedHoursForLocation(location);
+  if (hours < minRequired) {
+    const err = new Error(buildMinimumHoursRequirementMessage(location));
     err.statusCode = 400;
     throw err;
   }
@@ -220,26 +319,31 @@ export function isRegularTask(planningCategory) {
 
 export function resolveActivePlanningWindow(reference = new Date()) {
   if (isMorningPlanningWindow(reference)) return PLANNING_WINDOW_MORNING;
-  if (isEveningPlanningWindow(reference)) return PLANNING_WINDOW_EVENING;
+  if (isEmployeePlanningWindow(reference)) return PLANNING_WINDOW_EVENING;
   return PLANNING_WINDOW_OUTSIDE;
 }
 
 export function isRegularTaskAllowed(taskDateIso, reference = new Date()) {
+  if (!isEmployeePlanningWindow(reference)) return false;
   const target = getPlanningTargetDateMode(taskDateIso, reference);
-  if (target === 'today' && isRegularTodayCreationWindow(reference)) return true;
-  if (target === 'tomorrow' && isEveningPlanningWindow(reference)) return true;
-  return false;
+  if (target === 'past') return false;
+  // Morning portion: today + future; evening portion: tomorrow/other future only.
+  const mins = getIstMinutesSinceMidnight(reference);
+  if (mins < minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE)) {
+    return target === 'today' || target === 'tomorrow' || target === 'other';
+  }
+  return target === 'tomorrow' || target === 'other';
 }
 
 export function isUrgentTaskAllowed(taskDateIso, reference = new Date()) {
-  const target = getPlanningTargetDateMode(taskDateIso, reference);
-  return target === 'today' && isUrgentTodayCreationWindow(reference);
+  // Urgent as priority no longer uses a separate creation window.
+  return isRegularTaskAllowed(taskDateIso, reference);
 }
 
 export function assertRegularTaskAllowed(taskDateIso, reference = new Date(), location) {
   assertRegularPlanningAllowedOnDate(taskDateIso, location);
   const target = getPlanningTargetDateMode(taskDateIso, reference);
-  if (target === 'past' || target === 'other') {
+  if (target === 'past') {
     const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
     err.statusCode = 400;
     throw err;
@@ -252,29 +356,13 @@ export function assertRegularTaskAllowed(taskDateIso, reference = new Date(), lo
     err.statusCode = 400;
     throw err;
   }
-  if (target === 'tomorrow') {
-    const err = new Error(REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
-  const err = new Error(REGULAR_TASK_BLOCKED_MESSAGE);
+  const err = new Error(REGULAR_TASK_TOMORROW_BLOCKED_MESSAGE);
   err.statusCode = 400;
   throw err;
 }
 
 export function assertUrgentTaskAllowed(taskDateIso, reference = new Date(), location) {
   assertTaskCreationNotOnHoliday(taskDateIso, location);
-  const target = getPlanningTargetDateMode(taskDateIso, reference);
-  if (target === 'past' || target === 'other') {
-    const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
-  if (target === 'tomorrow') {
-    const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
   if (isUrgentTaskAllowed(taskDateIso, reference)) {
     return;
   }
@@ -284,10 +372,10 @@ export function assertUrgentTaskAllowed(taskDateIso, reference = new Date(), loc
 }
 
 export function resolvePlanningWindowForRegularTask(taskDateIso, reference = new Date()) {
-  const target = getPlanningTargetDateMode(taskDateIso, reference);
-  if (target === 'today' && isRegularTodayCreationWindow(reference)) return PLANNING_WINDOW_MORNING;
-  if (target === 'tomorrow' && isEveningPlanningWindow(reference)) return PLANNING_WINDOW_EVENING;
-  return PLANNING_WINDOW_OUTSIDE;
+  if (!isEmployeePlanningWindow(reference)) return PLANNING_WINDOW_OUTSIDE;
+  const mins = getIstMinutesSinceMidnight(reference);
+  if (mins < minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE)) return PLANNING_WINDOW_MORNING;
+  return PLANNING_WINDOW_EVENING;
 }
 
 export function isWorkingDayDateKey(dateKey, location) {
@@ -340,6 +428,8 @@ export function isTaskCountedTowardDailyMinimum(task) {
   if (!task) return false;
   const status = String(task.status || '').trim();
   if (status === 'Rescheduled') return false;
+  // Handled Needs Revision parents are replaced by a child task — do not double-count.
+  if (String(task.revisionOutcome || '').trim()) return false;
   return true;
 }
 
@@ -524,7 +614,7 @@ export function isWorkingDayPlannedAhead(targetDateKey, tasks, location) {
   const hours = Math.round(
     eligible.reduce((sum, task) => sum + getEffectiveHoursRequired(task), 0) * 100,
   ) / 100;
-  if (hours < MIN_PLANNED_HOURS_PER_WORKING_DAY) return false;
+  if (hours < getMinPlannedHoursForLocation(location)) return false;
 
   const previousWorkingDay = getPreviousWorkingDayDateKey(target, location);
   if (!previousWorkingDay) return false;
@@ -543,7 +633,7 @@ export function isWorkingDaySameDayOnly(targetDateKey, tasks, location) {
   const hours = Math.round(
     eligible.reduce((sum, task) => sum + getEffectiveHoursRequired(task), 0) * 100,
   ) / 100;
-  if (hours < MIN_PLANNED_HOURS_PER_WORKING_DAY) return false;
+  if (hours < getMinPlannedHoursForLocation(location)) return false;
 
   return eligible.every((task) => {
     const createdKey = taskCreatedOnDateKey(task);
@@ -689,14 +779,15 @@ export function normalizeMonthlyPlanningScore(rawScore, workingDays) {
   return Math.min(100, Math.round((raw / maxScore) * 100));
 }
 
-export function buildMinimumHoursWarningMessage(plannedHours, dateKey) {
+export function buildMinimumHoursWarningMessage(plannedHours, dateKey, location) {
   const hours = Math.max(0, Number(plannedHours) || 0);
-  const remaining = Math.max(0, Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - hours) * 100) / 100);
+  const minRequired = getMinPlannedHoursForLocation(location);
+  const remaining = Math.max(0, Math.round((minRequired - hours) * 100) / 100);
   const dayLabel = String(dateKey || 'today').trim() || 'today';
   return (
-    `Your tasks for ${dayLabel} currently total ${formatHoursAmount(hours)} hours. ` +
-    `You need to add tasks covering another ${formatHoursAmount(remaining)} hours ` +
-    `to complete the minimum daily requirement of ${formatHoursAmount(MIN_PLANNED_HOURS_PER_WORKING_DAY)} hours.`
+    `Your tasks for ${dayLabel} currently total ${formatDurationLabel(hours)}. ` +
+    `You need to add tasks covering another ${formatDurationLabel(remaining)} ` +
+    `to complete the minimum daily requirement of ${formatDurationLabel(minRequired)}.`
   );
 }
 
@@ -704,15 +795,17 @@ export function buildMinimumHoursManagerWarningMessage(
   employeeName,
   plannedHours,
   dateKey,
+  location,
 ) {
   const hours = Math.max(0, Number(plannedHours) || 0);
-  const remaining = Math.max(0, Math.round((MIN_PLANNED_HOURS_PER_WORKING_DAY - hours) * 100) / 100);
+  const minRequired = getMinPlannedHoursForLocation(location);
+  const remaining = Math.max(0, Math.round((minRequired - hours) * 100) / 100);
   const name = String(employeeName || 'Employee').trim() || 'Employee';
   const dayLabel = String(dateKey || 'today').trim() || 'today';
   return (
-    `${name} currently has only ${formatHoursAmount(hours)} valid planned hours for ${dayLabel}. ` +
-    `An additional ${formatHoursAmount(remaining)} hours of tasks are required ` +
-    `to meet the ${formatHoursAmount(MIN_PLANNED_HOURS_PER_WORKING_DAY)}-hour daily requirement.`
+    `${name} currently has only ${formatDurationLabel(hours)} valid planned hours for ${dayLabel}. ` +
+    `An additional ${formatDurationLabel(remaining)} of tasks are required ` +
+    `to meet the ${formatDurationLabel(minRequired)} daily requirement.`
   );
 }
 
@@ -722,13 +815,14 @@ export function buildMinimumTasksWarningMessage(plannedCount) {
 }
 
 export function getPlanningConfig(reference = new Date(), location) {
+  const loc = normalizeEmployeeLocationLabel(location);
   return {
     timezone: PLANNING_TIMEZONE,
     serverTimeIso: reference.toISOString(),
     todayIst: todayIstDateKey(reference),
     tomorrowIst: tomorrowIstDateKey(reference),
-    employeeLocation: normalizeEmployeeLocationLabel(location),
-    minPlannedHoursPerWorkingDay: MIN_PLANNED_HOURS_PER_WORKING_DAY,
+    employeeLocation: loc,
+    minPlannedHoursPerWorkingDay: getMinPlannedHoursForLocation(loc),
     minPlannedTasksPerWorkingDay: IDEAL_SCORED_TASKS_PER_WORKING_DAY,
     windows: {
       morning: {
@@ -738,8 +832,9 @@ export function getPlanningConfig(reference = new Date(), location) {
       },
       evening: {
         start: `${String(EVENING_START_HOUR).padStart(2, '0')}:${String(EVENING_START_MINUTE).padStart(2, '0')}`,
-        end: `${String(EVENING_END_HOUR).padStart(2, '0')}:${String(EVENING_END_MINUTE).padStart(2, '0')}`,
-        active: isEveningPlanningWindow(reference),
+        end: `${String(EMPLOYEE_PLANNING_WINDOW_END_HOUR).padStart(2, '0')}:${String(EMPLOYEE_PLANNING_WINDOW_END_MINUTE).padStart(2, '0')}`,
+        active: isEmployeePlanningWindow(reference),
+        spansNextDay: true,
       },
     },
     scores: {
@@ -757,9 +852,4 @@ export function getPlanningConfig(reference = new Date(), location) {
     },
     regularTaskBlockedMessage: REGULAR_TASK_BLOCKED_MESSAGE,
   };
-}
-
-function normalizeEmployeeLocationLabel(location) {
-  const value = String(location || '').trim();
-  return value === 'Factory' ? 'Factory' : 'Office';
 }

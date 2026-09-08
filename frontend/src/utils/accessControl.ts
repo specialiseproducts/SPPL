@@ -95,7 +95,7 @@ export function getDailyPlannerVisibleTabs(role: string): DailyPlannerTabId[] {
   const r = normalizeRole(role);
 
   if (isSuperAdmin(r)) {
-    return ['team-daily-planner', 'team-performance', 'team-management'];
+    return ['my-daily-planner', 'team-daily-planner', 'team-performance', 'team-management'];
   }
 
   if (isAdmin(r)) {

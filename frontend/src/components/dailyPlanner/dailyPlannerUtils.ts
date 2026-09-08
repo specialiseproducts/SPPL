@@ -1,10 +1,33 @@
 import type { CSSProperties } from 'react';
-import type { DailyPlannerTask, DailyPlannerStatus } from '../../types/dailyPlanner';
+import type { DailyPlannerTask, DailyPlannerStatus, DailyPlannerPriority } from '../../types/dailyPlanner';
 import { getCompanyHolidayInfo } from '../../utils/companyWorkingDays';
+import { formatDurationLabel } from '../../utils/planningRecognition';
 import { parseIsoDateOnly, toIsoDateOnly } from '../sales/planner/plannerUtils';
+
+export { formatDurationLabel };
+
+/** Priority sort: Urgent → High → Medium → Low. */
+export const DAILY_PLANNER_PRIORITY_ORDER: Record<DailyPlannerPriority | string, number> = {
+  Urgent: 0,
+  High: 1,
+  Medium: 2,
+  Low: 3,
+};
+
+export function sortDailyPlannerTasksByPriority(tasks: DailyPlannerTask[]): DailyPlannerTask[] {
+  return [...tasks].sort((a, b) => {
+    const pa = DAILY_PLANNER_PRIORITY_ORDER[a.currentPriority || a.priority] ?? 2;
+    const pb = DAILY_PLANNER_PRIORITY_ORDER[b.currentPriority || b.priority] ?? 2;
+    if (pa !== pb) return pa - pb;
+    return String(a.taskName || '').localeCompare(String(b.taskName || ''), undefined, {
+      sensitivity: 'base',
+    });
+  });
+}
 
 /** Solid event-card colours — same structure as Sales Planner PLANNER_STATUS_COLORS. */
 export const DAILY_TASK_COLORS = {
+  Urgent: { bg: '#B91C1C', text: '#FFFFFF', border: '#991B1B' },
   High: { bg: '#DC2626', text: '#FFFFFF', border: '#B91C1C' },
   Medium: { bg: '#F59E0B', text: '#FFFFFF', border: '#D97706' },
   Low: { bg: '#22C55E', text: '#FFFFFF', border: '#16A34A' },
@@ -31,6 +54,7 @@ export const DAILY_STATUS_DOT_COLORS: Record<string, string> = {
   'Needs Revision': DAILY_TASK_COLORS['Needs Revision'].bg,
   Rejected: DAILY_TASK_COLORS.Rejected.bg,
   'Sales Visit': DAILY_TASK_COLORS['Sales Visit'].bg,
+  Urgent: DAILY_TASK_COLORS.Urgent.bg,
   High: DAILY_TASK_COLORS.High.bg,
   Medium: DAILY_TASK_COLORS.Medium.bg,
   Low: DAILY_TASK_COLORS.Low.bg,
@@ -89,7 +113,7 @@ export function buildDailyMonthGrid(
       isCompanyHoliday: holidayInfo.isHoliday,
       holidayName:
         holidayInfo.holidayType === 'declared' ? holidayInfo.holidayName : null,
-      tasks: byDate.get(iso) ?? [],
+      tasks: sortDailyPlannerTasksByPriority(byDate.get(iso) ?? []),
     });
   }
   return cells;
@@ -127,6 +151,36 @@ export function isPermanentlyClosedTask(task: DailyPlannerTask): boolean {
 /** Original task after Incomplete → Reschedule — not eligible for complete/incomplete actions. */
 export function isRescheduledTask(task: DailyPlannerTask): boolean {
   return task.status === 'Rescheduled';
+}
+
+/**
+ * Tasks that count toward a day's planned-hours total.
+ * Matches backend `isTaskCountedTowardDailyMinimum`:
+ * original rows with status "Rescheduled" are excluded; the new task on the
+ * rescheduled date (status Pending/Approved/…, source RESCHEDULED) is included.
+ */
+export function isTaskCountedTowardDailyMinimum(task: DailyPlannerTask): boolean {
+  if (String(task.status || '').trim() === 'Rescheduled') return false;
+  // Handled Needs Revision parents are replaced by a child — do not double-count.
+  if (String(task.revisionOutcome || '').trim()) return false;
+  return true;
+}
+
+export function getEffectiveHoursRequired(task: DailyPlannerTask): number {
+  const n = Number(task.hoursRequired);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+/** Sum planned hours for tasks whose effective `date` is dateKey (calendar source of truth). */
+export function sumPlannedHoursForDate(tasks: DailyPlannerTask[], dateKey: string): number {
+  const target = String(dateKey || '').trim().slice(0, 10);
+  const total = (tasks || []).reduce((sum, task) => {
+    if (String(task.date || '').trim().slice(0, 10) !== target) return sum;
+    if (!isTaskCountedTowardDailyMinimum(task)) return sum;
+    return sum + getEffectiveHoursRequired(task);
+  }, 0);
+  return Math.round(total * 100) / 100;
 }
 
 /** Original Needs Revision task after Accept Suggestion or Create Own Revised Task. */
@@ -182,8 +236,8 @@ export function tomorrowIso(): string {
   return toIsoDateOnly(d);
 }
 
-export function todayIso(): string {
-  return toIsoDateOnly(new Date());
+export function todayIso(now = new Date()): string {
+  return toIsoDateOnly(now);
 }
 
 export function isTodayCell(iso: string, now = new Date()): boolean {

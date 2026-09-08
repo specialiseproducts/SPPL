@@ -35,6 +35,7 @@ router.post('/tasks/day/submit-completion', DailyPlannerController.submitDayComp
 router.post('/tasks/day/submit-completion-review', DailyPlannerController.submitDayCompletionReview);
 router.post('/tasks', DailyPlannerController.createTask);
 router.put('/tasks/:id', DailyPlannerController.updateTask);
+router.put('/tasks/:id/for-employee', DailyPlannerController.updateTaskForEmployee);
 router.post('/tasks/:id/complete', DailyPlannerController.completeTask);
 router.post('/tasks/:id/not-completed', DailyPlannerController.notCompletedTask);
 router.delete('/tasks/:id', DailyPlannerController.deleteTask);

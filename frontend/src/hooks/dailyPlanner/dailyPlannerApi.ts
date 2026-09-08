@@ -14,15 +14,20 @@ import {
 import type { PlanningConfig } from '../../utils/planningRecognition';
 import {
   assertCanCreateRegularTask,
-  assertCanCreateUrgentTask,
   assertCanUpdateTasksOnDate,
-  isUrgentTask,
   PLANNING_CATEGORY_REGULAR,
+  PLANNING_CATEGORY_URGENT,
 } from '../../utils/planningRecognition';
+
+function normalizePriority(raw: unknown): DailyPlannerTask['priority'] {
+  const p = String(raw || 'Medium').trim();
+  if (p === 'Urgent' || p === 'High' || p === 'Medium' || p === 'Low') return p;
+  return 'Medium';
+}
 
 function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPlannerTask {
   const r = raw as Record<string, unknown>;
-  const priority = String(r.currentPriority || r.priority || 'Medium').trim() as DailyPlannerTask['priority'];
+  const priority = normalizePriority(r.currentPriority || r.priority);
   const replacementRaw =
     r.replacementTask && typeof r.replacementTask === 'object'
       ? (r.replacementTask as Record<string, unknown>)
@@ -36,7 +41,7 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     taskName: String(r.taskName ?? '').trim(),
     description: String(r.description ?? '').trim(),
     priority,
-    originalPriority: String(r.originalPriority || priority).trim() as DailyPlannerTask['priority'],
+    originalPriority: normalizePriority(r.originalPriority || priority),
     currentPriority: priority,
     priorityEdited: Boolean(r.priorityEdited),
     priorityEditedBy: String(r.priorityEditedBy ?? '').trim(),
@@ -101,7 +106,7 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
       ? {
           taskName: String(replacementRaw.taskName ?? '').trim(),
           description: String(replacementRaw.description ?? '').trim(),
-          priority: String(replacementRaw.priority || 'Medium').trim() as DailyPlannerTask['priority'],
+          priority: normalizePriority(replacementRaw.priority || 'Medium'),
           hoursRequired:
             replacementRaw.hoursRequired === undefined ||
             replacementRaw.hoursRequired === null ||
@@ -132,6 +137,14 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     planningScore: Number(r.planningScore) || 0,
     completionScore: Number(r.completionScore) || 0,
     finalScore: Number(r.finalScore) || 0,
+    completionStartTime: r.completionStartTime ? String(r.completionStartTime).trim() : null,
+    completionEndTime: r.completionEndTime ? String(r.completionEndTime).trim() : null,
+    completionDurationHours:
+      r.completionDurationHours === undefined ||
+      r.completionDurationHours === null ||
+      String(r.completionDurationHours).trim() === ''
+        ? null
+        : Number(r.completionDurationHours),
     createdAt: r.createdAt ? String(r.createdAt) : undefined,
     updatedAt: r.updatedAt ? String(r.updatedAt) : undefined,
   };
@@ -161,20 +174,17 @@ export async function createDailyPlannerTask(
   planningConfig?: PlanningConfig,
   options?: { elevated?: boolean; nextWorkingDayIst?: string },
 ): Promise<DailyPlannerTask> {
-  const category = draft.planningCategory || PLANNING_CATEGORY_REGULAR;
+  const priority = String(draft.priority || 'Medium').trim();
+  const category =
+    draft.planningCategory ||
+    (priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR);
   const elevated = Boolean(options?.elevated);
   if (planningConfig) {
-    if (isUrgentTask(category)) {
-      assertCanCreateUrgentTask(draft.date, planningConfig, { elevated });
-      if (!String(draft.urgentReason || '').trim()) {
-        throw new Error('Urgent Task Reason is required.');
-      }
-    } else {
-      assertCanCreateRegularTask(draft.date, planningConfig, {
-        elevated,
-        nextWorkingDayIst: options?.nextWorkingDayIst,
-      });
-    }
+    // Priority Urgent maps to planningCategory for scoring; creation uses the planning window.
+    assertCanCreateRegularTask(draft.date, planningConfig, {
+      elevated,
+      nextWorkingDayIst: options?.nextWorkingDayIst,
+    });
   } else {
     assertCanPlanTasks(draft.date);
   }
@@ -184,6 +194,7 @@ export async function createDailyPlannerTask(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...draft,
+      priority,
       planningCategory: category,
       urgentReason: draft.urgentReason || '',
     }),
@@ -192,7 +203,7 @@ export async function createDailyPlannerTask(
   return normalizeTask(res.data.task);
 }
 
-/** Save multiple tasks in one user operation (batch for exact-7 employee plans). */
+/** Save multiple tasks in one user operation (batch for exact-min employee plans). */
 export async function createDailyPlannerTasks(
   drafts: DailyPlannerTaskDraft[],
   planningConfig?: PlanningConfig,
@@ -205,15 +216,10 @@ export async function createDailyPlannerTasks(
   const elevated = Boolean(options?.elevated);
   if (planningConfig) {
     for (const draft of drafts) {
-      const category = draft.planningCategory || PLANNING_CATEGORY_REGULAR;
-      if (isUrgentTask(category)) {
-        assertCanCreateUrgentTask(draft.date, planningConfig, { elevated });
-      } else {
-        assertCanCreateRegularTask(draft.date, planningConfig, {
-          elevated,
-          nextWorkingDayIst: options?.nextWorkingDayIst,
-        });
-      }
+      assertCanCreateRegularTask(draft.date, planningConfig, {
+        elevated,
+        nextWorkingDayIst: options?.nextWorkingDayIst,
+      });
     }
   } else {
     assertCanPlanTasks(sharedDate);
@@ -228,11 +234,17 @@ export async function createDailyPlannerTasks(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tasks: drafts.map((draft) => ({
-          ...draft,
-          planningCategory: draft.planningCategory || PLANNING_CATEGORY_REGULAR,
-          urgentReason: draft.urgentReason || '',
-        })),
+        tasks: drafts.map((draft) => {
+          const priority = String(draft.priority || 'Medium').trim();
+          return {
+            ...draft,
+            priority,
+            planningCategory:
+              draft.planningCategory ||
+              (priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR),
+            urgentReason: draft.urgentReason || '',
+          };
+        }),
       }),
     })) as { data?: { tasks?: DailyPlannerTask[] } };
     if (!res?.data?.tasks?.length) throw new Error('Create failed');
@@ -250,16 +262,21 @@ export async function createDailyPlannerTasks(
 }
 
 export async function createDailyPlannerTaskForEmployee(
-  draft: DailyPlannerTaskDraft & { employeeCode: string },
+  draft: DailyPlannerTaskDraft & { employeeCode: string; skipRevisedEmail?: boolean },
 ): Promise<DailyPlannerTask> {
+  const priority = String(draft.priority || 'Medium').trim();
   const res = (await apiFetch('/api/daily-planner/tasks/for-employee', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...draft,
-      planningCategory: draft.planningCategory || PLANNING_CATEGORY_REGULAR,
+      priority,
+      planningCategory:
+        draft.planningCategory ||
+        (priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR),
       urgentReason: draft.urgentReason || '',
       autoApprove: true,
+      skipRevisedEmail: draft.skipRevisedEmail === true,
     }),
   })) as { data?: { task?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Create failed');
@@ -283,11 +300,16 @@ export async function fetchDailyPlannerProjects(): Promise<
 export async function finalizeEmployeeDailyPlan(
   employeeCode: string,
   date: string,
+  options?: { refinalize?: boolean },
 ): Promise<{ tasks: DailyPlannerTask[]; emailSent: boolean }> {
   const res = (await apiFetch('/api/daily-planner/plans/finalize', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ employeeCode, date }),
+    body: JSON.stringify({
+      employeeCode,
+      date,
+      refinalize: options?.refinalize === true,
+    }),
   })) as {
     data?: { tasks?: DailyPlannerTask[]; emailSent?: boolean };
   };
@@ -366,7 +388,13 @@ export async function completeDailyPlannerTask(
   workDone: string,
   taskDate: string,
   planningConfig?: PlanningConfig,
-): Promise<{ task: DailyPlannerTask; cancelledRescheduledTaskIds: string[] }> {
+  options?: { startTime?: string; endTime?: string },
+): Promise<{
+  task: DailyPlannerTask;
+  cancelledRescheduledTaskIds: string[];
+  completionDurationHours?: number | null;
+  dayCompletedHours?: number | null;
+}> {
   assertCanCompleteTasks(taskDate);
   if (planningConfig) {
     assertCanUpdateTasksOnDate(taskDate, planningConfig);
@@ -374,21 +402,74 @@ export async function completeDailyPlannerTask(
   const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/complete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workDone }),
+    body: JSON.stringify({
+      workDone,
+      startTime: options?.startTime || undefined,
+      endTime: options?.endTime || undefined,
+    }),
   })) as {
     data?: {
       task?: DailyPlannerTask;
       cancelledRescheduledTasks?: Array<{ plannerTaskId?: string } | DailyPlannerTask>;
+      completionDurationHours?: number;
+      dayCompletedHours?: number;
     };
   };
   if (!res?.data?.task) throw new Error('Update failed');
   const cancelledRescheduledTaskIds = (res.data.cancelledRescheduledTasks || [])
     .map((t) => String(t?.plannerTaskId || '').trim())
     .filter(Boolean);
+  const task = normalizeTask(res.data.task);
   return {
-    task: normalizeTask(res.data.task),
+    task,
     cancelledRescheduledTaskIds,
+    completionDurationHours:
+      res.data.completionDurationHours != null
+        ? Number(res.data.completionDurationHours)
+        : task.completionDurationHours ?? null,
+    dayCompletedHours:
+      res.data.dayCompletedHours != null ? Number(res.data.dayCompletedHours) : null,
   };
+}
+
+export async function updateDailyPlannerTaskForEmployee(
+  taskId: string,
+  patch: {
+    taskName?: string;
+    description?: string;
+    priority?: string;
+    hoursRequired?: number;
+    managerInstructions?: string;
+    managerComments?: string;
+    allowFinalizedEdit?: boolean;
+    skipRevisedEmail?: boolean;
+  },
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/for-employee`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Update failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function updateDailyPlannerTask(
+  taskId: string,
+  patch: {
+    taskName?: string;
+    description?: string;
+    priority?: string;
+    hoursRequired?: number;
+  },
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Update failed');
+  return normalizeTask(res.data.task);
 }
 
 export interface DailyPlannerNotCompletedPayload {

@@ -22,6 +22,8 @@ import {
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import { getDailyTaskStatusLabel } from './dailyPlannerUtils';
 import BulletPointList from './BulletPointList';
+import HoursMinutesFields from './HoursMinutesFields';
+import { formatDurationLabel } from '../../utils/planningRecognition';
 
 function displayCell(value: string | number | undefined | null): string {
   if (value === undefined || value === null) return '—';
@@ -108,14 +110,14 @@ export default function TeamTaskDetailsModal({
   const [editingPriority, setEditingPriority] = useState(false);
   const [stagedPriority, setStagedPriority] = useState<DailyPlannerPriority>('Medium');
   const [editingHours, setEditingHours] = useState(false);
-  const [stagedHours, setStagedHours] = useState('');
+  const [stagedHours, setStagedHours] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
   const [replacementName, setReplacementName] = useState('');
   const [replacementDescription, setReplacementDescription] = useState('');
   const [replacementPriority, setReplacementPriority] = useState<DailyPlannerPriority>('Medium');
-  const [replacementHours, setReplacementHours] = useState('');
+  const [replacementHours, setReplacementHours] = useState<number | null>(null);
   const [replacementOutcome, setReplacementOutcome] = useState('');
   const [auditOpen, setAuditOpen] = useState(false);
 
@@ -126,15 +128,15 @@ export default function TeamTaskDetailsModal({
     setEditingHours(false);
     setStagedHours(
       task.hoursRequired != null && Number.isFinite(Number(task.hoursRequired))
-        ? String(task.hoursRequired)
-        : '',
+        ? Number(task.hoursRequired)
+        : null,
     );
     setRevisionOpen(false);
     setRevisionReason('');
     setReplacementName('');
     setReplacementDescription('');
     setReplacementPriority('Medium');
-    setReplacementHours('');
+    setReplacementHours(null);
     setReplacementOutcome('');
   }, [task?.plannerTaskId, open]);
 
@@ -173,8 +175,8 @@ export default function TeamTaskDetailsModal({
   const handleApprove = async () => {
     if (editingHours) {
       const hoursValue = Number(stagedHours);
-      if (!String(stagedHours).trim() || !Number.isFinite(hoursValue) || hoursValue <= 0) {
-        toast.error('Hours Required to Complete must be a number greater than 0');
+      if (stagedHours == null || !Number.isFinite(hoursValue) || hoursValue <= 0) {
+        toast.error('Hours Required to Complete must be greater than 0');
         return;
       }
     }
@@ -228,8 +230,8 @@ export default function TeamTaskDetailsModal({
       return;
     }
     const hoursValue = Number(replacementHours);
-    if (!String(replacementHours).trim() || !Number.isFinite(hoursValue) || hoursValue <= 0) {
-      toast.error('Hours Required to Complete must be a number greater than 0');
+    if (replacementHours == null || !Number.isFinite(hoursValue) || hoursValue <= 0) {
+      toast.error('Hours Required to Complete must be greater than 0');
       return;
     }
     setBusy(true);
@@ -300,6 +302,7 @@ export default function TeamTaskDetailsModal({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="Urgent">Urgent</SelectItem>
                           <SelectItem value="High">High</SelectItem>
                           <SelectItem value="Medium">Medium</SelectItem>
                           <SelectItem value="Low">Low</SelectItem>
@@ -334,17 +337,15 @@ export default function TeamTaskDetailsModal({
                   </p>
                   <div className="flex items-center gap-2">
                     {editingHours ? (
-                      <Input
-                        type="number"
-                        inputMode="decimal"
-                        min={0.25}
-                        step={0.25}
-                        className="w-[160px]"
+                      <HoursMinutesFields
+                        idPrefix="team-staged-hours"
                         value={stagedHours}
-                        onChange={(e) => setStagedHours(e.target.value)}
+                        onChange={setStagedHours}
                       />
                     ) : (
-                      <div className="text-sm text-[#212529]">{displayCell(currentHours)}</div>
+                      <div className="text-sm text-[#212529]">
+                        {currentHours != null ? formatDurationLabel(currentHours) : '—'}
+                      </div>
                     )}
                     <Button
                       type="button"
@@ -354,7 +355,7 @@ export default function TeamTaskDetailsModal({
                       className="h-8 w-8"
                       onClick={() => {
                         setEditingHours((v) => !v);
-                        setStagedHours(currentHours != null ? String(currentHours) : '');
+                        setStagedHours(currentHours != null ? currentHours : null);
                       }}
                     >
                       <Pencil className="h-3.5 w-3.5" />
@@ -563,6 +564,7 @@ export default function TeamTaskDetailsModal({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="Urgent">Urgent</SelectItem>
                   <SelectItem value="High">High</SelectItem>
                   <SelectItem value="Medium">Medium</SelectItem>
                   <SelectItem value="Low">Low</SelectItem>
@@ -570,16 +572,11 @@ export default function TeamTaskDetailsModal({
               </Select>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="replacement-hours">Hours Required To Complete *</Label>
-              <Input
-                id="replacement-hours"
-                type="number"
-                inputMode="decimal"
-                min={0.25}
-                step={0.25}
-                placeholder="e.g. 1.5"
+              <Label>Hours Required To Complete *</Label>
+              <HoursMinutesFields
+                idPrefix="replacement-hours"
                 value={replacementHours}
-                onChange={(e) => setReplacementHours(e.target.value)}
+                onChange={setReplacementHours}
               />
             </div>
             <div className="space-y-1">

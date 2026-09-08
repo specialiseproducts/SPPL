@@ -1,4 +1,4 @@
-export type DailyPlannerPriority = 'High' | 'Medium' | 'Low';
+export type DailyPlannerPriority = 'Urgent' | 'High' | 'Medium' | 'Low';
 export type DailyPlannerStatus =
   | 'Pending'
   | 'Approved'
@@ -102,6 +102,12 @@ export interface DailyPlannerTask {
   completionScore?: number;
   /** planningScore + completionScore. */
   finalScore?: number;
+  /** HH:mm start time recorded when marking complete. */
+  completionStartTime?: string | null;
+  /** HH:mm end time recorded when marking complete. */
+  completionEndTime?: string | null;
+  /** Decimal hours computed from start/end on complete. */
+  completionDurationHours?: number | null;
   createdAt?: string;
   updatedAt?: string;
 }

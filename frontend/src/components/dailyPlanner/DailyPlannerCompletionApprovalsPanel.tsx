@@ -10,14 +10,27 @@ import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
 
 type Props = {
-  onTasksUpdated?: (updatedTasks?: DailyPlannerTask[]) => void;
+  onTasksUpdated?: (
+    updatedTasks?: DailyPlannerTask[],
+    options?: { replaceEmployeeDate?: boolean },
+  ) => void;
 };
 
 export default function DailyPlannerCompletionApprovalsPanel({ onTasksUpdated }: Props) {
   const queryClient = useQueryClient();
   const pendingQuery = usePendingCompletionApprovalsQuery(true);
   const employeesQuery = useEmployeesListQuery();
-  const rows = pendingQuery.data || [];
+  const rows = useMemo(() => {
+    // Defensive: only render real approval rows (never injected task objects).
+    return (pendingQuery.data || []).filter(
+      (r) =>
+        r &&
+        typeof r === 'object' &&
+        String((r as PendingCompletionApproval).employeeCode || '').trim() &&
+        String((r as PendingCompletionApproval).date || '').trim() &&
+        Array.isArray((r as PendingCompletionApproval).tasks),
+    );
+  }, [pendingQuery.data]);
   const count = rows.length;
 
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -56,15 +69,21 @@ export default function DailyPlannerCompletionApprovalsPanel({ onTasksUpdated }:
 
   const handleTasksUpdated = async (updatedTasks?: DailyPlannerTask[]) => {
     if (updatedTasks?.length && activeRow) {
-      setActiveRow((prev) =>
-        prev
-          ? {
-              ...prev,
-              tasks: updatedTasks,
-              taskCount: updatedTasks.length,
-            }
-          : prev,
-      );
+      // Merge verified/reviewed tasks into the existing day list (do not replace with a single task).
+      setActiveRow((prev) => {
+        if (!prev) return prev;
+        const byId = new Map(prev.tasks.map((t) => [t.plannerTaskId, t]));
+        for (const task of updatedTasks) {
+          if (!task?.plannerTaskId) continue;
+          byId.set(task.plannerTaskId, task);
+        }
+        const tasks = Array.from(byId.values());
+        return {
+          ...prev,
+          tasks,
+          taskCount: tasks.length,
+        };
+      });
     }
     await onTasksUpdated?.(updatedTasks);
     refreshPending();
