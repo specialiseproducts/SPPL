@@ -162,6 +162,7 @@ export default function App() {
       purchases: 'purchases',
       crm: 'crm',
       'user-management': 'userManagement',
+      'daily-planner': 'dailyPlanner',
       'order-processing': 'orderProcessing',
     } as Record<string, keyof typeof moduleAccess>)[selectedModule] || 'salesForecasting'
   ]
