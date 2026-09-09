@@ -440,6 +440,7 @@ export default function DailyPlannerDayTasksModal({
                     !isRescheduledTask(task) &&
                     task.taskType === 'Manual' &&
                     task.source !== 'SALES_FORECASTING' &&
+                    task.status !== 'Approved' &&
                     task.status !== 'Awaiting Verification' &&
                     task.status !== 'Completed' &&
                     task.status !== 'Verified Complete';

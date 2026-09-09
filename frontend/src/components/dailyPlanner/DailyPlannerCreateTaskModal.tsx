@@ -34,6 +34,7 @@ import HoursMinutesFields from './HoursMinutesFields';
 type TaskSectionState = {
   id: string;
   taskName: string;
+  description: string;
   priority: DailyPlannerPriority;
   hoursRequired: number | null;
   isProjectBased: 'Yes' | 'No';
@@ -54,6 +55,7 @@ function createEmptySection(): TaskSectionState {
   return {
     id: crypto.randomUUID(),
     taskName: '',
+    description: '',
     priority: 'Medium',
     hoursRequired: null,
     isProjectBased: 'No',
@@ -132,6 +134,7 @@ function TaskSectionRow({
         ref={onDescriptionRef}
         id={`task-description-${section.id}`}
         label="Task Description"
+        defaultValue={section.description}
       />
 
       <div className="space-y-2">
@@ -262,6 +265,8 @@ export default function DailyPlannerCreateTaskModal({
   const [hoursAlert, setHoursAlert] = useState<string | null>(null);
   const [summaryDrafts, setSummaryDrafts] = useState<DailyPlannerTaskDraft[] | null>(null);
   const descriptionRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
+  const submitLockRef = useRef(false);
+  const clientBatchIdRef = useRef('');
 
   const requireMinHours = !elevated && !forEmployeeCode;
   const minPlannedHours = getMinPlannedHours(planningConfig);
@@ -282,6 +287,8 @@ export default function DailyPlannerCreateTaskModal({
 
   useEffect(() => {
     if (open) {
+      submitLockRef.current = false;
+      clientBatchIdRef.current = '';
       setSections([createEmptySection()]);
       setErrors({});
       setManualOutsideWindowMode(false);
@@ -405,15 +412,32 @@ export default function DailyPlannerCreateTaskModal({
   };
 
   const persistDrafts = async (drafts: DailyPlannerTaskDraft[]) => {
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
     setSaving(true);
     try {
       await onSave(drafts);
+      setSummaryDrafts(null);
       handleClose();
     } catch (err) {
+      submitLockRef.current = false;
       toast.error(err instanceof Error ? err.message : 'Save failed');
     } finally {
       setSaving(false);
     }
+  };
+
+  const snapshotSectionDescriptions = (drafts: DailyPlannerTaskDraft[]) => {
+    setSections((prev) =>
+      prev.map((section, index) => ({
+        ...section,
+        description: drafts[index]?.description ?? section.description,
+        taskName: drafts[index]?.taskName ?? section.taskName,
+        priority: (drafts[index]?.priority as DailyPlannerPriority) || section.priority,
+        hoursRequired: drafts[index]?.hoursRequired ?? section.hoursRequired,
+        managerInstructions: drafts[index]?.managerInstructions ?? section.managerInstructions,
+      })),
+    );
   };
 
   const saveTasks = async () => {
@@ -464,9 +488,20 @@ export default function DailyPlannerCreateTaskModal({
 
     setErrors({});
     setHoursAlert(null);
+    snapshotSectionDescriptions(drafts);
 
-    if (requireMinHours) {
-      setSummaryDrafts(drafts);
+    if (!clientBatchIdRef.current) {
+      clientBatchIdRef.current =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    // My Daily Planner review is not a database save. Team for-employee create still saves immediately.
+    if (!forEmployeeCode) {
+      setSummaryDrafts(
+        drafts.map((draft) => ({ ...draft, clientBatchId: clientBatchIdRef.current })),
+      );
       return;
     }
 
@@ -497,7 +532,7 @@ export default function DailyPlannerCreateTaskModal({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
+      <Dialog open={open && !summaryDrafts} onOpenChange={(v) => !v && !summaryDrafts && handleClose()}>
         <DialogContent
           className="!flex !h-[90vh] !max-h-[90vh] !w-[min(92vw,32rem)] !max-w-lg !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-lg"
           style={{ height: '90vh', maxHeight: '90vh' }}
@@ -600,9 +635,12 @@ export default function DailyPlannerCreateTaskModal({
         title="Review Your Plan Before Submission"
         confirmLabel="Submit Plan"
         busy={saving}
-        onClose={() => setSummaryDrafts(null)}
+        onClose={() => {
+          if (saving || submitLockRef.current) return;
+          setSummaryDrafts(null);
+        }}
         onConfirm={() => {
-          if (!summaryDrafts) return;
+          if (!summaryDrafts || saving || submitLockRef.current) return;
           void persistDrafts(summaryDrafts);
         }}
       />

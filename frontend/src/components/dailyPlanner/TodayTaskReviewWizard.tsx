@@ -74,6 +74,33 @@ const STATUS_BADGE_STYLES: Record<string, { bg: string; text: string; border: st
   Terminated: { bg: '#FEF3F2', text: '#B42318', border: '#FECDCA' },
 };
 
+function formatClockDisplay(value?: string | null): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '—';
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return raw;
+  let hours = Number(match[1]);
+  const minutes = match[2];
+  if (!Number.isFinite(hours)) return raw;
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${String(hours).padStart(2, '0')}:${minutes} ${suffix}`;
+}
+
+function isEmployeeCompletedReport(status?: string | null): boolean {
+  const value = String(status || '').trim();
+  return (
+    value === 'Awaiting Verification' ||
+    value === 'Completed' ||
+    value === 'Verified Complete'
+  );
+}
+
+function isEmployeeNotCompletedReport(status?: string | null): boolean {
+  const value = String(status || '').trim();
+  return value === 'Terminated' || value === 'Rescheduled' || value === 'Not Completed';
+}
+
 function statusBadge(status: string) {
   const colors = STATUS_BADGE_STYLES[status] || STATUS_BADGE_STYLES.Pending;
   return (
@@ -511,7 +538,7 @@ export default function TodayTaskReviewWizard({
       return;
     }
     void runSaveFlow(async () => {
-      const updated = await requestNeedsRevisionDailyPlannerTask(task.plannerTaskId, {
+      const result = await requestNeedsRevisionDailyPlannerTask(task.plannerTaskId, {
         reason: revisionReason.trim(),
         replacementTask: {
           taskName: replacementName.trim(),
@@ -522,7 +549,9 @@ export default function TodayTaskReviewWizard({
         },
       });
       setRevisionOpen(false);
-      return updated;
+      const updates = [result.task, result.revisedTask].filter(Boolean) as DailyPlannerTask[];
+      if (updates.length) await onTasksUpdated(updates);
+      return result.revisedTask || result.task;
     });
   };
 
@@ -669,7 +698,9 @@ export default function TodayTaskReviewWizard({
                     Priority
                   </p>
                   <div className="flex items-center gap-2">
-                    {editMode || editingPriority ? (
+                    {completionReviewMode ? (
+                      <div className="text-sm text-[#212529]">{displayPriority}</div>
+                    ) : editMode || editingPriority ? (
                       <Select
                         value={editMode ? stagedPriority : stagedPriority}
                         onValueChange={(v) => setStagedPriority(v as DailyPlannerPriority)}
@@ -688,7 +719,7 @@ export default function TodayTaskReviewWizard({
                     ) : (
                       <div className="text-sm text-[#212529]">{displayPriority}</div>
                     )}
-                    {!editMode ? (
+                    {!editMode && !completionReviewMode ? (
                       <Button
                         type="button"
                         size="icon"
@@ -706,7 +737,7 @@ export default function TodayTaskReviewWizard({
                       </Button>
                     ) : null}
                   </div>
-                  {priorityChanged && !editMode ? (
+                  {priorityChanged && !editMode && !completionReviewMode ? (
                     <p className="text-xs text-amber-700">
                       Priority change will be saved when you click Approve Task.
                     </p>
@@ -717,7 +748,11 @@ export default function TodayTaskReviewWizard({
                     Hours Required to Complete
                   </p>
                   <div className="flex items-center gap-2">
-                    {editMode || editingHours ? (
+                    {completionReviewMode ? (
+                      <div className="text-sm text-[#212529]">
+                        {currentHours != null ? formatDurationLabel(currentHours) : '—'}
+                      </div>
+                    ) : editMode || editingHours ? (
                       <div className="w-[220px]">
                         <HoursMinutesFields
                           idPrefix="review-hours"
@@ -731,7 +766,7 @@ export default function TodayTaskReviewWizard({
                         {currentHours != null ? formatDurationLabel(currentHours) : '—'}
                       </div>
                     )}
-                    {!editMode ? (
+                    {!editMode && !completionReviewMode ? (
                       <Button
                         type="button"
                         size="icon"
@@ -749,7 +784,7 @@ export default function TodayTaskReviewWizard({
                       </Button>
                     ) : null}
                   </div>
-                  {hoursChanged && !editMode ? (
+                  {hoursChanged && !editMode && !completionReviewMode ? (
                     <p className="text-xs text-amber-700">
                       Hours change will be saved when you click Approve Task.
                     </p>
@@ -802,32 +837,96 @@ export default function TodayTaskReviewWizard({
             </ViewSection>
 
             <ViewSection title="Completion Information">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <ViewField label="Employee Status" value={statusBadge(task.status)} />
-                <ViewField
-                  label="Completion Time"
-                  value={formatDateCell(getCompletionTime(task))}
-                />
-              </div>
-              {awaitingVerification ? (
-                <div className="mt-4 space-y-3">
-                  <p className="text-sm text-[#212529]">
-                    Employee marked this task as completed. Manager must verify.
-                  </p>
-                  <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
-                </div>
-              ) : null}
-              {task.status === 'Verified Complete' ? (
-                <div className="mt-4 space-y-3">
-                  <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
-                  {task.managerComments ? (
-                    <ViewBulletField
-                      label="Manager Comments"
-                      value={displayCell(task.managerComments)}
+              {completionReviewMode ? (
+                isEmployeeCompletedReport(task.status) ? (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <ViewField label="Employee Status" value="Completed" />
+                    <ViewField
+                      label="Start Time"
+                      value={formatClockDisplay(task.completionStartTime)}
                     />
+                    <ViewField
+                      label="End Time"
+                      value={formatClockDisplay(task.completionEndTime)}
+                    />
+                    <ViewField
+                      label="Total Time"
+                      value={
+                        task.completionDurationHours != null &&
+                        Number.isFinite(Number(task.completionDurationHours))
+                          ? formatDurationLabel(task.completionDurationHours)
+                          : '—'
+                      }
+                    />
+                    <div className="sm:col-span-2">
+                      <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
+                    </div>
+                  </div>
+                ) : isEmployeeNotCompletedReport(task.status) ? (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <ViewField label="Employee Status" value="Not Completed" />
+                    <ViewField
+                      label="Task Action"
+                      value={
+                        task.status === 'Rescheduled'
+                          ? 'Rescheduled'
+                          : task.status === 'Terminated'
+                            ? 'Terminated'
+                            : '—'
+                      }
+                    />
+                    <div className="sm:col-span-2">
+                      <ViewBulletField
+                        label="Reason for Not Completing"
+                        value={displayCell(task.reason)}
+                      />
+                    </div>
+                    {task.status === 'Rescheduled' ? (
+                      <ViewField
+                        label="Rescheduled Date"
+                        value={
+                          task.rescheduledToDate
+                            ? formatReviewDate(task.rescheduledToDate)
+                            : '—'
+                        }
+                      />
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <ViewField label="Employee Status" value={statusBadge(task.status)} />
+                  </div>
+                )
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <ViewField label="Employee Status" value={statusBadge(task.status)} />
+                    <ViewField
+                      label="Completion Time"
+                      value={formatDateCell(getCompletionTime(task))}
+                    />
+                  </div>
+                  {awaitingVerification ? (
+                    <div className="mt-4 space-y-3">
+                      <p className="text-sm text-[#212529]">
+                        Employee marked this task as completed. Manager must verify.
+                      </p>
+                      <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
+                    </div>
                   ) : null}
-                </div>
-              ) : null}
+                  {task.status === 'Verified Complete' ? (
+                    <div className="mt-4 space-y-3">
+                      <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
+                      {task.managerComments ? (
+                        <ViewBulletField
+                          label="Manager Comments"
+                          value={displayCell(task.managerComments)}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              )}
             </ViewSection>
 
             <ViewSection title="Manager Review">

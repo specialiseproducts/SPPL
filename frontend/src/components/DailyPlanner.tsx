@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import MyDailyPlannerTab from './dailyPlanner/MyDailyPlannerTab';
 import TeamDailyPlannerTab from './dailyPlanner/TeamDailyPlannerTab';
 import TeamPerformanceTab from './dailyPlanner/TeamPerformanceTab';
@@ -11,6 +12,7 @@ import {
   getDefaultDailyPlannerTab,
   type DailyPlannerTabId,
 } from '../utils/accessControl';
+import { dailyPlannerQueryKeys } from '../hooks/dailyPlanner/dailyPlannerQueryKeys';
 
 interface DailyPlannerProps {
   user: User;
@@ -28,6 +30,7 @@ const TAB_LABELS: Record<DailyPlannerTabId, string> = {
 };
 
 export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
+  const queryClient = useQueryClient();
   const visibleTabs = useMemo(
     () => getDailyPlannerVisibleTabs(moduleRole),
     [moduleRole],
@@ -52,6 +55,33 @@ export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
       setTab(defaultTab);
     }
   }, [visibleTabs, tab, defaultTab]);
+
+  useEffect(() => {
+    if (tab === 'my-daily-planner') {
+      void queryClient.invalidateQueries({
+        queryKey: [...dailyPlannerQueryKeys.all, 'month'],
+        refetchType: 'active',
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [...dailyPlannerQueryKeys.all, 'day'],
+        refetchType: 'active',
+      });
+    }
+    if (tab === 'team-daily-planner') {
+      void queryClient.invalidateQueries({
+        queryKey: [...dailyPlannerQueryKeys.all, 'team'],
+        refetchType: 'active',
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [...dailyPlannerQueryKeys.all, 'teamMonth'],
+        refetchType: 'active',
+      });
+      void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.completionApprovalsPending(),
+        refetchType: 'active',
+      });
+    }
+  }, [tab, queryClient]);
 
   const columns = Math.max(visibleTabs.length, 1);
 

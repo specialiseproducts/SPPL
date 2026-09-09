@@ -634,6 +634,7 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     completionScore,
     finalScore,
     parentTaskId: revisesTaskId || null,
+    clientBatchId: String(body.clientBatchId || '').trim() || null,
     planFinalizedAt: autoApproved ? parentFinalizedAt : null,
     planFinalizedBy: autoApproved
       ? String(revisionParent?.planFinalizedBy || '').trim()
@@ -719,6 +720,16 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
     err.statusCode = 400;
     throw err;
   }
+  const clientBatchId = String(body?.clientBatchId || drafts[0]?.clientBatchId || '').trim();
+  if (clientBatchId) {
+    const already = (existing || []).filter(
+      (task) => String(task.clientBatchId || '').trim() === clientBatchId,
+    );
+    if (already.length > 0) {
+      return { tasks: already };
+    }
+  }
+
   // Batch create is the My Daily Planner plan submit path — enforce minimum hours for all roles.
   const location = await getEmployeeLocation(code);
   const existingHours = sumPlannedHoursForDate(existing, sharedDate);
@@ -1653,6 +1664,26 @@ export const updateTaskForEmployee = async (taskId, body, authUser, effectiveRol
     }
   }
 
+  const closedStatuses = new Set([
+    'Completed',
+    'Verified Complete',
+    'Awaiting Verification',
+    'Terminated',
+    'Rescheduled',
+    'Not Completed',
+  ]);
+  if (!closedStatuses.has(String(existing.status || '').trim()) && existing.status !== 'Approved') {
+    const reviewerCode = employeeCodeOf(authUser);
+    const nowIso = new Date().toISOString();
+    patch.status = 'Approved';
+    patch.approved = true;
+    patch.approvalStatus = 'APPROVED';
+    patch.approvedBy = reviewerCode;
+    patch.approvedByName = employeeNameOf(authUser);
+    patch.approvedAt = nowIso;
+    patch.approvedDate = nowIso;
+  }
+
   if (wasFinalized && changes.length > 0 && !readFinalizedSnapshot(existing)) {
     patch.lastFinalizedSnapshot = finalizedFieldSnapshot(existing);
   }
@@ -2170,6 +2201,10 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
     err.statusCode = 404;
     throw err;
   }
+  if (existing.revisedTaskId && String(existing.revisionOutcome || '').trim()) {
+    const revisedTask = await DailyPlannerTasksModel.getTaskById(existing.revisedTaskId);
+    return { task: existing, revisedTask: revisedTask || undefined };
+  }
 
   const reason = String(body.reason || body.comments || '').trim();
   if (!reason) {
@@ -2218,19 +2253,64 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
     verificationStatus: '',
   });
 
-  void PlannerNotificationEmitters.emitPlannerTaskRejected(
-    { ...existing, ...task },
-    reason,
-    reviewerCode,
+  const descriptionParts = [replacementTask.description];
+  if (replacementTask.expectedOutcome) {
+    descriptionParts.push(`Expected Outcome: ${replacementTask.expectedOutcome}`);
+  }
+  const revisedTask = await DailyPlannerTasksModel.createTask({
+    employeeCode: existing.employeeCode,
+    employeeName: existing.employeeName,
+    date: existing.date,
+    taskName: replacementTask.taskName,
+    description: descriptionParts.filter(Boolean).join('\n'),
+    priority: replacementTask.priority,
+    originalPriority: replacementTask.priority,
+    currentPriority: replacementTask.priority,
+    hoursRequired: replacementTask.hoursRequired,
+    originalHoursRequired: replacementTask.hoursRequired,
+    hoursRequiredEdited: false,
+    taskType: 'Manual',
+    source: 'MANUAL',
+    status: 'Approved',
+    approved: true,
+    approvalStatus: 'APPROVED',
+    approvedBy: reviewerCode,
+    approvedByName: reviewerName,
+    approvedDate: nowIso,
+    approvedAt: nowIso,
+    managerComments: reason,
+    planningCategory: planningCategoryFromPriority(replacementTask.priority),
+    urgentReason: existing.urgentReason || '',
+    parentTaskId: existing.plannerTaskId,
+    planningTimestamp: nowIso,
+    planningScore: 0,
+    completionScore: 0,
+    finalScore: 0,
+    planFinalizedAt: existing.planFinalizedAt || null,
+    planFinalizedBy: String(existing.planFinalizedBy || '').trim(),
+  });
+
+  const handled = await markRevisionHandled(
+    existing.plannerTaskId,
+    'accepted_suggestion',
+    revisedTask.plannerTaskId,
   );
 
-  auditPlannerTask(authUser, AUDIT_ACTIONS.REJECT, task, 'Task Rejected', {
+  void notifyUser(
+    existing.employeeCode,
+    'Daily Planner task revised',
+    `"${existing.taskName}" was revised and the replacement task is approved.`,
+    'INFO',
+    { plannerTaskId: revisedTask.plannerTaskId },
+  );
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.REJECT, handled, 'Task Revised And Approved', {
     oldValues: { status: existing.status },
-    newValues: { status: task.status, revisionReason: reason },
+    newValues: { status: 'Approved', revisedTaskId: revisedTask.plannerTaskId },
     metadata: { remark: reason },
   });
 
-  return { task };
+  return { task: handled, revisedTask };
 };
 
 export const verifyTaskCompletion = async (taskId, body, authUser, effectiveRole) => {

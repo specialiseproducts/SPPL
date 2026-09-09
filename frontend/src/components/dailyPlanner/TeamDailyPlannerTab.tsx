@@ -25,7 +25,7 @@ import {
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerCompletionApprovalsPanel from './DailyPlannerCompletionApprovalsPanel';
-import { isTaskManagerReviewed } from './todayTaskReviewWizardUtils';
+import { countReviewedTasks, isTaskManagerReviewed } from './todayTaskReviewWizardUtils';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { cn } from '../ui/utils';
@@ -326,6 +326,18 @@ export default function TeamDailyPlannerTab() {
           todayTasks.findIndex((task) => task.plannerTaskId === firstPendingTaskId),
         )
       : 0;
+
+    // Ignore placeholder rows from the previously selected employee.
+    const planTasks = todayTasks.filter(
+      (task) => String(task.employeeCode || '').trim() === selectedEmployeeCode,
+    );
+    if (planTasks.length !== todayTasks.length) return;
+
+    // Same progress as the review form: reviewed tasks / plan tasks.
+    // Employee selection must not auto-open a plan that is already 100%.
+    // Explicit task clicks still open via handleSelectTask.
+    const progressPct = Math.round((countReviewedTasks(planTasks) / planTasks.length) * 100);
+    if (progressPct === 100) return;
 
     setWizardOpen(true);
     setWizardTaskIndex(firstPendingIndex);

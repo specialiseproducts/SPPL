@@ -635,7 +635,7 @@ export async function requestNeedsRevisionDailyPlannerTask(
       expectedOutcome?: string;
     };
   },
-): Promise<DailyPlannerTask> {
+): Promise<{ task: DailyPlannerTask; revisedTask?: DailyPlannerTask }> {
   const res = (await apiFetch(
     `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/needs-revision`,
     {
@@ -643,9 +643,12 @@ export async function requestNeedsRevisionDailyPlannerTask(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     },
-  )) as { data?: { task?: DailyPlannerTask } };
+  )) as { data?: { task?: DailyPlannerTask; revisedTask?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Needs revision request failed');
-  return normalizeTask(res.data.task);
+  return {
+    task: normalizeTask(res.data.task),
+    revisedTask: res.data.revisedTask ? normalizeTask(res.data.revisedTask) : undefined,
+  };
 }
 
 export async function verifyDailyPlannerCompletion(

@@ -246,7 +246,7 @@ export default function TeamTaskDetailsModal({
           expectedOutcome: replacementOutcome.trim(),
         },
       });
-      toast.success('Needs revision sent to employee');
+      toast.success('Revision submitted and approved');
       setRevisionOpen(false);
       onUpdated();
       onClose();

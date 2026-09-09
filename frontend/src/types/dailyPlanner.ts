@@ -137,6 +137,7 @@ export interface DailyPlannerTaskDraft {
   projectName?: string;
   managerInstructions?: string;
   employeeCode?: string;
+  clientBatchId?: string;
 }
 
 /** Manager-facing pending day-completion submission (Team Daily Planner). */
