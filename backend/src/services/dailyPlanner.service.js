@@ -2532,19 +2532,23 @@ export const assignTeamMapping = async (body, authUser, effectiveRole) => {
     err.statusCode = 403;
     throw err;
   }
-  const managerCode = employeeCodeOf(authUser);
+  const actorCode = employeeCodeOf(authUser);
+  const managerCode = String(body.managerCode || '').trim() || actorCode;
   if (!managerCode) {
-    const err = new Error('Authenticated user employee code is required');
+    const err = new Error('Reporting manager is required');
     err.statusCode = 400;
     throw err;
   }
-  const managerName = employeeNameOf(authUser) || managerCode;
+  const managerName =
+    String(body.managerName || '').trim() ||
+    (managerCode === actorCode ? employeeNameOf(authUser) : '') ||
+    managerCode;
   const mapping = await DailyPlannerTeamMappingsModel.createMapping({
     managerCode,
     managerName,
     employeeCode: String(body.employeeCode || '').trim(),
     employeeName: String(body.employeeName || '').trim(),
-    createdBy: managerCode,
+    createdBy: actorCode,
   });
   return { mapping };
 };
