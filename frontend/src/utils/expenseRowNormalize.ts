@@ -63,6 +63,7 @@ export function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord
     updatedAt: String(raw.updatedAt ?? raw.updated_at ?? ''),
     fromLocation: raw.fromLocation != null ? String(raw.fromLocation) : undefined,
     toLocation: raw.toLocation != null ? String(raw.toLocation) : undefined,
+    pnrNo: raw.pnrNo != null ? String(raw.pnrNo) : undefined,
     returnType: raw.returnType != null ? String(raw.returnType) : undefined,
     kilometers,
     stayDateFrom: raw.stayDateFrom != null ? String(raw.stayDateFrom) : undefined,

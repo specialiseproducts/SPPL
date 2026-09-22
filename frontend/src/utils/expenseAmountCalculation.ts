@@ -10,6 +10,15 @@ export function isTravelCarOrBike(expenseHead: string, subCategory?: string): bo
   return expenseHead === 'Travel' && (sub === 'Car' || sub === 'Bike');
 }
 
+/** Travel ticket modes: Flight / Bus / Taxi / Train (shared PNR + From/To form). */
+export function isTravelTicketTransport(expenseHead: string, subCategory?: string): boolean {
+  const sub = String(subCategory ?? '').trim();
+  return (
+    expenseHead === 'Travel' &&
+    (sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train')
+  );
+}
+
 export function isHotelBookingSelf(expenseHead: string, subCategory?: string): boolean {
   const sub = String(subCategory ?? '').trim();
   return expenseHead === 'Hotel_Booking' && sub === 'Self';

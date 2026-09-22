@@ -6,7 +6,7 @@ import {
   useTeamDailyPlannerQuery,
   useTeamMappingsQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
-import { upsertPlannerTasksInCache, replacePlannerDayTasksInCache } from '../../hooks/dailyPlanner/dailyPlannerCache';
+import { upsertPlannerTasksInCache, replacePlannerDayTasksInCache, removePlannerTasksFromCache } from '../../hooks/dailyPlanner/dailyPlannerCache';
 import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQueryKeys';
 import { useAuth } from '../../context/AuthContext';
 import { isQueryColdLoading } from '../../utils/queryLoading';
@@ -35,6 +35,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { getNextWorkingDayDateKey, isCompanyWorkingDay } from '../../utils/companyWorkingDays';
 import { createDailyPlannerTaskForEmployee, finalizeEmployeeDailyPlan } from '../../hooks/dailyPlanner/dailyPlannerApi';
+import { isSuperAdmin } from '../../utils/accessControl';
 import { toast } from 'sonner';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -93,6 +94,7 @@ function TeamPlannerDayCell({
   expanded,
   onToggleExpand,
   onSelectTask,
+  onSelectDate,
   onCreateForDate,
   showEmployeeName,
 }: {
@@ -101,6 +103,7 @@ function TeamPlannerDayCell({
   expanded: boolean;
   onToggleExpand: () => void;
   onSelectTask: (task: DailyPlannerTask) => void;
+  onSelectDate?: (iso: string) => void;
   onCreateForDate: (iso: string) => void;
   showEmployeeName: boolean;
 }) {
@@ -119,6 +122,10 @@ function TeamPlannerDayCell({
         cell.inMonth && 'cursor-pointer hover:bg-gray-50/80',
       )}
       style={{ minHeight: '7.5rem' }}
+      onClick={() => {
+        if (!cell.inMonth || !onSelectDate) return;
+        onSelectDate(cell.iso);
+      }}
       onDoubleClick={() => {
         if (!cell.inMonth) return;
         onCreateForDate(cell.iso);
@@ -169,11 +176,12 @@ function TeamPlannerDayCell({
   );
 }
 
-export default function TeamDailyPlannerTab() {
+export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: string } = {}) {
   const { user } = useAuth();
   const invalidate = useInvalidateDailyPlannerQueries();
   const queryClient = useQueryClient();
   const managerCode = String(user?.employeeCode || user?.id || '').trim();
+  const canReviewAnyDate = isSuperAdmin(String(moduleRole || ''));
   const now = new Date();
   const [view, setView] = useState({ year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 });
   const { year, month } = view;
@@ -183,6 +191,11 @@ export default function TeamDailyPlannerTab() {
   const [wizardTaskIndex, setWizardTaskIndex] = useState(0);
   const [wizardDismissedForEmployee, setWizardDismissedForEmployee] = useState('');
   const [createDate, setCreateDate] = useState<string | null>(null);
+  /** Super Admin only: selected calendar date for Team review (past / today / future). */
+  const [reviewDateOverride, setReviewDateOverride] = useState<string | null>(null);
+  const [pendingOpen, setPendingOpen] = useState<{ date: string; taskId: string | null } | null>(
+    null,
+  );
   const hadPendingReviewsRef = useRef(false);
   const today = todayIso();
   const planningConfigQuery = usePlanningConfigQuery();
@@ -225,7 +238,7 @@ export default function TeamDailyPlannerTab() {
     return emp?.location || undefined;
   }, [selectedEmployeeCode, employeesQuery.data]);
 
-  const reviewDate = useMemo(
+  const defaultReviewDate = useMemo(
     () =>
       resolveTeamReviewDate(
         planningConfigQuery.data?.todayIst || today,
@@ -241,6 +254,9 @@ export default function TeamDailyPlannerTab() {
       today,
     ],
   );
+
+  const reviewDate =
+    canReviewAnyDate && reviewDateOverride ? reviewDateOverride : defaultReviewDate;
 
   const todayTasksQuery = useTeamDailyPlannerQuery(
     { employeeCode: selectedEmployeeCode, date: reviewDate },
@@ -282,6 +298,15 @@ export default function TeamDailyPlannerTab() {
     return sortDailyPlannerTasksByPriority(visible);
   }, [todayTasksQuery.data]);
 
+  // keepPreviousData can briefly show another date while the selected-day query is in flight.
+  const dayTasksMatchReviewDate = useMemo(
+    () =>
+      todayTasks.every((task) => String(task.date || '').trim().slice(0, 10) === reviewDate),
+    [todayTasks, reviewDate],
+  );
+  const dayTasksAlignedWithReviewDate =
+    !todayTasksQuery.isPlaceholderData && dayTasksMatchReviewDate;
+
   // Plan-review pending only (never reuse completion submission as plan-review state).
   const pendingReviewTasks = useMemo(
     () => todayTasks.filter((task) => !isTaskManagerReviewed(task)),
@@ -296,11 +321,41 @@ export default function TeamDailyPlannerTab() {
     setWizardDismissedForEmployee('');
     setWizardOpen(false);
     setWizardTaskIndex(0);
+    setReviewDateOverride(null);
+    setPendingOpen(null);
     hadPendingReviewsRef.current = false;
   }, [selectedEmployeeCode]);
 
   useEffect(() => {
+    if (!pendingOpen || todayTasksLoading) return;
+    if (reviewDate !== pendingOpen.date) return;
+    // Wait until the selected-date query has settled (avoid opening with keepPreviousData).
+    if (!dayTasksAlignedWithReviewDate || todayTasksQuery.isFetching) return;
+    if (todayTasks.length === 0) {
+      setPendingOpen(null);
+      return;
+    }
+    const index = pendingOpen.taskId
+      ? Math.max(
+          0,
+          todayTasks.findIndex((task) => task.plannerTaskId === pendingOpen.taskId),
+        )
+      : 0;
+    setWizardTaskIndex(index);
+    setWizardOpen(true);
+    setPendingOpen(null);
+  }, [
+    pendingOpen,
+    todayTasksLoading,
+    reviewDate,
+    todayTasks,
+    dayTasksAlignedWithReviewDate,
+    todayTasksQuery.isFetching,
+  ]);
+
+  useEffect(() => {
     if (!selectedEmployeeCode || todayTasksLoading) return;
+    if (!dayTasksAlignedWithReviewDate) return;
 
     // Auto-open when the employee has tasks for the review date (even if all already reviewed).
     if (todayTasks.length === 0) {
@@ -349,6 +404,7 @@ export default function TeamDailyPlannerTab() {
     todayTasks,
     wizardDismissedForEmployee,
     wizardOpen,
+    dayTasksAlignedWithReviewDate,
   ]);
 
   const tasks = monthQuery.data ?? [];
@@ -358,12 +414,51 @@ export default function TeamDailyPlannerTab() {
   );
   const isLoading = isQueryColdLoading(monthQuery);
 
+  const openReviewForDate = (dateKey: string, taskId: string | null) => {
+    const key = String(dateKey || '').trim().slice(0, 10);
+    if (!key) return;
+    setReviewDateOverride(key);
+    setWizardDismissedForEmployee('');
+    if (
+      key === reviewDate &&
+      dayTasksAlignedWithReviewDate &&
+      !todayTasksLoading &&
+      !todayTasksQuery.isFetching &&
+      todayTasks.length > 0
+    ) {
+      const index = taskId
+        ? Math.max(0, todayTasks.findIndex((task) => task.plannerTaskId === taskId))
+        : 0;
+      setWizardTaskIndex(index);
+      setWizardOpen(true);
+      setPendingOpen(null);
+      return;
+    }
+    setPendingOpen({ date: key, taskId });
+  };
+
   const handleSelectTask = (task: DailyPlannerTask) => {
-    if (task.date !== reviewDate || todayTasks.length === 0) return;
+    const taskDate = String(task.date || '').trim().slice(0, 10);
+    if (!taskDate) return;
+
+    // Super Admin: open existing Team review flow for any calendar date.
+    if (canReviewAnyDate) {
+      openReviewForDate(taskDate, task.plannerTaskId || null);
+      return;
+    }
+
+    if (taskDate !== reviewDate || todayTasks.length === 0 || !dayTasksAlignedWithReviewDate) {
+      return;
+    }
     const index = todayTasks.findIndex((t) => t.plannerTaskId === task.plannerTaskId);
     setWizardDismissedForEmployee('');
     setWizardTaskIndex(index >= 0 ? index : 0);
     setWizardOpen(true);
+  };
+
+  const handleSelectDate = (iso: string) => {
+    if (!canReviewAnyDate) return;
+    openReviewForDate(iso, null);
   };
 
   const handleCreateForDate = (iso: string) => {
@@ -387,8 +482,21 @@ export default function TeamDailyPlannerTab() {
 
   const refreshTasks = (
     updatedTasks?: DailyPlannerTask[],
-    options?: { replaceEmployeeDate?: boolean },
+    options?: { replaceEmployeeDate?: boolean; removeTaskIds?: string[] },
   ) => {
+    if (options?.removeTaskIds?.length) {
+      removePlannerTasksFromCache(queryClient, options.removeTaskIds);
+      void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.completionApprovalsPending(),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [...dailyPlannerQueryKeys.all, 'team'],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [...dailyPlannerQueryKeys.all, 'teamMonth'],
+      });
+      return;
+    }
     if (updatedTasks?.length) {
       if (options?.replaceEmployeeDate) {
         const code = String(updatedTasks[0]?.employeeCode || selectedEmployeeCode || '').trim();
@@ -464,7 +572,10 @@ export default function TeamDailyPlannerTab() {
 
   return (
     <TooltipPrimitive.Provider delayDuration={200}>
-      <DailyPlannerCompletionApprovalsPanel onTasksUpdated={refreshTasks} />
+      <DailyPlannerCompletionApprovalsPanel
+        moduleRole={moduleRole}
+        onTasksUpdated={refreshTasks}
+      />
 
       <div className="w-full space-y-3 pb-6">
         <Card className="w-full border-gray-200 shadow-sm">
@@ -619,6 +730,7 @@ export default function TeamDailyPlannerTab() {
                   expanded={expandedCells.has(cell.iso)}
                   onToggleExpand={() => toggleCellExpand(cell.iso)}
                   onSelectTask={handleSelectTask}
+                  onSelectDate={canReviewAnyDate ? handleSelectDate : undefined}
                   onCreateForDate={handleCreateForDate}
                   showEmployeeName={false}
                 />
@@ -627,7 +739,11 @@ export default function TeamDailyPlannerTab() {
           </div>
         </Card>
 
-        {!todayTasksLoading && selectedEmployeeCode && todayTasks.length === 0 ? (
+        {!todayTasksLoading &&
+        selectedEmployeeCode &&
+        dayTasksAlignedWithReviewDate &&
+        !todayTasksQuery.isFetching &&
+        todayTasks.length === 0 ? (
           <p className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
             No tasks created for plan review date ({reviewDate}).
           </p>
@@ -639,7 +755,7 @@ export default function TeamDailyPlannerTab() {
         </p>
       </div>
 
-      {selectedEmployeeProfile && todayTasks.length > 0 ? (
+      {selectedEmployeeProfile && todayTasks.length > 0 && dayTasksAlignedWithReviewDate ? (
         <TodayTaskReviewWizard
           open={wizardOpen}
           tasks={todayTasks}
@@ -647,6 +763,7 @@ export default function TeamDailyPlannerTab() {
           reviewDate={reviewDate}
           initialTaskIndex={wizardTaskIndex}
           completionReviewMode={false}
+          moduleRole={moduleRole}
           onClose={() => {
             setWizardOpen(false);
             setWizardDismissedForEmployee(selectedEmployeeCode);

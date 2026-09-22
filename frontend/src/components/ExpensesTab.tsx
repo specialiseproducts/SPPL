@@ -52,7 +52,7 @@ import type { ExpenseRecord } from '../types/expenses';
 import { ExpenseAuditStatusBadge } from './expenses/expenseAuditStatusBadge';
 import {
   buildExpenseExportContext,
-  exportExpensesToExcel,
+  exportExpensesToPdf,
 } from '../utils/expenseExcelExport';
 import ExpenseEditRequestModal from './expenses/ExpenseEditRequestModal';
 
@@ -419,7 +419,7 @@ export default function ExpensesTab({
       return;
     }
 
-    // 3) Always check previous approved-but-not-exported expenses before Excel.
+    // 3) Always check previous approved-but-not-exported expenses before PDF export.
     try {
       setIsExportSubmitting(true);
       const pending = await fetchPendingPreviousExportExpenses({
@@ -476,7 +476,7 @@ export default function ExpensesTab({
               }, 0),
             }
           : undefined;
-      await exportExpensesToExcel(exportRows, context, travelAllowanceSummary);
+      await exportExpensesToPdf(exportRows, context, travelAllowanceSummary);
 
       const idsToMarkExported = [
         ...new Set(
@@ -498,7 +498,7 @@ export default function ExpensesTab({
         } catch (markError) {
           console.error('Mark exported status error:', markError);
           toast.error(
-            `Excel downloaded, but export status could not be updated: ${getErrorMessage(markError)}`,
+            `PDF downloaded, but export status could not be updated: ${getErrorMessage(markError)}`,
           );
           toast.success(`Exported ${exportRows.length} expense record(s)`);
           return;

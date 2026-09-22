@@ -5,6 +5,9 @@ import type { DailyPlannerPriority, DailyPlannerTask } from '../../types/dailyPl
 import {
   approveDailyPlannerTask,
   requestNeedsRevisionDailyPlannerTask,
+  reopenApprovedDailyPlannerTask,
+  rescheduleDailyPlannerTaskBySuperAdmin,
+  deleteDailyPlannerTaskBySuperAdmin,
   saveDailyPlannerManagerComments,
   verifyDailyPlannerCompletion,
   createDailyPlannerTaskForEmployee,
@@ -48,6 +51,8 @@ import {
   getMinPlannedHours,
 } from '../../utils/planningRecognition';
 import { usePlanningConfigQuery } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
+import { isSuperAdmin } from '../../utils/accessControl';
+import { todayIso } from './dailyPlannerUtils';
 
 function displayCell(value: string | number | undefined | null): string {
   if (value === undefined || value === null) return '—';
@@ -186,11 +191,13 @@ interface TodayTaskReviewWizardProps {
   initialTaskIndex?: number;
   /** When true, wizard runs completion-review stage (not plan finalize). */
   completionReviewMode?: boolean;
+  /** Daily Planner module effective role — used for Super Admin correction privileges. */
+  moduleRole?: string;
   onClose: () => void;
   onFinish: () => void;
   onTasksUpdated: (
     updatedTasks?: DailyPlannerTask[],
-    options?: { replaceEmployeeDate?: boolean },
+    options?: { replaceEmployeeDate?: boolean; removeTaskIds?: string[] },
   ) => Promise<void> | void;
 }
 
@@ -201,10 +208,12 @@ export default function TodayTaskReviewWizard({
   reviewDate,
   initialTaskIndex = 0,
   completionReviewMode = false,
+  moduleRole,
   onClose,
   onFinish,
   onTasksUpdated,
 }: TodayTaskReviewWizardProps) {
+  const canSuperAdminCorrect = isSuperAdmin(String(moduleRole || ''));
   const [currentIndex, setCurrentIndex] = useState(0);
   const [editingPriority, setEditingPriority] = useState(false);
   const [stagedPriority, setStagedPriority] = useState<DailyPlannerPriority>('Medium');
@@ -231,11 +240,26 @@ export default function TodayTaskReviewWizard({
   const [stagedName, setStagedName] = useState('');
   const [stagedDescription, setStagedDescription] = useState('');
   const [stagedInstructions, setStagedInstructions] = useState('');
+  /** Super Admin correction dialogs */
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenAction, setReopenAction] = useState<'revision' | 'reschedule' | 'delete' | ''>('');
+  const [reopenReason, setReopenReason] = useState('');
+  const [reopenTaskName, setReopenTaskName] = useState('');
+  const [reopenTaskDescription, setReopenTaskDescription] = useState('');
+  const [reopenTaskPriority, setReopenTaskPriority] = useState<DailyPlannerPriority>('Medium');
+  const [reopenTaskHours, setReopenTaskHours] = useState<number | null>(null);
+  const [reopenInstruction, setReopenInstruction] = useState('');
+  const [reopenRescheduleDate, setReopenRescheduleDate] = useState('');
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduleInstruction, setRescheduleInstruction] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const planningConfigQuery = usePlanningConfigQuery();
   const minPlannedHours = getMinPlannedHours(
     planningConfigQuery.data,
     employee.location,
   );
+  const minRescheduleDate = planningConfigQuery.data?.todayIst ?? todayIso();
 
   const sortedTasks = useMemo(
     () => sortDailyPlannerTasksByPriority(tasks),
@@ -351,6 +375,13 @@ export default function TodayTaskReviewWizard({
     (task?.status === 'Pending' ||
       task?.status === 'Approved' ||
       awaitingVerification);
+  const showReopenTask =
+    canSuperAdminCorrect && !completionReviewMode && task?.status === 'Approved';
+  const showSuperAdminReschedule =
+    canSuperAdminCorrect &&
+    Boolean(task) &&
+    task?.status !== 'Rescheduled' &&
+    task?.status !== 'Verified Complete';
 
   const advanceAfterSave = useCallback(() => {
     if (currentIndex < total - 1) {
@@ -546,13 +577,220 @@ export default function TodayTaskReviewWizard({
           priority: replacementPriority,
           hoursRequired: Math.round(hoursValue * 100) / 100,
           expectedOutcome: replacementOutcome.trim(),
+          instruction: replacementOutcome.trim(),
         },
       });
       setRevisionOpen(false);
+      setReopenOpen(false);
       const updates = [result.task, result.revisedTask].filter(Boolean) as DailyPlannerTask[];
       if (updates.length) await onTasksUpdated(updates);
       return result.revisedTask || result.task;
     });
+  };
+
+  const resetReopenForm = () => {
+    setReopenAction('');
+    setReopenReason('');
+    setReopenTaskName('');
+    setReopenTaskDescription('');
+    setReopenTaskPriority('Medium');
+    setReopenTaskHours(null);
+    setReopenInstruction('');
+    setReopenRescheduleDate('');
+  };
+
+  const openReopenDialog = () => {
+    if (!task) return;
+    setReopenAction('');
+    setReopenReason('');
+    setReopenTaskName(task.taskName || '');
+    setReopenTaskDescription(task.description || '');
+    setReopenTaskPriority(
+      (task.currentPriority || task.priority || 'Medium') as DailyPlannerPriority,
+    );
+    setReopenTaskHours(
+      task.hoursRequired != null && Number.isFinite(Number(task.hoursRequired))
+        ? Number(task.hoursRequired)
+        : null,
+    );
+    setReopenInstruction('');
+    setReopenRescheduleDate('');
+    setReopenOpen(true);
+  };
+
+  const handleSubmitReopenCorrection = () => {
+    if (!task || busy) return;
+    if (!reopenAction) {
+      toast.error('Select a corrective action');
+      return;
+    }
+
+    if (reopenAction === 'revision') {
+      if (!reopenReason.trim()) {
+        toast.error('Reason is required');
+        return;
+      }
+      if (!reopenTaskName.trim()) {
+        toast.error('Task Name is required');
+        return;
+      }
+      if (!reopenTaskDescription.trim()) {
+        toast.error('Description is required');
+        return;
+      }
+      const hoursValue = Number(reopenTaskHours);
+      if (reopenTaskHours == null || !Number.isFinite(hoursValue) || hoursValue <= 0) {
+        toast.error('Hours Required to Complete must be greater than 0');
+        return;
+      }
+      void runSaveFlow(async () => {
+        // Stamp reopen history first (silent), then reuse existing revision workflow.
+        await reopenApprovedDailyPlannerTask(task.plannerTaskId, {
+          reason: reopenReason.trim(),
+          skipNotification: true,
+        });
+        const result = await requestNeedsRevisionDailyPlannerTask(task.plannerTaskId, {
+          reason: reopenReason.trim(),
+          replacementTask: {
+            taskName: reopenTaskName.trim(),
+            description: reopenTaskDescription.trim(),
+            priority: reopenTaskPriority,
+            hoursRequired: Math.round(hoursValue * 100) / 100,
+            expectedOutcome: reopenInstruction.trim(),
+            instruction: reopenInstruction.trim(),
+          },
+        });
+        setReopenOpen(false);
+        resetReopenForm();
+        const updates = [result.task, result.revisedTask].filter(Boolean) as DailyPlannerTask[];
+        if (updates.length) await onTasksUpdated(updates);
+        toast.success('Task revised');
+        return result.revisedTask || result.task;
+      });
+      return;
+    }
+
+    if (reopenAction === 'reschedule') {
+      const nextDate = String(reopenRescheduleDate || '').trim().slice(0, 10);
+      if (!nextDate) {
+        toast.error('New date is required');
+        return;
+      }
+      if (nextDate < minRescheduleDate) {
+        toast.error('Past dates are not allowed');
+        return;
+      }
+      if (nextDate === String(task.date || '').trim().slice(0, 10)) {
+        toast.error('New date must be different from the current task date');
+        return;
+      }
+      void runSaveFlow(async () => {
+        await reopenApprovedDailyPlannerTask(task.plannerTaskId, {
+          reason: reopenInstruction.trim() || reopenReason.trim(),
+          skipNotification: true,
+        });
+        const result = await rescheduleDailyPlannerTaskBySuperAdmin(task.plannerTaskId, {
+          newDate: nextDate,
+          instruction: reopenInstruction.trim(),
+        });
+        setReopenOpen(false);
+        resetReopenForm();
+        const updates = [result.task, result.rescheduledTask].filter(Boolean) as DailyPlannerTask[];
+        if (updates.length) await onTasksUpdated(updates);
+        toast.success('Task rescheduled');
+        return result.task;
+      });
+      return;
+    }
+
+    // delete
+    const taskId = task.plannerTaskId;
+    void (async () => {
+      setBusy(true);
+      try {
+        await reopenApprovedDailyPlannerTask(taskId, {
+          reason: reopenReason.trim() || 'Deleted by Super Admin',
+          skipNotification: true,
+        });
+        await deleteDailyPlannerTaskBySuperAdmin(taskId, {
+          reason: reopenReason.trim() || 'Deleted by Super Admin',
+        });
+        setReopenOpen(false);
+        resetReopenForm();
+        await onTasksUpdated(undefined, { removeTaskIds: [taskId] });
+        toast.success('Task deleted');
+        if (sortedTasks.length <= 1) {
+          onClose();
+        } else {
+          setCurrentIndex((i) => Math.min(i, Math.max(0, sortedTasks.length - 2)));
+        }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Delete failed');
+      } finally {
+        setBusy(false);
+      }
+    })();
+  };
+
+  const openRescheduleDialog = () => {
+    setRescheduleDate('');
+    setRescheduleInstruction('');
+    setRescheduleOpen(true);
+  };
+
+  const handleSubmitReschedule = () => {
+    if (!task) return;
+    const nextDate = String(rescheduleDate || '').trim().slice(0, 10);
+    if (!nextDate) {
+      toast.error('New date is required');
+      return;
+    }
+    if (nextDate < minRescheduleDate) {
+      toast.error('Past dates are not allowed');
+      return;
+    }
+    if (nextDate === String(task.date || '').trim().slice(0, 10)) {
+      toast.error('New date must be different from the current task date');
+      return;
+    }
+    void runSaveFlow(async () => {
+      const result = await rescheduleDailyPlannerTaskBySuperAdmin(task.plannerTaskId, {
+        newDate: nextDate,
+        instruction: rescheduleInstruction.trim(),
+      });
+      setRescheduleOpen(false);
+      setReopenOpen(false);
+      const updates = [result.task, result.rescheduledTask].filter(Boolean) as DailyPlannerTask[];
+      if (updates.length) await onTasksUpdated(updates);
+      toast.success('Task rescheduled');
+      return result.task;
+    });
+  };
+
+  const handleConfirmDelete = () => {
+    if (!task) return;
+    const taskId = task.plannerTaskId;
+    void (async () => {
+      setBusy(true);
+      try {
+        await deleteDailyPlannerTaskBySuperAdmin(taskId, {
+          reason: reopenReason.trim() || 'Deleted by Super Admin',
+        });
+        setDeleteOpen(false);
+        setReopenOpen(false);
+        await onTasksUpdated(undefined, { removeTaskIds: [taskId] });
+        toast.success('Task deleted');
+        if (sortedTasks.length <= 1) {
+          onClose();
+        } else {
+          setCurrentIndex((i) => Math.min(i, Math.max(0, sortedTasks.length - 2)));
+        }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Delete failed');
+      } finally {
+        setBusy(false);
+      }
+    })();
   };
 
   if (!task) {
@@ -956,6 +1194,16 @@ export default function TodayTaskReviewWizard({
                         Mark Reviewed
                       </Button>
                     ) : null}
+                    {showSuperAdminReschedule ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={openRescheduleDialog}
+                      >
+                        Reschedule Task
+                      </Button>
+                    ) : null}
                     {isTaskCompletionReviewed(task) ? (
                       <p className="text-sm text-gray-600">
                         This completion result has been reviewed.
@@ -1004,10 +1252,32 @@ export default function TodayTaskReviewWizard({
                         Request Revision
                       </Button>
                     ) : null}
+                    {showReopenTask ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={openReopenDialog}
+                      >
+                        Reopen Task
+                      </Button>
+                    ) : null}
+                    {showSuperAdminReschedule ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={openRescheduleDialog}
+                      >
+                        Reschedule Task
+                      </Button>
+                    ) : null}
                     {isTaskManagerReviewed(task) &&
                     !showApprove &&
                     !showVerify &&
-                    !showRequestRevision ? (
+                    !showRequestRevision &&
+                    !showReopenTask &&
+                    !showSuperAdminReschedule ? (
                       <p className="text-sm text-gray-600">
                         This task has already been reviewed ({getWizardReviewIndicator(task)}).
                       </p>
@@ -1237,12 +1507,13 @@ export default function TodayTaskReviewWizard({
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="replacement-outcome">Expected Outcome (optional)</Label>
+              <Label htmlFor="replacement-outcome">Instruction (optional)</Label>
               <Textarea
                 id="replacement-outcome"
                 rows={2}
                 value={replacementOutcome}
                 onChange={(e) => setReplacementOutcome(e.target.value)}
+                placeholder="What is missing, what to correct, or any specific requirement"
               />
             </div>
           </div>
@@ -1252,6 +1523,280 @@ export default function TodayTaskReviewWizard({
             </Button>
             <Button type="button" disabled={busy} onClick={() => void handleSubmitRevision()}>
               Submit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={reopenOpen}
+        onOpenChange={(v) => {
+          if (!v) {
+            setReopenOpen(false);
+            resetReopenForm();
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Reopen Task</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-gray-600">
+              Previous approval is preserved. Choose a corrective action and submit.
+            </p>
+            {task?.approvedByName || task?.approvedAt || task?.approvedDate ? (
+              <p className="text-sm text-gray-700">
+                Previously approved
+                {task.approvedByName ? ` by ${task.approvedByName}` : ''}
+                {task.approvedAt || task.approvedDate
+                  ? ` on ${formatDateCell(task.approvedAt || task.approvedDate)}`
+                  : ''}
+                .
+              </p>
+            ) : null}
+
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium text-[#212529]">Corrective Action *</legend>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="radio"
+                  name="reopen-action"
+                  checked={reopenAction === 'revision'}
+                  disabled={busy}
+                  onChange={() => setReopenAction('revision')}
+                />
+                Revision
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="radio"
+                  name="reopen-action"
+                  checked={reopenAction === 'reschedule'}
+                  disabled={busy}
+                  onChange={() => setReopenAction('reschedule')}
+                />
+                Reschedule
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="radio"
+                  name="reopen-action"
+                  checked={reopenAction === 'delete'}
+                  disabled={busy}
+                  onChange={() => setReopenAction('delete')}
+                />
+                Delete
+              </label>
+            </fieldset>
+
+            {reopenAction === 'revision' ? (
+              <div className="space-y-3 border-t border-gray-100 pt-3">
+                <div className="space-y-1">
+                  <Label htmlFor="reopen-revision-reason">Reason *</Label>
+                  <Textarea
+                    id="reopen-revision-reason"
+                    rows={3}
+                    value={reopenReason}
+                    disabled={busy}
+                    onChange={(e) => setReopenReason(e.target.value)}
+                    placeholder="Explain what needs improvement"
+                  />
+                </div>
+                <p className="text-sm font-medium text-[#212529]">Replacement Task</p>
+                <div className="space-y-1">
+                  <Label htmlFor="reopen-task-name">Task Name *</Label>
+                  <Input
+                    id="reopen-task-name"
+                    value={reopenTaskName}
+                    disabled={busy}
+                    onChange={(e) => setReopenTaskName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="reopen-task-description">Description *</Label>
+                  <Textarea
+                    id="reopen-task-description"
+                    rows={3}
+                    value={reopenTaskDescription}
+                    disabled={busy}
+                    onChange={(e) => setReopenTaskDescription(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Priority *</Label>
+                  <Select
+                    value={reopenTaskPriority}
+                    onValueChange={(v) => setReopenTaskPriority(v as DailyPlannerPriority)}
+                    disabled={busy}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Urgent">Urgent</SelectItem>
+                      <SelectItem value="High">High</SelectItem>
+                      <SelectItem value="Medium">Medium</SelectItem>
+                      <SelectItem value="Low">Low</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Hours Required To Complete *</Label>
+                  <HoursMinutesFields
+                    idPrefix="reopen-hours"
+                    value={reopenTaskHours}
+                    onChange={setReopenTaskHours}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="reopen-instruction">Instruction (optional)</Label>
+                  <Textarea
+                    id="reopen-instruction"
+                    rows={2}
+                    value={reopenInstruction}
+                    disabled={busy}
+                    onChange={(e) => setReopenInstruction(e.target.value)}
+                    placeholder="What is missing, what to correct, or any specific requirement"
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {reopenAction === 'reschedule' ? (
+              <div className="space-y-3 border-t border-gray-100 pt-3">
+                <div className="space-y-1">
+                  <Label htmlFor="reopen-reschedule-date">New date *</Label>
+                  <Input
+                    id="reopen-reschedule-date"
+                    type="date"
+                    min={minRescheduleDate}
+                    value={reopenRescheduleDate}
+                    disabled={busy}
+                    onChange={(e) => setReopenRescheduleDate(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="reopen-reschedule-instruction">Instruction (optional)</Label>
+                  <Textarea
+                    id="reopen-reschedule-instruction"
+                    rows={3}
+                    value={reopenInstruction}
+                    disabled={busy}
+                    onChange={(e) => setReopenInstruction(e.target.value)}
+                    placeholder="Tell the employee what is missing or what to do on the new date"
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {reopenAction === 'delete' ? (
+              <div className="space-y-3 border-t border-gray-100 pt-3">
+                <p className="text-sm text-gray-700">
+                  Are you sure you want to delete this approved task? Previous approval history is
+                  preserved in the audit record.
+                </p>
+                <div className="space-y-1">
+                  <Label htmlFor="reopen-delete-reason">Reason / instruction (optional)</Label>
+                  <Textarea
+                    id="reopen-delete-reason"
+                    rows={2}
+                    value={reopenReason}
+                    disabled={busy}
+                    onChange={(e) => setReopenReason(e.target.value)}
+                    placeholder="Why this task is being deleted"
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                setReopenOpen(false);
+                resetReopenForm();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant={reopenAction === 'delete' ? 'destructive' : 'default'}
+              disabled={busy || !reopenAction}
+              onClick={() => void handleSubmitReopenCorrection()}
+            >
+              {reopenAction === 'revision'
+                ? 'Submit Revision'
+                : reopenAction === 'reschedule'
+                  ? 'Reschedule Task'
+                  : reopenAction === 'delete'
+                    ? 'Delete Task'
+                    : 'Submit'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={rescheduleOpen} onOpenChange={(v) => !v && setRescheduleOpen(false)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Reschedule Task</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1">
+              <Label htmlFor="reschedule-date">New date *</Label>
+              <Input
+                id="reschedule-date"
+                type="date"
+                min={minRescheduleDate}
+                value={rescheduleDate}
+                onChange={(e) => setRescheduleDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="reschedule-instruction">Instruction (optional)</Label>
+              <Textarea
+                id="reschedule-instruction"
+                rows={3}
+                value={rescheduleInstruction}
+                onChange={(e) => setRescheduleInstruction(e.target.value)}
+                placeholder="Tell the employee what is missing or what to do on the new date"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" onClick={() => setRescheduleOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" disabled={busy} onClick={() => void handleSubmitReschedule()}>
+              Reschedule Task
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onOpenChange={(v) => !v && setDeleteOpen(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete Task</DialogTitle>
+          </DialogHeader>
+          <p className="py-2 text-sm text-gray-700">
+            Are you sure you want to delete this task?
+          </p>
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={busy}
+              onClick={() => void handleConfirmDelete()}
+            >
+              Delete Task
             </Button>
           </DialogFooter>
         </DialogContent>

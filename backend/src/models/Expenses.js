@@ -405,6 +405,9 @@ export const createExpense = async (expenseData) => {
   if (expenseData.toLocation) {
     item.toLocation = expenseData.toLocation;
   }
+  if (expenseData.pnrNo) {
+    item.pnrNo = String(expenseData.pnrNo).trim();
+  }
   if (expenseData.returnType) {
     item.returnType = expenseData.returnType;
   }

@@ -26,6 +26,8 @@ export interface ExpenseRecord {
   monthYear: string;
   createdAt: string;
   updatedAt: string;
+  /** Travel Flight/Bus/Taxi/Train booking reference */
+  pnrNo?: string;
   fromLocation?: string;
   toLocation?: string;
   returnType?: string;

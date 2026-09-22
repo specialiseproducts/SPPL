@@ -580,7 +580,7 @@ export default function TeamTaskDetailsModal({
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="replacement-outcome">Expected Outcome (optional)</Label>
+              <Label htmlFor="replacement-outcome">Instruction (optional)</Label>
               <Textarea
                 id="replacement-outcome"
                 rows={2}

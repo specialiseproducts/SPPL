@@ -12,6 +12,7 @@ import {
 } from '../../constants/expenseSubCategories';
 import {
   isTravelCarOrBike,
+  isTravelTicketTransport,
   isHotelBookingSelf,
   computeTravelCarBikeRupeeAmount,
   formatTravelCarBikeAmountField,
@@ -49,6 +50,7 @@ const emptyForm = {
   date: '',
   amount: '',
   monthYear: '',
+  pnrNo: '',
   fromLocation: '',
   toLocation: '',
   returnType: '',
@@ -117,6 +119,7 @@ export default function ExpenseEditFormPanel({
       date: toDateInputValue(expense.date),
       amount: expense.amount.toString(),
       monthYear: expense.monthYear,
+      pnrNo: expense.pnrNo ?? '',
       fromLocation: expense.fromLocation ?? '',
       toLocation: expense.toLocation ?? '',
       returnType: expense.returnType ?? '',
@@ -171,6 +174,9 @@ export default function ExpenseEditFormPanel({
     formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
   const showTravelDetail =
     isTravelCarOrBike(formData.expenseHead, effectiveSubCategory) && Boolean(effectiveSubCategory);
+  const showTicketTransport =
+    isTravelTicketTransport(formData.expenseHead, effectiveSubCategory) &&
+    Boolean(effectiveSubCategory);
   const isOutstationTravel = formData.expenseHead === 'Travel' && formData.outStation === 'Yes';
   const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
   const isAutoAmount = showTravelDetail && !isOutstationTravel;
@@ -285,7 +291,7 @@ export default function ExpenseEditFormPanel({
       }
     }
 
-    if (!isOutstationTravel && !formData.location.trim()) {
+    if (!isOutstationTravel && !showTicketTransport && !formData.location.trim()) {
       toast.error('Please enter location');
       return;
     }
@@ -314,6 +320,21 @@ export default function ExpenseEditFormPanel({
       }
       if (!getSubcategoriesForHead(formData.expenseHead).includes(sub)) {
         toast.error('Sub category does not match expense head');
+        return;
+      }
+    }
+
+    if (showTicketTransport && !isOutstationTravel) {
+      if (!formData.pnrNo.trim()) {
+        toast.error('Please enter PNR No.');
+        return;
+      }
+      if (!formData.fromLocation.trim()) {
+        toast.error('Please enter From');
+        return;
+      }
+      if (!formData.toLocation.trim()) {
+        toast.error('Please enter To');
         return;
       }
     }
@@ -445,7 +466,7 @@ export default function ExpenseEditFormPanel({
       expenseId: expense.expenseId,
       expenseHead: formData.expenseHead,
       subCategory: subCategoryResolved || undefined,
-      location: isOutstationTravel ? '' : formData.location.trim(),
+      location: isOutstationTravel || showTicketTransport ? '' : formData.location.trim(),
       purpose: isOutstationTravel ? '' : formData.purpose.trim(),
       serviceProvider: showTravelDetail || isOutstationTravel ? '' : formData.serviceProvider.trim(),
       billNumber: showTravelDetail || isOutstationTravel ? '' : formData.billNumber.trim(),
@@ -470,6 +491,13 @@ export default function ExpenseEditFormPanel({
             : documents,
       auditStatus: expense.auditStatus,
       auditReason: expense.auditReason,
+      ...(showTicketTransport && !isOutstationTravel
+        ? {
+            pnrNo: formData.pnrNo.trim(),
+            fromLocation: formData.fromLocation.trim(),
+            toLocation: formData.toLocation.trim(),
+          }
+        : {}),
       ...(showTravelDetail && !isOutstationTravel
         ? {
             fromLocation: formData.fromLocation.trim(),
@@ -544,6 +572,7 @@ export default function ExpenseEditFormPanel({
                 stayDateFrom: '',
                 stayDateTo: '',
                 fuelType: FUEL_TYPE_UNSET,
+                pnrNo: '',
                 outStation: value === 'Travel' ? formData.outStation : ('No' as const),
                 arrivalDate: '',
                 arrivalTime: '',
@@ -573,6 +602,11 @@ export default function ExpenseEditFormPanel({
             onValueChange={(value) => {
               const wasTravelDetail = isTravelCarOrBike(formData.expenseHead, effectiveSubCategory);
               const willTravelDetail = isTravelCarOrBike(formData.expenseHead, value);
+              const wasTicketTransport = isTravelTicketTransport(
+                formData.expenseHead,
+                effectiveSubCategory,
+              );
+              const willTicketTransport = isTravelTicketTransport(formData.expenseHead, value);
               const wasHotelSelf = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
               const willHotelSelf = isHotelBookingSelf(formData.expenseHead, value);
               setFormData({
@@ -598,6 +632,22 @@ export default function ExpenseEditFormPanel({
                       serviceProvider: '',
                       billNumber: '',
                       supportingDocument: 'No' as const,
+                      pnrNo: '',
+                    }
+                  : {}),
+                ...(wasTicketTransport && !willTicketTransport
+                  ? {
+                      pnrNo: '',
+                      fromLocation: '',
+                      toLocation: '',
+                    }
+                  : {}),
+                ...(willTicketTransport && !wasTicketTransport
+                  ? {
+                      location: '',
+                      pnrNo: '',
+                      fromLocation: '',
+                      toLocation: '',
                     }
                   : {}),
                 ...(wasHotelSelf && !willHotelSelf ? { stayDateFrom: '', stayDateTo: '' } : {}),
@@ -735,7 +785,19 @@ export default function ExpenseEditFormPanel({
           </>
         ) : null}
 
-        {!isOutstationTravel ? (
+        {!isOutstationTravel && showTicketTransport ? (
+          <div className="space-y-2">
+            <Label htmlFor="pnr_no">PNR No. *</Label>
+            <Input
+              id="pnr_no"
+              value={formData.pnrNo}
+              onChange={(e) => setFormData({ ...formData, pnrNo: e.target.value })}
+              placeholder="Enter PNR No."
+            />
+          </div>
+        ) : null}
+
+        {!isOutstationTravel && !showHotelStay ? (
         <div className="space-y-2">
           <Label htmlFor="date">Date *</Label>
           <Input
@@ -768,7 +830,7 @@ export default function ExpenseEditFormPanel({
         </div>
       </div>
 
-      {!isOutstationTravel ? (
+      {showTravelDetail && !isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2 sm:col-span-2">
           <Label htmlFor="fuel_type">Fuel Type *</Label>
@@ -830,7 +892,30 @@ export default function ExpenseEditFormPanel({
       </div>
       ) : null}
 
-      {!isOutstationTravel ? (
+      {showTicketTransport && !isOutstationTravel ? (
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-2">
+          <Label htmlFor="from_location_ticket">From *</Label>
+          <Input
+            id="from_location_ticket"
+            value={formData.fromLocation}
+            onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
+            placeholder="From"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="to_location_ticket">To *</Label>
+          <Input
+            id="to_location_ticket"
+            value={formData.toLocation}
+            onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
+            placeholder="To"
+          />
+        </div>
+      </div>
+      ) : null}
+
+      {showHotelStay && !isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="stay_from">Date (from) *</Label>
@@ -855,6 +940,7 @@ export default function ExpenseEditFormPanel({
 
       {!isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {!showTicketTransport ? (
         <div className="space-y-2">
           <Label htmlFor="location">Location *</Label>
           <Input
@@ -864,6 +950,7 @@ export default function ExpenseEditFormPanel({
             onChange={(e) => setFormData({ ...formData, location: e.target.value })}
           />
         </div>
+        ) : null}
         <div className="space-y-2">
           <Label htmlFor="purpose">Purpose *</Label>
           <Input
@@ -876,7 +963,7 @@ export default function ExpenseEditFormPanel({
       </div>
       ) : null}
 
-      {!isOutstationTravel ? (
+      {!isOutstationTravel && !showTravelDetail ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="service_provider">Service Provider Name *</Label>
@@ -905,6 +992,7 @@ export default function ExpenseEditFormPanel({
           <Label htmlFor="monthYear">Month-Year (Auto-detected)</Label>
           <Input id="monthYear" value={formData.monthYear} disabled className="bg-gray-50" />
         </div>
+        {!showTravelDetail ? (
         <div className="space-y-2">
           <Label htmlFor="supporting_doc_choice">Supporting Document *</Label>
           <Select
@@ -922,10 +1010,11 @@ export default function ExpenseEditFormPanel({
             </SelectContent>
           </Select>
         </div>
+        ) : null}
       </div>
       ) : null}
 
-      {!isOutstationTravel && formData.supportingDocument === 'Yes' ? (
+      {!isOutstationTravel && !showTravelDetail && formData.supportingDocument === 'Yes' ? (
         <div className="min-h-[5.5rem] space-y-2">
           <Label htmlFor="supporting_file">Upload supporting document *</Label>
           <div className="flex items-center gap-3">

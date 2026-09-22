@@ -21,6 +21,7 @@ import {
 } from '../constants/expenseSubCategories';
 import {
   isTravelCarOrBike,
+  isTravelTicketTransport,
   isHotelBookingSelf,
   computeTravelCarBikeRupeeAmount,
   formatTravelCarBikeAmountField,
@@ -29,6 +30,10 @@ import {
 import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
 import { apiFetch } from '../services/api';
 import { computeOutstationDuration, computeOutstationTravelAllowanceAmount } from '../utils/expenseOutstation';
+import {
+  buildOutstationScreenshotsPdf,
+  isOutstationScreenshotFile,
+} from '../utils/outstationProofPdf';
 
 interface ExpenseFormModalProps {
   isOpen: boolean;
@@ -53,6 +58,7 @@ const emptyForm = {
   date: '',
   amount: '',
   monthYear: '',
+  pnrNo: '',
   fromLocation: '',
   toLocation: '',
   returnType: '',
@@ -77,6 +83,8 @@ export default function ExpenseFormModal({
   currentEmployeeCode: _currentEmployeeCode,
 }: ExpenseFormModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [arrivalScreenshot, setArrivalScreenshot] = useState<File | null>(null);
+  const [departureScreenshot, setDepartureScreenshot] = useState<File | null>(null);
   const [travelRates, setTravelRates] = useState<ExpenseTravelRates | null>(null);
   const [formData, setFormData] = useState({ ...emptyForm });
   const prevShowTravelRef = useRef<boolean | null>(null);
@@ -85,6 +93,8 @@ export default function ExpenseFormModal({
     if (!isOpen) return;
     setFormData({ ...emptyForm });
     setSelectedFile(null);
+    setArrivalScreenshot(null);
+    setDepartureScreenshot(null);
     prevShowTravelRef.current = null;
   }, [isOpen]);
 
@@ -121,6 +131,9 @@ export default function ExpenseFormModal({
     formData.subCategory === SUB_CATEGORY_UNSET ? '' : formData.subCategory.trim();
   const showTravelDetail =
     isTravelCarOrBike(formData.expenseHead, effectiveSubCategory) && Boolean(effectiveSubCategory);
+  const showTicketTransport =
+    isTravelTicketTransport(formData.expenseHead, effectiveSubCategory) &&
+    Boolean(effectiveSubCategory);
   const isOutstationTravel = formData.expenseHead === 'Travel' && formData.outStation === 'Yes';
   const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
   const isAutoAmount = showTravelDetail && !isOutstationTravel;
@@ -229,7 +242,7 @@ export default function ExpenseFormModal({
     effectiveSubCategory,
   ]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (isOutstationTravel) {
@@ -247,9 +260,25 @@ export default function ExpenseFormModal({
         toast.error('Departure datetime cannot be earlier than arrival datetime');
         return;
       }
+      if (!arrivalScreenshot) {
+        toast.error('Please upload Arrival Screenshot');
+        return;
+      }
+      if (!isOutstationScreenshotFile(arrivalScreenshot)) {
+        toast.error('Invalid Arrival Screenshot. Allowed: JPG, JPEG, PNG');
+        return;
+      }
+      if (!departureScreenshot) {
+        toast.error('Please upload Departure Screenshot');
+        return;
+      }
+      if (!isOutstationScreenshotFile(departureScreenshot)) {
+        toast.error('Invalid Departure Screenshot. Allowed: JPG, JPEG, PNG');
+        return;
+      }
     }
 
-    if (!isOutstationTravel && !formData.location.trim()) {
+    if (!isOutstationTravel && !showTicketTransport && !formData.location.trim()) {
       toast.error('Please enter location');
       return;
     }
@@ -278,6 +307,21 @@ export default function ExpenseFormModal({
       }
       if (!getSubcategoriesForHead(formData.expenseHead).includes(sub)) {
         toast.error('Sub category does not match expense head');
+        return;
+      }
+    }
+
+    if (showTicketTransport && !isOutstationTravel) {
+      if (!formData.pnrNo.trim()) {
+        toast.error('Please enter PNR No.');
+        return;
+      }
+      if (!formData.fromLocation.trim()) {
+        toast.error('Please enter From');
+        return;
+      }
+      if (!formData.toLocation.trim()) {
+        toast.error('Please enter To');
         return;
       }
     }
@@ -311,7 +355,8 @@ export default function ExpenseFormModal({
     }
 
     if (
-      (isOutstationTravel || (!isOutstationTravel && !showTravelDetail)) &&
+      !isOutstationTravel &&
+      !showTravelDetail &&
       formData.supportingDocument === 'Yes'
     ) {
       if (!selectedFile) {
@@ -390,9 +435,25 @@ export default function ExpenseFormModal({
       : showHotelStay
       ? (formData.stayDateFrom || formData.stayDateTo || '').trim()
       : formData.date.trim();
-    const wantsSupportingFile =
-      (isOutstationTravel || (!showTravelDetail && formData.supportingDocument === 'Yes')) &&
-      formData.supportingDocument === 'Yes';
+
+    let outstationProofFile: File | undefined;
+    if (isOutstationTravel && arrivalScreenshot && departureScreenshot) {
+      try {
+        outstationProofFile = await buildOutstationScreenshotsPdf(
+          arrivalScreenshot,
+          departureScreenshot,
+          'outstation-proof.pdf',
+        );
+      } catch {
+        toast.error('Failed to generate proof PDF from screenshots');
+        return;
+      }
+    }
+
+    const wantsSupportingFile = isOutstationTravel
+      ? Boolean(outstationProofFile)
+      : !showTravelDetail && formData.supportingDocument === 'Yes';
+    const proofOrSelected = isOutstationTravel ? outstationProofFile : selectedFile || undefined;
     const outstationDuration = isOutstationTravel
       ? computeOutstationDuration(
           formData.arrivalDate,
@@ -406,7 +467,7 @@ export default function ExpenseFormModal({
       expenseId: '',
       expenseHead: formData.expenseHead,
       subCategory: subCategoryResolved || undefined,
-      location: isOutstationTravel ? '' : formData.location.trim(),
+      location: isOutstationTravel || showTicketTransport ? '' : formData.location.trim(),
       purpose: isOutstationTravel ? '' : formData.purpose.trim(),
       serviceProvider: showTravelDetail || isOutstationTravel ? '' : formData.serviceProvider.trim(),
       billNumber: showTravelDetail || isOutstationTravel ? '' : formData.billNumber.trim(),
@@ -416,11 +477,23 @@ export default function ExpenseFormModal({
       monthYear: formData.monthYear,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      supportingDocument: showTravelDetail && !isOutstationTravel ? 'No' : formData.supportingDocument,
-      selectedFile: wantsSupportingFile ? selectedFile || undefined : undefined,
-      documents: wantsSupportingFile && selectedFile
-        ? [{ fileName: selectedFile.name, fileUrl: `/uploads/expenses/${selectedFile.name}` }]
-        : [],
+      supportingDocument: isOutstationTravel
+        ? 'Yes'
+        : showTravelDetail && !isOutstationTravel
+          ? 'No'
+          : formData.supportingDocument,
+      selectedFile: wantsSupportingFile ? proofOrSelected : undefined,
+      documents:
+        wantsSupportingFile && proofOrSelected
+          ? [{ fileName: proofOrSelected.name, fileUrl: `/uploads/expenses/${proofOrSelected.name}` }]
+          : [],
+      ...(showTicketTransport && !isOutstationTravel
+        ? {
+            pnrNo: formData.pnrNo.trim(),
+            fromLocation: formData.fromLocation.trim(),
+            toLocation: formData.toLocation.trim(),
+          }
+        : {}),
       ...(showTravelDetail && !isOutstationTravel
         ? {
             fromLocation: formData.fromLocation.trim(),
@@ -486,6 +559,7 @@ export default function ExpenseFormModal({
                     stayDateFrom: '',
                     stayDateTo: '',
                     fuelType: FUEL_TYPE_UNSET,
+                    pnrNo: '',
                     outStation: value === 'Travel' ? formData.outStation : ('No' as const),
                     arrivalDate: '',
                     arrivalTime: '',
@@ -513,13 +587,20 @@ export default function ExpenseFormModal({
                 <Label htmlFor="out_station">OutStation (more than 100km) *</Label>
                 <Select
                   value={formData.outStation}
-                  onValueChange={(value: 'Yes' | 'No') =>
+                  onValueChange={(value: 'Yes' | 'No') => {
                     setFormData({
                       ...formData,
                       outStation: value,
                       amount: value === 'Yes' ? '0' : formData.amount,
-                    })
-                  }
+                      supportingDocument: value === 'Yes' ? ('Yes' as const) : formData.supportingDocument,
+                    });
+                    if (value === 'Yes') {
+                      setSelectedFile(null);
+                    } else {
+                      setArrivalScreenshot(null);
+                      setDepartureScreenshot(null);
+                    }
+                  }}
                 >
                   <SelectTrigger id="out_station">
                     <SelectValue />
@@ -545,6 +626,11 @@ export default function ExpenseFormModal({
                     effectiveSubCategory,
                   );
                   const willTravelDetail = isTravelCarOrBike(formData.expenseHead, value);
+                  const wasTicketTransport = isTravelTicketTransport(
+                    formData.expenseHead,
+                    effectiveSubCategory,
+                  );
+                  const willTicketTransport = isTravelTicketTransport(formData.expenseHead, value);
                   const wasHotelSelf = isHotelBookingSelf(
                     formData.expenseHead,
                     effectiveSubCategory,
@@ -573,6 +659,22 @@ export default function ExpenseFormModal({
                           serviceProvider: '',
                           billNumber: '',
                           supportingDocument: 'No' as const,
+                          pnrNo: '',
+                        }
+                      : {}),
+                    ...(wasTicketTransport && !willTicketTransport
+                      ? {
+                          pnrNo: '',
+                          fromLocation: '',
+                          toLocation: '',
+                        }
+                      : {}),
+                    ...(willTicketTransport && !wasTicketTransport
+                      ? {
+                          location: '',
+                          pnrNo: '',
+                          fromLocation: '',
+                          toLocation: '',
                         }
                       : {}),
                     ...(wasHotelSelf && !willHotelSelf
@@ -620,6 +722,32 @@ export default function ExpenseFormModal({
                     onChange={(e) => setFormData({ ...formData, arrivalTime: e.target.value })}
                   />
                 </div>
+                <div className="min-h-[5.5rem] space-y-2 sm:col-span-2">
+                  <Label htmlFor="arrival_screenshot">Upload Screenshot *</Label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="arrival_screenshot"
+                      type="file"
+                      accept=".jpg,.jpeg,.png"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+                        if (f && !isOutstationScreenshotFile(f)) {
+                          toast.error('Invalid file type. Allowed: JPG, JPEG, PNG');
+                          e.target.value = '';
+                          setArrivalScreenshot(null);
+                          return;
+                        }
+                        setArrivalScreenshot(f);
+                      }}
+                      className="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-sm file:font-medium"
+                    />
+                    <Upload className="h-5 w-5 shrink-0 text-gray-400" />
+                  </div>
+                  <p className="text-xs text-gray-500">JPG, JPEG, PNG — arrival date &amp; time proof</p>
+                  {arrivalScreenshot ? (
+                    <p className="text-xs text-green-600">✓ {arrivalScreenshot.name}</p>
+                  ) : null}
+                </div>
                 <div className="space-y-2">
                   <Label htmlFor="departure_date">Departure Date (last) *</Label>
                   <Input
@@ -638,15 +766,138 @@ export default function ExpenseFormModal({
                     onChange={(e) => setFormData({ ...formData, departureTime: e.target.value })}
                   />
                 </div>
+                <div className="min-h-[5.5rem] space-y-2 sm:col-span-2">
+                  <Label htmlFor="departure_screenshot">Upload Screenshot *</Label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="departure_screenshot"
+                      type="file"
+                      accept=".jpg,.jpeg,.png"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+                        if (f && !isOutstationScreenshotFile(f)) {
+                          toast.error('Invalid file type. Allowed: JPG, JPEG, PNG');
+                          e.target.value = '';
+                          setDepartureScreenshot(null);
+                          return;
+                        }
+                        setDepartureScreenshot(f);
+                      }}
+                      className="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:mr-3 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-sm file:font-medium"
+                    />
+                    <Upload className="h-5 w-5 shrink-0 text-gray-400" />
+                  </div>
+                  <p className="text-xs text-gray-500">JPG, JPEG, PNG — departure date &amp; time proof</p>
+                  {departureScreenshot ? (
+                    <p className="text-xs text-green-600">✓ {departureScreenshot.name}</p>
+                  ) : null}
+                </div>
                 <div className="space-y-2">
-                  <Label htmlFor="outstation_supporting_doc_choice">Supporting Document *</Label>
+                  <Label htmlFor="outstation_amount">Amount (Rs) *</Label>
+                  <Input
+                    id="outstation_amount"
+                    type="number"
+                    step="0.01"
+                    placeholder="Auto calculated"
+                    value={formData.amount}
+                    disabled
+                    readOnly
+                    className="bg-gray-50"
+                  />
+                  <p className="text-xs text-gray-500">
+                    Auto-calculated as Total Hours × ₹20.
+                  </p>
+                </div>
+              </>
+            ) : showTicketTransport ? (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="pnr_no">PNR No. *</Label>
+                  <Input
+                    id="pnr_no"
+                    value={formData.pnrNo}
+                    onChange={(e) => setFormData({ ...formData, pnrNo: e.target.value })}
+                    placeholder="Enter PNR No."
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="date">Date *</Label>
+                  <Input
+                    id="date"
+                    type="date"
+                    value={formData.date}
+                    onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="amount">Amount (Rs) *</Label>
+                  <Input
+                    id="amount"
+                    type="number"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={formData.amount}
+                    onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="from_location_ticket">From *</Label>
+                  <Input
+                    id="from_location_ticket"
+                    value={formData.fromLocation}
+                    onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
+                    placeholder="From"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="to_location_ticket">To *</Label>
+                  <Input
+                    id="to_location_ticket"
+                    value={formData.toLocation}
+                    onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
+                    placeholder="To"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="purpose_ticket">Purpose *</Label>
+                  <Input
+                    id="purpose_ticket"
+                    placeholder="Enter purpose of expense"
+                    value={formData.purpose}
+                    onChange={(e) => setFormData({ ...formData, purpose: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="service_provider_ticket">Service Provider Name *</Label>
+                  <Input
+                    id="service_provider_ticket"
+                    placeholder="Enter service provider"
+                    value={formData.serviceProvider}
+                    onChange={(e) => setFormData({ ...formData, serviceProvider: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="bill_number_ticket">Bill Number *</Label>
+                  <Input
+                    id="bill_number_ticket"
+                    placeholder="Enter bill number or NA"
+                    value={formData.billNumber}
+                    onChange={(e) => setFormData({ ...formData, billNumber: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="monthYear_ticket">Month-Year (Auto-detected)</Label>
+                  <Input id="monthYear_ticket" value={formData.monthYear} disabled className="bg-gray-50" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="supporting_doc_choice_ticket">Supporting Document *</Label>
                   <Select
                     value={formData.supportingDocument}
                     onValueChange={(value: 'Yes' | 'No') =>
                       setFormData({ ...formData, supportingDocument: value })
                     }
                   >
-                    <SelectTrigger id="outstation_supporting_doc_choice">
+                    <SelectTrigger id="supporting_doc_choice_ticket">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -657,10 +908,10 @@ export default function ExpenseFormModal({
                 </div>
                 {formData.supportingDocument === 'Yes' ? (
                   <div className="min-h-[5.5rem] space-y-2 sm:col-span-2">
-                    <Label htmlFor="outstation_supporting_file">Upload supporting document *</Label>
+                    <Label htmlFor="supporting_file_ticket">Upload supporting document *</Label>
                     <div className="flex items-center gap-3">
                       <input
-                        id="outstation_supporting_file"
+                        id="supporting_file_ticket"
                         type="file"
                         accept=".doc,.docx,.pdf,.jpg,.jpeg,.png,.xls,.xlsx"
                         onChange={(e) => {
@@ -680,24 +931,9 @@ export default function ExpenseFormModal({
                       <Upload className="h-5 w-5 shrink-0 text-gray-400" />
                     </div>
                     <p className="text-xs text-gray-500">DOC, DOCX, PDF, JPG, JPEG, PNG, XLS, XLSX</p>
+                    {selectedFile ? <p className="text-xs text-green-600">✓ {selectedFile.name}</p> : null}
                   </div>
                 ) : null}
-                <div className="space-y-2">
-                  <Label htmlFor="outstation_amount">Amount (Rs) *</Label>
-                  <Input
-                    id="outstation_amount"
-                    type="number"
-                    step="0.01"
-                    placeholder="Auto calculated"
-                    value={formData.amount}
-                    disabled
-                    readOnly
-                    className="bg-gray-50"
-                  />
-                  <p className="text-xs text-gray-500">
-                    Auto-calculated as Total Hours × ₹20.
-                  </p>
-                </div>
               </>
             ) : !showHotelStay ? (
               <div className="space-y-2">
@@ -711,7 +947,7 @@ export default function ExpenseFormModal({
               </div>
             ) : null}
 
-            {!isOutstationTravel ? (
+            {!isOutstationTravel && !showTicketTransport ? (
             <div className="space-y-2">
               <Label htmlFor="amount">Amount (Rs) *</Label>
               <Input
@@ -819,7 +1055,7 @@ export default function ExpenseFormModal({
             </div>
           ) : null}
 
-          {!isOutstationTravel ? (
+          {!isOutstationTravel && !showTicketTransport ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="location">Location *</Label>
@@ -842,7 +1078,7 @@ export default function ExpenseFormModal({
           </div>
           ) : null}
 
-          {!isOutstationTravel && !showTravelDetail ? (
+          {!isOutstationTravel && !showTravelDetail && !showTicketTransport ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="service_provider">Service Provider Name *</Label>
@@ -865,7 +1101,7 @@ export default function ExpenseFormModal({
             </div>
           ) : null}
 
-          {!isOutstationTravel ? (
+          {!isOutstationTravel && !showTicketTransport ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="monthYear">Month-Year (Auto-detected)</Label>
@@ -874,7 +1110,7 @@ export default function ExpenseFormModal({
           </div>
           ) : null}
 
-          {!isOutstationTravel && !showTravelDetail ? (
+          {!isOutstationTravel && !showTravelDetail && !showTicketTransport ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="supporting_doc_choice">Supporting Document *</Label>
@@ -896,7 +1132,10 @@ export default function ExpenseFormModal({
             </div>
           ) : null}
 
-          {!isOutstationTravel && !showTravelDetail && formData.supportingDocument === 'Yes' ? (
+          {!isOutstationTravel &&
+          !showTravelDetail &&
+          !showTicketTransport &&
+          formData.supportingDocument === 'Yes' ? (
             <div className="min-h-[5.5rem] space-y-2">
               <Label htmlFor="supporting_file">Upload supporting document *</Label>
               <div className="flex items-center gap-3">

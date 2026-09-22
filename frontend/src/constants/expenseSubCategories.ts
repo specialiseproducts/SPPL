@@ -12,6 +12,7 @@ export const EXPENSE_SUBCATEGORY_MAP = {
     'Parking Charges',
     'Railway Pass',
     'Taxi',
+    'Train',
     'Toll Tax',
   ],
   Fuel: ['CNG', 'Diesel', 'EV', 'Petrol'],

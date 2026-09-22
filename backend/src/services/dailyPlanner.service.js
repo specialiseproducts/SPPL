@@ -140,6 +140,14 @@ function assertCanModerateTeamTask(effectiveRole) {
   }
 }
 
+function assertIsSuperAdmin(effectiveRole) {
+  if (!isSuperAdmin(effectiveRole)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
 function normalizePriorityValue(value, fallback = 'Medium') {
   const p = String(value || '').trim();
   if (p === 'Urgent' || p === 'High' || p === 'Medium' || p === 'Low') return p;
@@ -1264,11 +1272,17 @@ export const submitDayCompletionReview = async (body, authUser, effectiveRole) =
  * Pending completion approvals for Team Daily Planner (manager/admin).
  * Uses existing GSI_EmployeeDate per team member — no Sales sync, no table scan of all tasks.
  * Groups by employee+date where dayCompletionSubmittedAt is set and dayCompletionReviewSubmittedAt is not.
+ *
+ * Employee scope matches Team Daily Planner employee filter exactly:
+ * Active team mappings for the logged-in manager only (not all managers' teams).
  */
 export const listPendingCompletionApprovals = async (authUser, effectiveRole) => {
   assertCanModerateTeamTask(effectiveRole);
   const managerCode = employeeCodeOf(authUser);
-  const employeeCodes = await resolveTeamEmployeeCodes(managerCode, effectiveRole);
+  const team = await DailyPlannerTeamMappingsModel.listEmployeesForManager(managerCode);
+  const employeeCodes = [
+    ...new Set(team.map((m) => String(m.employeeCode || '').trim()).filter(Boolean)),
+  ];
   if (employeeCodes.length === 0) {
     return { approvals: [] };
   }
@@ -2223,7 +2237,10 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
       existing.currentPriority || existing.priority || 'Medium',
     ),
     hoursRequired: replacementHours,
-    expectedOutcome: String(replacementRaw.expectedOutcome || '').trim(),
+    // Frontend label is "Instruction"; keep expectedOutcome field for backward compatibility.
+    expectedOutcome: String(
+      replacementRaw.instruction ?? replacementRaw.expectedOutcome ?? '',
+    ).trim(),
   };
 
   if (!replacementTask.taskName) {
@@ -2255,7 +2272,7 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
 
   const descriptionParts = [replacementTask.description];
   if (replacementTask.expectedOutcome) {
-    descriptionParts.push(`Expected Outcome: ${replacementTask.expectedOutcome}`);
+    descriptionParts.push(`Instruction: ${replacementTask.expectedOutcome}`);
   }
   const revisedTask = await DailyPlannerTasksModel.createTask({
     employeeCode: existing.employeeCode,
@@ -2311,6 +2328,263 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
   });
 
   return { task: handled, revisedTask };
+};
+
+/**
+ * Super Admin only — reopen an Approved task for correction.
+ * Preserves prior approval actor/timestamps; clears current approved flag.
+ */
+export const reopenApprovedTask = async (taskId, body, authUser, effectiveRole) => {
+  assertIsSuperAdmin(effectiveRole);
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing) {
+    const err = new Error('Task not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (String(existing.status || '').trim() !== 'Approved') {
+    const err = new Error('Only approved tasks can be reopened');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const nowIso = new Date().toISOString();
+  const actorCode = employeeCodeOf(authUser);
+  const actorName = employeeNameOf(authUser);
+  const reopenReason = String(body.reason || body.instruction || body.comments || '').trim();
+  const skipNotification = body.skipNotification === true || body.silent === true;
+
+  const task = await DailyPlannerTasksModel.updateTask(taskId, {
+    status: 'Pending',
+    approved: false,
+    approvalStatus: '',
+    // Keep approvedBy / approvedAt / approvedByName as historical approval evidence.
+    reopenedFromStatus: 'Approved',
+    reopenedBy: actorCode,
+    reopenedByName: actorName,
+    reopenedAt: nowIso,
+    reopenReason,
+    verificationStatus: '',
+  });
+
+  if (!skipNotification) {
+    void notifyUser(
+      existing.employeeCode,
+      'Daily Planner task reopened',
+      `"${existing.taskName}" was reopened by Super Admin for correction.`,
+      'WARNING',
+      { plannerTaskId: taskId },
+    );
+  }
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.STATUS_CHANGE, task, 'Task Reopened By Super Admin', {
+    oldValues: {
+      status: existing.status,
+      approved: existing.approved,
+      approvedBy: existing.approvedBy,
+      approvedAt: existing.approvedAt || existing.approvedDate,
+    },
+    newValues: {
+      status: task.status,
+      approved: task.approved,
+      reopenedBy: actorCode,
+      reopenedAt: nowIso,
+    },
+    metadata: {
+      remark: reopenReason,
+      previousStatus: 'Approved',
+      previousApprovedBy: existing.approvedBy || '',
+      previousApprovedAt: existing.approvedAt || existing.approvedDate || '',
+    },
+  });
+
+  return { task };
+};
+
+/**
+ * Super Admin only — reschedule a team task to a new date (creates linked RESCHEDULED child).
+ * Reuses the employee not-completed next_date architecture without requiring task ownership.
+ */
+export const rescheduleTaskBySuperAdmin = async (taskId, body, authUser, effectiveRole) => {
+  assertIsSuperAdmin(effectiveRole);
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing) {
+    const err = new Error('Task not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  assertTaskNotAlreadyRescheduled(existing);
+  const status = String(existing.status || '').trim();
+  if (status === 'Verified Complete') {
+    const err = new Error('Verified complete tasks cannot be rescheduled');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const instruction = String(body.instruction || body.reason || body.comments || '').trim();
+  const location = await getEmployeeLocation(existing.employeeCode);
+  const newDate = await PlanningRecognitionService.validateRescheduleTargetDate(
+    body.newDate,
+    new Date(),
+    location,
+  );
+  if (newDate === existing.date) {
+    const err = new Error('New date must be different from the current task date');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const now = new Date();
+  const actorCode = employeeCodeOf(authUser);
+  const actorName = employeeNameOf(authUser);
+  const rescheduledAt = now.toISOString();
+  const reasonText = instruction || 'Rescheduled by Super Admin';
+
+  const task = await DailyPlannerTasksModel.updateTask(taskId, {
+    status: 'Rescheduled',
+    reason: reasonText,
+    managerInstructions: instruction || existing.managerInstructions || '',
+    rescheduledFromDate: existing.date,
+    rescheduledToDate: newDate,
+    rescheduledBy: actorCode,
+    rescheduledByName: actorName,
+    rescheduledAt,
+    completionScore: 0,
+    finalScore: 0,
+  });
+
+  const rescheduledTask = await DailyPlannerTasksModel.createTask({
+    employeeCode: existing.employeeCode,
+    employeeName: existing.employeeName,
+    date: newDate,
+    taskName: existing.taskName,
+    description: existing.description,
+    priority: existing.currentPriority || existing.priority,
+    originalPriority: existing.originalPriority || existing.priority,
+    currentPriority: existing.currentPriority || existing.priority,
+    priorityEdited: existing.priorityEdited,
+    hoursRequired: existing.hoursRequired,
+    originalHoursRequired: existing.originalHoursRequired ?? existing.hoursRequired,
+    hoursRequiredEdited: existing.hoursRequiredEdited,
+    taskType: existing.taskType,
+    source: PLANNING_SOURCE_RESCHEDULED,
+    salesPlannerId: existing.salesPlannerId,
+    status: 'Approved',
+    approved: true,
+    approvalStatus: 'APPROVED',
+    approvedBy: actorCode,
+    approvedByName: actorName,
+    approvedDate: rescheduledAt,
+    approvedAt: rescheduledAt,
+    managerComments: existing.managerComments || '',
+    managerInstructions: instruction || existing.managerInstructions || '',
+    planningCategory:
+      existing.planningCategory === PLANNING_CATEGORY_URGENT
+        ? PLANNING_CATEGORY_URGENT
+        : PLANNING_CATEGORY_REGULAR,
+    urgentReason: existing.urgentReason || '',
+    originalDate: existing.originalDate || existing.date,
+    rescheduledFrom: existing.date,
+    reason: reasonText,
+    parentTaskId: existing.plannerTaskId,
+    planningWindowUsed: null,
+    planningTimestamp: rescheduledAt,
+    planningScore: 0,
+    completionScore: 0,
+    finalScore: 0,
+    planFinalizedAt: existing.planFinalizedAt || null,
+    planFinalizedBy: String(existing.planFinalizedBy || '').trim(),
+  });
+
+  if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
+    await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+      employeeCode: existing.employeeCode,
+      workingDayDateKey: existing.date,
+    });
+  }
+
+  void notifyUser(
+    existing.employeeCode,
+    'Daily Planner task rescheduled',
+    `"${existing.taskName}" was rescheduled to ${newDate}.`,
+    'INFO',
+    { plannerTaskId: rescheduledTask.plannerTaskId },
+  );
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.STATUS_CHANGE, task, 'Task Rescheduled By Super Admin', {
+    oldValues: { status: existing.status, date: existing.date },
+    newValues: {
+      status: 'Rescheduled',
+      rescheduledToDate: newDate,
+      rescheduledTaskId: rescheduledTask.plannerTaskId,
+    },
+    metadata: { remark: instruction, newDate },
+  });
+
+  return { task, rescheduledTask };
+};
+
+/**
+ * Super Admin only — soft-delete a team task (preserves row + audit history).
+ */
+export const deleteTaskBySuperAdmin = async (taskId, body, authUser, effectiveRole) => {
+  assertIsSuperAdmin(effectiveRole);
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing) {
+    const err = new Error('Task not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (String(existing.status || '').trim() === 'Rescheduled') {
+    const err = new Error('Rescheduled original tasks cannot be deleted');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const reason = String(body.reason || body.instruction || body.comments || '').trim();
+  const actorCode = employeeCodeOf(authUser);
+  const actorName = employeeNameOf(authUser);
+  const nowIso = new Date().toISOString();
+
+  // Stamp termination metadata on the row before soft-delete for audit/history.
+  await DailyPlannerTasksModel.updateTask(taskId, {
+    status: 'Terminated',
+    reason: reason || 'Deleted by Super Admin',
+    terminatedAt: nowIso,
+    terminatedBy: actorCode,
+    terminatedByName: actorName,
+  });
+  await DailyPlannerTasksModel.softDeleteTask(taskId);
+
+  if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
+    await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+      employeeCode: existing.employeeCode,
+      workingDayDateKey: existing.date,
+    });
+  }
+
+  void notifyUser(
+    existing.employeeCode,
+    'Daily Planner task deleted',
+    `"${existing.taskName}" was removed by Super Admin.`,
+    'WARNING',
+    { plannerTaskId: taskId },
+  );
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.DELETE, existing, 'Task Deleted By Super Admin', {
+    oldValues: { status: existing.status, approved: existing.approved },
+    newValues: { status: 'Deleted', is_deleted: true },
+    metadata: {
+      remark: reason,
+      previousStatus: existing.status,
+      previousApprovedBy: existing.approvedBy || '',
+      previousApprovedAt: existing.approvedAt || existing.approvedDate || '',
+      reopenedBy: existing.reopenedBy || '',
+      reopenedAt: existing.reopenedAt || '',
+    },
+  });
+
+  return { success: true, plannerTaskId: taskId };
 };
 
 export const verifyTaskCompletion = async (taskId, body, authUser, effectiveRole) => {

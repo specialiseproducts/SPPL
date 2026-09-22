@@ -115,7 +115,7 @@ export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
 
         {visibleTabs.includes('team-daily-planner') ? (
           <TabsContent value="team-daily-planner" className="mt-6 outline-none">
-            <TeamDailyPlannerTab />
+            <TeamDailyPlannerTab moduleRole={moduleRole} />
           </TabsContent>
         ) : null}
 

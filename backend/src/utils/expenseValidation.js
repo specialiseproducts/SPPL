@@ -9,9 +9,27 @@ export function isTravelCarOrBike(expenseHead, subCategory) {
   return expenseHead === 'Travel' && (sub === 'Car' || sub === 'Bike');
 }
 
+/** Travel ticket modes: Flight / Bus / Taxi / Train (shared PNR + From/To form). */
+export function isTravelTicketTransport(expenseHead, subCategory) {
+  const sub = String(subCategory || '').trim();
+  return (
+    expenseHead === 'Travel' &&
+    (sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train')
+  );
+}
+
 export function isHotelBookingSelf(expenseHead, subCategory) {
   const sub = String(subCategory || '').trim();
   return expenseHead === 'Hotel_Booking' && sub === 'Self';
+}
+
+export function assertTravelTicketTransportFields(data) {
+  const pnr = String(data.pnrNo ?? '').trim();
+  const from = String(data.fromLocation ?? '').trim();
+  const to = String(data.toLocation ?? '').trim();
+  if (!pnr) throw new Error('pnrNo is required for Travel Flight/Bus/Taxi/Train');
+  if (!from) throw new Error('fromLocation is required for Travel Flight/Bus/Taxi/Train');
+  if (!to) throw new Error('toLocation is required for Travel Flight/Bus/Taxi/Train');
 }
 
 export function isTravelOutstationAllowance(data) {
@@ -111,6 +129,10 @@ export function validateExpenseBusinessRules(merged) {
       throw new Error('amount must be a non-negative number for Travel Car/Bike');
     }
     return;
+  }
+
+  if (isTravelTicketTransport(head, sub)) {
+    assertTravelTicketTransportFields(merged);
   }
 
   if (isHotelBookingSelf(head, sub)) {

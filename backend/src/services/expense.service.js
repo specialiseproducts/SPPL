@@ -30,6 +30,7 @@ import { sortExpensesDesc } from '../utils/dynamoSort.js';
 import {
   validateExpenseBusinessRules,
   isTravelCarOrBike,
+  isTravelTicketTransport,
   isHotelBookingSelf,
   isTravelOutstationAllowance,
   computeOutstationDuration,
@@ -54,6 +55,7 @@ const OTHER_FORM_FIELDS = [
   'billNumber',
   'date',
   'monthYear',
+  'pnrNo',
   'fromLocation',
   'toLocation',
   'returnType',
@@ -69,6 +71,75 @@ function trimText(v) {
     return '';
   }
   return String(v).trim();
+}
+
+const MONTH_ABBRS = [
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'may',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'oct',
+  'nov',
+  'dec',
+];
+
+function resolveMonthYearValue(monthYear, dateValue) {
+  const existing = trimText(monthYear);
+  if (existing) return existing;
+  const dateObj = new Date(dateValue);
+  if (Number.isNaN(dateObj.getTime())) return '';
+  const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+  const year = String(dateObj.getUTCFullYear());
+  return `${month}-${year}`;
+}
+
+function sanitizeEmployeeFirstName(authUser) {
+  const fromField = trimText(authUser?.firstName);
+  const fromFull = trimText(authUser?.fullName).split(/\s+/)[0] || '';
+  const raw = fromField || fromFull || 'employee';
+  const cleaned = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return cleaned || 'employee';
+}
+
+function monthAbbrFromMonthYear(monthYear) {
+  const mm = parseInt(String(monthYear || '').split('-')[0], 10);
+  if (!Number.isFinite(mm) || mm < 1 || mm > 12) return 'mon';
+  return MONTH_ABBRS[mm - 1];
+}
+
+/**
+ * Next unique outstation proof PDF name for employee + monthYear:
+ * firstname_mon(n).pdf — n = existing Travel/OutStation=Yes rows for that month + 1.
+ */
+async function allocateOutstationProofFileName(authUser, monthYear) {
+  const firstName = sanitizeEmployeeFirstName(authUser);
+  const abbr = monthAbbrFromMonthYear(monthYear);
+  const code = trimText(authUser?.employeeCode);
+  const rows = code ? await ExpenseModel.queryExpensesByEmployeeCode(code) : [];
+  const targetMonth = trimText(monthYear);
+  const matching = (rows || []).filter(
+    (row) =>
+      String(row?.expenseHead || '').trim() === 'Travel' &&
+      String(row?.outStation || '').trim() === 'Yes' &&
+      trimText(row?.monthYear) === targetMonth
+  );
+  let maxN = matching.length;
+  const nameRe = new RegExp(`^${firstName}_${abbr}\\((\\d+)\\)\\.pdf$`, 'i');
+  for (const row of matching) {
+    const docs = Array.isArray(row.documents) ? row.documents : [];
+    for (const doc of docs) {
+      const match = String(doc?.fileName || '').match(nameRe);
+      if (!match) continue;
+      const n = parseInt(match[1], 10);
+      if (Number.isFinite(n) && n > maxN) maxN = n;
+    }
+  }
+  return `${firstName}_${abbr}(${maxN + 1}).pdf`;
 }
 
 function normalizeSupportingDocumentLabel(value, hasFile) {
@@ -319,6 +390,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     const monthYear = trimText(raw.monthYear);
     const travelCarBike = isTravelCarOrBike(expenseHead, subCategory || '');
   const travelOutstation = isTravelOutstationAllowance(raw);
+    const travelTicket = isTravelTicketTransport(expenseHead, subCategory || '');
     const hotelSelf = isHotelBookingSelf(expenseHead, subCategory || '');
 
     if (!expenseHead) {
@@ -351,7 +423,10 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (!purpose && legacyCombined) {
       purpose = legacyCombined;
     }
-    if (!location && !travelOutstation) {
+    if (travelTicket) {
+      location = '';
+    }
+    if (!location && !travelOutstation && !travelTicket) {
       throw new Error('location is required');
     }
     if (!purpose && !travelOutstation) {
@@ -373,9 +448,13 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       String(authUser.employeeCode || '').trim();
 
     const travelExtras = {};
+    const pnrNo = trimText(raw.pnrNo);
     const fromLoc = trimText(raw.fromLocation);
     const toLoc = trimText(raw.toLocation);
     const retT = trimText(raw.returnType);
+    if (pnrNo) {
+      travelExtras.pnrNo = pnrNo;
+    }
     if (fromLoc) {
       travelExtras.fromLocation = fromLoc;
     }
@@ -453,11 +532,30 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (travelCarBike) {
       supportingDocument = 'No';
     }
+    if (travelOutstation) {
+      if (!hasUploadedDocs) {
+        throw new Error('Arrival and departure proof PDF is required for Travel OutStation');
+      }
+      supportingDocument = 'Yes';
+    }
     if (supportingDocument === 'Yes' && !hasUploadedDocs) {
       throw new Error('Supporting document file is required when Supporting Document is Yes');
     }
-    const documentsForItem =
-      supportingDocument === 'No' || travelCarBike ? [] : documents || [];
+
+    const resolvedMonthYear = resolveMonthYearValue(monthYear, date);
+    let documentsForItem =
+      supportingDocument === 'No' || travelCarBike ? [] : [...(documents || [])];
+
+    if (travelOutstation && documentsForItem.length > 0) {
+      const authoritativeName = await allocateOutstationProofFileName(
+        authUser,
+        resolvedMonthYear
+      );
+      documentsForItem = documentsForItem.slice(0, 1).map((doc) => ({
+        ...doc,
+        fileName: authoritativeName,
+      }));
+    }
 
     if (travelOutstation && !outstationDuration) {
       throw new Error('Departure datetime cannot be earlier than arrival datetime');
@@ -472,7 +570,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
           ? { serviceProvider: '', billNumber: '' }
           : { serviceProvider, billNumber }),
       date,
-      ...(monthYear ? { monthYear } : {}),
+      ...(resolvedMonthYear ? { monthYear: resolvedMonthYear } : monthYear ? { monthYear } : {}),
       location: travelOutstation ? '' : location,
       purpose: travelOutstation ? '' : purpose,
       employeeId: String(authUser.employeeCode || '').trim(),
@@ -690,8 +788,10 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       ...updatePayload,
     };
 
+    const mergedSub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
     const resolvedLp = resolveLocationFieldsFromRow(merged);
-    if (!travelOutstation) {
+    const mergedIsTicket = isTravelTicketTransport(merged.expenseHead, mergedSub);
+    if (!travelOutstation && !mergedIsTicket) {
       if (!resolvedLp.location) {
         throw new Error('location is required');
       }
@@ -702,14 +802,20 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       merged.purpose = resolvedLp.purpose;
       updatePayload.location = resolvedLp.location;
       updatePayload.purpose = resolvedLp.purpose;
+    } else if (mergedIsTicket) {
+      if (!resolvedLp.purpose) {
+        throw new Error('purpose is required');
+      }
+      merged.location = '';
+      merged.purpose = resolvedLp.purpose;
+      updatePayload.location = '';
+      updatePayload.purpose = resolvedLp.purpose;
     } else {
       merged.location = '';
       merged.purpose = '';
       updatePayload.location = '';
       updatePayload.purpose = '';
     }
-
-    const mergedSub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
 
     if (isHotelBookingSelf(merged.expenseHead, mergedSub)) {
       const derivedDate =
@@ -724,6 +830,9 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
 
     if (!isTravelCarOrBike(merged.expenseHead, mergedSub)) {
       updatePayload.fuelType = '';
+    }
+    if (!isTravelTicketTransport(merged.expenseHead, mergedSub)) {
+      updatePayload.pnrNo = '';
     }
 
     if (trimText(updatePayload.supportingDocument).toLowerCase() === 'yes') {

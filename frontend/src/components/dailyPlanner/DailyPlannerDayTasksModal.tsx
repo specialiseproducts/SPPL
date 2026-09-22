@@ -603,7 +603,7 @@ export default function DailyPlannerDayTasksModal({
                                 ) : null}
                                 {task.replacementTask.expectedOutcome ? (
                                   <div>
-                                    <p className="font-medium">Expected Outcome:</p>
+                                    <p className="font-medium">Instruction:</p>
                                     <BulletPointList
                                       text={parseBulletPoints(task.replacementTask.expectedOutcome).join('\n')}
                                     />

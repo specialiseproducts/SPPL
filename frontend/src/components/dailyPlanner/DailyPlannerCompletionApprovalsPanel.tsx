@@ -10,13 +10,17 @@ import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
 
 type Props = {
+  moduleRole?: string;
   onTasksUpdated?: (
     updatedTasks?: DailyPlannerTask[],
-    options?: { replaceEmployeeDate?: boolean },
+    options?: { replaceEmployeeDate?: boolean; removeTaskIds?: string[] },
   ) => void;
 };
 
-export default function DailyPlannerCompletionApprovalsPanel({ onTasksUpdated }: Props) {
+export default function DailyPlannerCompletionApprovalsPanel({
+  moduleRole,
+  onTasksUpdated,
+}: Props) {
   const queryClient = useQueryClient();
   const pendingQuery = usePendingCompletionApprovalsQuery(true);
   const employeesQuery = useEmployeesListQuery();
@@ -67,14 +71,33 @@ export default function DailyPlannerCompletionApprovalsPanel({ onTasksUpdated }:
     });
   };
 
-  const handleTasksUpdated = async (updatedTasks?: DailyPlannerTask[]) => {
-    if (updatedTasks?.length && activeRow) {
+  const handleTasksUpdated = async (
+    updatedTasks?: DailyPlannerTask[],
+    options?: { replaceEmployeeDate?: boolean; removeTaskIds?: string[] },
+  ) => {
+    if (options?.removeTaskIds?.length && activeRow) {
+      const removeIds = new Set(options.removeTaskIds);
+      setActiveRow((prev) => {
+        if (!prev) return prev;
+        const tasks = prev.tasks.filter((t) => !removeIds.has(t.plannerTaskId));
+        return {
+          ...prev,
+          tasks,
+          taskCount: tasks.length,
+        };
+      });
+    } else if (updatedTasks?.length && activeRow) {
       // Merge verified/reviewed tasks into the existing day list (do not replace with a single task).
       setActiveRow((prev) => {
         if (!prev) return prev;
         const byId = new Map(prev.tasks.map((t) => [t.plannerTaskId, t]));
         for (const task of updatedTasks) {
           if (!task?.plannerTaskId) continue;
+          // Rescheduled originals leave the completion queue for this day.
+          if (String(task.status || '').trim() === 'Rescheduled') {
+            byId.delete(task.plannerTaskId);
+            continue;
+          }
           byId.set(task.plannerTaskId, task);
         }
         const tasks = Array.from(byId.values());
@@ -85,7 +108,7 @@ export default function DailyPlannerCompletionApprovalsPanel({ onTasksUpdated }:
         };
       });
     }
-    await onTasksUpdated?.(updatedTasks);
+    await onTasksUpdated?.(updatedTasks, options);
     refreshPending();
   };
 
@@ -167,6 +190,7 @@ export default function DailyPlannerCompletionApprovalsPanel({ onTasksUpdated }:
           reviewDate={activeRow.date}
           initialTaskIndex={0}
           completionReviewMode
+          moduleRole={moduleRole}
           onClose={closeReview}
           onFinish={() => {
             closeReview();

@@ -283,6 +283,51 @@ export const requestNeedsRevision = async (req, res, next) => {
   }
 };
 
+export const reopenApprovedTask = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.reopenApprovedTask(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner reopenApprovedTask error:', error);
+    next(error);
+  }
+};
+
+export const rescheduleTaskBySuperAdmin = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.rescheduleTaskBySuperAdmin(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner rescheduleTaskBySuperAdmin error:', error);
+    next(error);
+  }
+};
+
+export const deleteTaskBySuperAdmin = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.deleteTaskBySuperAdmin(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner deleteTaskBySuperAdmin error:', error);
+    next(error);
+  }
+};
+
 export const verifyTaskCompletion = async (req, res, next) => {
   try {
     const data = await DailyPlannerService.verifyTaskCompletion(

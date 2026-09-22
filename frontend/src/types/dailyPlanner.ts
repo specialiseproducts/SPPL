@@ -21,7 +21,9 @@ export interface DailyPlannerReplacementTask {
   description: string;
   priority: DailyPlannerPriority;
   hoursRequired?: number | null;
+  /** Optional Super Admin / manager instruction (stored as expectedOutcome for compatibility). */
   expectedOutcome?: string;
+  instruction?: string;
 }
 
 export interface DailyPlannerTask {
@@ -56,6 +58,12 @@ export interface DailyPlannerTask {
   approvedByName: string;
   approvedDate?: string | null;
   approvedAt?: string | null;
+  /** Super Admin reopen — preserves prior approval while unlocking correction. */
+  reopenedFromStatus?: string;
+  reopenedBy?: string;
+  reopenedByName?: string;
+  reopenedAt?: string | null;
+  reopenReason?: string;
   managerComments: string;
   managerInstructions?: string;
   isProjectBased?: boolean;

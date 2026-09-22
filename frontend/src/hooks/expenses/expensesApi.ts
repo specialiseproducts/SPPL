@@ -7,17 +7,18 @@ import { mapApiEmployee } from '../../utils/mapApiEmployee';
 import { normalizeExpenseRow } from '../../utils/expenseRowNormalize';
 import type { ExpenseTravelRateSettings } from '../../components/ExpenseRateSettingsModal';
 import { parseTravelRatesApiData } from '../../utils/expenseTravelRatesFromApi';
-import { isTravelCarOrBike } from '../../utils/expenseAmountCalculation';
+import { isTravelCarOrBike, isTravelTicketTransport } from '../../utils/expenseAmountCalculation';
 import { apiFetch } from '../../services/api';
 
 export function buildExpenseFormData(expense: ExpenseRecord): FormData {
   const travelCarBike = isTravelCarOrBike(expense.expenseHead, expense.subCategory ?? '');
+  const travelTicket = isTravelTicketTransport(expense.expenseHead, expense.subCategory ?? '');
   const formData = new FormData();
   formData.append('expenseHead', expense.expenseHead);
   if (expense.subCategory) {
     formData.append('subCategory', expense.subCategory);
   }
-  formData.append('location', expense.location);
+  formData.append('location', travelTicket ? '' : expense.location);
   formData.append('purpose', expense.purpose);
   if (!travelCarBike) {
     formData.append('serviceProvider', expense.serviceProvider);
@@ -26,6 +27,9 @@ export function buildExpenseFormData(expense: ExpenseRecord): FormData {
   formData.append('date', expense.date);
   formData.append('amount', String(expense.amount));
   formData.append('monthYear', expense.monthYear);
+  if (expense.pnrNo) {
+    formData.append('pnrNo', expense.pnrNo);
+  }
   if (expense.fromLocation) {
     formData.append('fromLocation', expense.fromLocation);
   }

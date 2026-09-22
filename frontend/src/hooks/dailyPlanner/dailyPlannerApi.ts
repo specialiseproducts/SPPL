@@ -72,6 +72,11 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     approvedByName: String(r.approvedByName ?? '').trim(),
     approvedDate: r.approvedDate ? String(r.approvedDate) : r.approvedAt ? String(r.approvedAt) : null,
     approvedAt: r.approvedAt ? String(r.approvedAt) : r.approvedDate ? String(r.approvedDate) : null,
+    reopenedFromStatus: String(r.reopenedFromStatus ?? '').trim(),
+    reopenedBy: String(r.reopenedBy ?? '').trim(),
+    reopenedByName: String(r.reopenedByName ?? '').trim(),
+    reopenedAt: r.reopenedAt ? String(r.reopenedAt) : null,
+    reopenReason: String(r.reopenReason ?? '').trim(),
     managerComments: String(r.managerComments ?? '').trim(),
     managerInstructions: String(r.managerInstructions ?? '').trim(),
     isProjectBased: Boolean(r.isProjectBased),
@@ -633,6 +638,7 @@ export async function requestNeedsRevisionDailyPlannerTask(
       priority: string;
       hoursRequired: number;
       expectedOutcome?: string;
+      instruction?: string;
     };
   },
 ): Promise<{ task: DailyPlannerTask; revisedTask?: DailyPlannerTask }> {
@@ -648,6 +654,59 @@ export async function requestNeedsRevisionDailyPlannerTask(
   return {
     task: normalizeTask(res.data.task),
     revisedTask: res.data.revisedTask ? normalizeTask(res.data.revisedTask) : undefined,
+  };
+}
+
+export async function reopenApprovedDailyPlannerTask(
+  taskId: string,
+  body?: { reason?: string; instruction?: string; skipNotification?: boolean },
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/reopen`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Reopen task failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function rescheduleDailyPlannerTaskBySuperAdmin(
+  taskId: string,
+  body: { newDate: string; instruction?: string },
+): Promise<{ task: DailyPlannerTask; rescheduledTask?: DailyPlannerTask }> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/manager-reschedule`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )) as { data?: { task?: DailyPlannerTask; rescheduledTask?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Reschedule failed');
+  return {
+    task: normalizeTask(res.data.task),
+    rescheduledTask: res.data.rescheduledTask
+      ? normalizeTask(res.data.rescheduledTask)
+      : undefined,
+  };
+}
+
+export async function deleteDailyPlannerTaskBySuperAdmin(
+  taskId: string,
+  body?: { reason?: string; instruction?: string },
+): Promise<{ success: boolean; plannerTaskId: string }> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/manager-delete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    },
+  )) as { data?: { success?: boolean; plannerTaskId?: string } };
+  if (!res?.data?.success) throw new Error('Delete task failed');
+  return {
+    success: true,
+    plannerTaskId: String(res.data.plannerTaskId || taskId).trim(),
   };
 }
 

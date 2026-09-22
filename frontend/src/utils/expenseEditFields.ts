@@ -20,6 +20,7 @@ const FIELD_LABELS: Record<string, string> = {
   purpose: 'Purpose',
   serviceProvider: 'Service Provider Name',
   billNumber: 'Bill Number',
+  pnrNo: 'PNR No.',
   fromLocation: 'From',
   toLocation: 'To',
   returnType: 'Return',
@@ -50,6 +51,14 @@ function isOutstationRecord(record: ExpenseRecord): boolean {
 function isTravelCarOrBikeRecord(record: ExpenseRecord): boolean {
   const sub = String(record.subCategory || '').trim();
   return record.expenseHead === 'Travel' && (sub === 'Car' || sub === 'Bike');
+}
+
+function isTravelTicketTransportRecord(record: ExpenseRecord): boolean {
+  const sub = String(record.subCategory || '').trim();
+  return (
+    record.expenseHead === 'Travel' &&
+    (sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train')
+  );
 }
 
 function isHotelSelfRecord(record: ExpenseRecord): boolean {
@@ -96,7 +105,13 @@ export function getEditableExpenseFields(record: ExpenseRecord | null): ExpenseE
     addIfPresent('subCategory', true);
     addIfPresent('date', !isHotelSelfRecord(record));
     addIfPresent('amount', true);
-    addIfPresent('location', true);
+    if (isTravelTicketTransportRecord(record)) {
+      addIfPresent('pnrNo', true);
+      addIfPresent('fromLocation', true);
+      addIfPresent('toLocation', true);
+    } else {
+      addIfPresent('location', true);
+    }
     addIfPresent('purpose', true);
     if (!isTravelCarOrBikeRecord(record)) {
       addIfPresent('serviceProvider', true);
@@ -109,12 +124,13 @@ export function getEditableExpenseFields(record: ExpenseRecord | null): ExpenseE
       addIfPresent('returnType', true);
       addIfPresent('kilometers', true);
       addIfPresent('fuelType', true);
-    } else {
+    } else if (!isTravelTicketTransportRecord(record)) {
       addIfPresent('fromLocation');
       addIfPresent('toLocation');
       addIfPresent('returnType');
       addIfPresent('kilometers');
       addIfPresent('fuelType');
+      addIfPresent('pnrNo');
     }
     if (isHotelSelfRecord(record)) {
       addIfPresent('stayDateFrom', true);
@@ -161,12 +177,15 @@ export function getExpenseDisplayFields(record: ExpenseRecord): ExpenseDisplayFi
     add('Purpose', record.purpose);
   } else {
     add('Sub Category', record.subCategory);
+    add('PNR No.', record.pnrNo, isTravelTicketTransportRecord(record));
     add('Date', record.date, true);
     add('Amount', record.amount, true);
-    add('Location', record.location, true);
+    if (!isTravelTicketTransportRecord(record)) {
+      add('Location', record.location, true);
+    }
     add('Purpose', record.purpose, true);
-    add('From', record.fromLocation);
-    add('To', record.toLocation);
+    add('From', record.fromLocation, isTravelTicketTransportRecord(record) || isTravelCarOrBikeRecord(record));
+    add('To', record.toLocation, isTravelTicketTransportRecord(record) || isTravelCarOrBikeRecord(record));
     add('Return', record.returnType);
     add('Kilometers (km)', record.kilometers);
     add('Stay Date (From)', record.stayDateFrom);

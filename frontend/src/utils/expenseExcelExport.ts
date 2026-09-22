@@ -1,4 +1,4 @@
-import ExcelJS from 'exceljs';
+import { jsPDF } from 'jspdf';
 import type { ExpenseRecord } from '../types/expenses';
 
 const MONTH_NAMES = [
@@ -16,6 +16,7 @@ const MONTH_NAMES = [
   'December',
 ];
 
+/** Exact Excel export column labels / order — source of truth. */
 const EXPORT_COLUMNS = [
   'Sr. #',
   'Date',
@@ -38,6 +39,30 @@ const EXPORT_COLUMNS = [
 
 const COL_COUNT = EXPORT_COLUMNS.length;
 const LOGO_PATH = '/sppl-expense-logo.png';
+
+/**
+ * Column proportions matching the existing Excel export (content-based ~5–12 char widths).
+ * Purpose / Service Provider / Bill Number get more space; travel fields stay narrow.
+ */
+const COL_WEIGHTS = [
+  0.028, // Sr. #
+  0.052, // Date
+  0.062, // Expense Head
+  0.068, // Sub Category
+  0.055, // Location
+  0.11, // Purpose
+  0.04, // From
+  0.04, // To
+  0.038, // Return
+  0.048, // Kilometers
+  0.05, // Stay From
+  0.05, // Stay To
+  0.075, // Service Provider
+  0.08, // Bill Number
+  0.042, // Fuel Type
+  0.055, // Supporting Document
+  0.057, // Amount
+];
 
 export type ExpenseExportContext = {
   employeeName: string;
@@ -68,6 +93,13 @@ function formatDateCell(iso: string | undefined): string {
   return d.toLocaleDateString('en-GB');
 }
 
+function formatAmount(amount: number): string {
+  return amount.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 function supportingDocumentLabel(expense: ExpenseRecord): string {
   if (expense.supportingDocument === 'Yes' || expense.supportingDocument === 'No') {
     return expense.supportingDocument;
@@ -79,10 +111,6 @@ function supportingDocumentLabel(expense: ExpenseRecord): string {
 /** Existing OutStation Travel records are Travel Allowance items, not normal expense rows. */
 function isTravelAllowanceRecord(expense: ExpenseRecord): boolean {
   return String(expense.expenseHead || '').trim() === 'Travel' && expense.outStation === 'Yes';
-}
-
-function longestSegment(text: string, splitter: RegExp): number {
-  return text.split(splitter).reduce((max, part) => Math.max(max, part.trim().length), 0);
 }
 
 export function buildExpenseExportContext(
@@ -125,7 +153,7 @@ export function buildExpenseExportContext(
   return { employeeName, monthLabel, yearLabel };
 }
 
-async function loadLogoBase64(): Promise<{ base64: string; extension: 'png' } | null> {
+async function loadLogoDataUrl(): Promise<string | null> {
   try {
     const response = await fetch(LOGO_PATH);
     if (!response.ok) return null;
@@ -135,348 +163,275 @@ async function loadLogoBase64(): Promise<{ base64: string; extension: 'png' } | 
     for (let i = 0; i < bytes.length; i += 1) {
       binary += String.fromCharCode(bytes[i]);
     }
-    return { base64: btoa(binary), extension: 'png' };
+    return `data:image/png;base64,${btoa(binary)}`;
   } catch {
     return null;
   }
 }
 
-const BORDER_COLOR = { argb: 'FF000000' };
-
-function borderSide(style: 'thin' | 'medium') {
-  return { style, color: BORDER_COLOR };
+function buildRowValues(expense: ExpenseRecord, index: number): string[] {
+  const amount = Number.isFinite(Number(expense.amount)) ? Number(expense.amount) : 0;
+  return [
+    String(index + 1),
+    formatDateCell(expense.date),
+    displayCell(expense.expenseHead),
+    displayCell(expense.subCategory),
+    displayCell(expense.location),
+    displayCell(expense.purpose),
+    displayCell(expense.fromLocation),
+    displayCell(expense.toLocation),
+    displayCell(expense.returnType),
+    formatKm(expense.kilometers),
+    formatDateCell(expense.stayDateFrom),
+    formatDateCell(expense.stayDateTo),
+    displayCell(expense.serviceProvider),
+    displayCell(expense.billNumber),
+    displayCell(expense.fuelType),
+    supportingDocumentLabel(expense),
+    formatAmount(amount),
+  ];
 }
 
-function applyThinBorder(cell: ExcelJS.Cell) {
-  cell.border = {
-    top: borderSide('thin'),
-    left: borderSide('thin'),
-    bottom: borderSide('thin'),
-    right: borderSide('thin'),
-  };
+function buildExportFileName(context: ExpenseExportContext): string {
+  const employee = String(context.employeeName || 'Employee')
+    .trim()
+    .replace(/\.xlsx$/i, '')
+    .replace(/\s+/g, '-');
+  const month = String(context.monthLabel || '').trim().replace(/\.xlsx$/i, '');
+  const year = String(context.yearLabel || '').trim().replace(/\.xlsx$/i, '');
+  return `SPPL-Expenses-${employee}-${month}-${year}.pdf`;
 }
 
-function setCellBorderSides(
-  cell: ExcelJS.Cell,
-  sides: Partial<Record<'top' | 'left' | 'bottom' | 'right', 'thin' | 'medium'>>,
-) {
-  const current = cell.border ?? {};
-  cell.border = {
-    top: sides.top ? borderSide(sides.top) : current.top,
-    left: sides.left ? borderSide(sides.left) : current.left,
-    bottom: sides.bottom ? borderSide(sides.bottom) : current.bottom,
-    right: sides.right ? borderSide(sides.right) : current.right,
-  };
-}
-
-/** Upgrade only the outside edges of the report to a thicker border. */
-function applyOuterFrameMedium(
-  sheet: ExcelJS.Worksheet,
-  topRow: number,
-  bottomRow: number,
-  leftCol: number,
-  rightCol: number,
-) {
-  for (let col = leftCol; col <= rightCol; col += 1) {
-    setCellBorderSides(sheet.getCell(topRow, col), { top: 'medium' });
-    setCellBorderSides(sheet.getCell(bottomRow, col), { bottom: 'medium' });
+function downloadPdfBlob(doc: jsPDF, fileName: string) {
+  const blob = doc.output('blob');
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`;
+  // Ensure no residual .xlsx.pdf naming
+  if (anchor.download.toLowerCase().includes('.xlsx.pdf')) {
+    anchor.download = anchor.download.replace(/\.xlsx\.pdf$/i, '.pdf');
   }
-  for (let row = topRow; row <= bottomRow; row += 1) {
-    setCellBorderSides(sheet.getCell(row, leftCol), { left: 'medium' });
-    setCellBorderSides(sheet.getCell(row, rightCol), { right: 'medium' });
-  }
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
-/** Draw a rectangular section border without internal grid lines. */
-function applySectionEnvelope(
-  sheet: ExcelJS.Worksheet,
-  topRow: number,
-  bottomRow: number,
-  leftCol: number,
-  rightCol: number,
-) {
-  for (let col = leftCol; col <= rightCol; col += 1) {
-    setCellBorderSides(sheet.getCell(topRow, col), { top: 'thin' });
-    setCellBorderSides(sheet.getCell(bottomRow, col), { bottom: 'thin' });
-  }
-  for (let row = topRow; row <= bottomRow; row += 1) {
-    setCellBorderSides(sheet.getCell(row, leftCol), { left: 'thin' });
-    setCellBorderSides(sheet.getCell(row, rightCol), { right: 'thin' });
-  }
-}
-
-function applySignatureDivider(
-  sheet: ExcelJS.Worksheet,
-  topRow: number,
-  bottomRow: number,
-  dividerAfterCol: number,
-) {
-  for (let row = topRow; row <= bottomRow; row += 1) {
-    setCellBorderSides(sheet.getCell(row, dividerAfterCol), { right: 'thin' });
-    setCellBorderSides(sheet.getCell(row, dividerAfterCol + 1), { left: 'thin' });
-  }
-}
-
-export async function exportExpensesToExcel(
+/**
+ * PDF export that reproduces the existing Excel expense export layout.
+ * Dataset / filters / columns unchanged — layout only.
+ */
+export async function exportExpensesToPdf(
   rows: ExpenseRecord[],
   context: ExpenseExportContext,
   travelAllowanceSummary?: ExpenseTravelAllowanceSummary,
 ): Promise<void> {
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'SPPL Expenses';
-  const sheet = workbook.addWorksheet('Expenses', {
-    views: [{ showGridLines: false }],
-    pageSetup: {
-      orientation: 'landscape',
-      fitToPage: true,
-      fitToWidth: 1,
-      margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
-    },
-  });
-
-  sheet.columns = EXPORT_COLUMNS.map(() => ({ width: 10 }));
-
-  const lastColLetter = String.fromCharCode(64 + COL_COUNT);
-  const reportLeftCol = 1;
-  const reportRightCol = COL_COUNT;
-  const logoStartRow = 1;
-  const logoEndRow = 3;
-  const titleRow = 4;
-
-  sheet.mergeCells(`A${logoStartRow}:${lastColLetter}${logoEndRow}`);
-  sheet.getRow(logoStartRow).height = 28;
-  sheet.getRow(logoStartRow + 1).height = 28;
-  sheet.getRow(logoEndRow).height = 28;
-
-  const logo = await loadLogoBase64();
-  if (logo) {
-    const imageId = workbook.addImage({
-      base64: logo.base64,
-      extension: logo.extension,
-    });
-    sheet.addImage(imageId, {
-      tl: { col: 6.5, row: logoStartRow - 1 + 0.15 },
-      ext: { width: 320, height: 72 },
-    });
-  }
-
-  const title = `SPPL : Expenses by ${context.employeeName} in ${context.monthLabel} ${context.yearLabel}`;
-  sheet.mergeCells(`A${titleRow}:${lastColLetter}${titleRow}`);
-  const titleCell = sheet.getCell(`A${titleRow}`);
-  titleCell.value = title;
-  titleCell.font = { bold: true, size: 14 };
-  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  sheet.getRow(titleRow).height = 24;
-
-  const headerRowIndex = titleRow + 1;
-  const headerRow = sheet.getRow(headerRowIndex);
-  EXPORT_COLUMNS.forEach((label, index) => {
-    const cell = headerRow.getCell(index + 1);
-    cell.value = label;
-    cell.font = { bold: true, size: 10 };
-    cell.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFFFFF00' },
-    };
-    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    applyThinBorder(cell);
-  });
-  headerRow.height = 32;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 18;
+  const marginTop = 14;
+  const marginBottom = 16;
+  const usableWidth = pageWidth - marginX * 2;
+  const weightSum = COL_WEIGHTS.reduce((a, b) => a + b, 0);
+  const colWidths = COL_WEIGHTS.map((w) => (w / weightSum) * usableWidth);
 
   const tableRows = rows.filter((expense) => !isTravelAllowanceRecord(expense));
-
-  let dataRowIndex = headerRowIndex + 1;
   let totalAmount = 0;
-
-  tableRows.forEach((expense, index) => {
+  const bodyRows = tableRows.map((expense, index) => {
     const amount = Number.isFinite(Number(expense.amount)) ? Number(expense.amount) : 0;
     totalAmount += amount;
-
-    const values = [
-      index + 1,
-      formatDateCell(expense.date),
-      displayCell(expense.expenseHead),
-      displayCell(expense.subCategory),
-      displayCell(expense.location),
-      displayCell(expense.purpose),
-      displayCell(expense.fromLocation),
-      displayCell(expense.toLocation),
-      displayCell(expense.returnType),
-      formatKm(expense.kilometers),
-      formatDateCell(expense.stayDateFrom),
-      formatDateCell(expense.stayDateTo),
-      displayCell(expense.serviceProvider),
-      displayCell(expense.billNumber),
-      displayCell(expense.fuelType),
-      supportingDocumentLabel(expense),
-      amount,
-    ];
-
-    const row = sheet.getRow(dataRowIndex);
-    values.forEach((value, colIndex) => {
-      const cell = row.getCell(colIndex + 1);
-      cell.value = value;
-      cell.font = { size: 10 };
-      cell.alignment = {
-        horizontal: colIndex === 0 || colIndex === values.length - 1 ? 'center' : 'left',
-        vertical: 'middle',
-        wrapText: true,
-      };
-      if (colIndex === values.length - 1) {
-        cell.numFmt = '#,##0.00';
-      }
-      applyThinBorder(cell);
-    });
-    row.height = undefined;
-    dataRowIndex += 1;
+    return buildRowValues(expense, index);
   });
-
-  const dataEndRowIndex = dataRowIndex;
-  let nextRowIndex = dataRowIndex;
-
-  if ((travelAllowanceSummary?.recordCount ?? 0) > 0) {
-    const summaryRow = nextRowIndex;
-    sheet.mergeCells(`A${summaryRow}:P${summaryRow}`);
-    const allowanceTitleCell = sheet.getCell(`A${summaryRow}`);
-    allowanceTitleCell.value = `Travel Allowances for ${context.monthLabel} ${context.yearLabel}`;
-    allowanceTitleCell.font = { bold: true, size: 11 };
-    allowanceTitleCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-
-    const allowanceAmountCell = sheet.getCell(`Q${summaryRow}`);
-    allowanceAmountCell.value = Number(travelAllowanceSummary?.totalAmount || 0);
-    allowanceAmountCell.numFmt = '₹ #,##0.00';
-    allowanceAmountCell.font = { bold: true, size: 11 };
-    allowanceAmountCell.alignment = { horizontal: 'right', vertical: 'middle' };
-    for (let col = reportLeftCol; col <= reportRightCol; col += 1) {
-      applyThinBorder(sheet.getCell(summaryRow, col));
-    }
-    sheet.getRow(summaryRow).height = 22;
-    nextRowIndex = summaryRow + 1;
-  }
-
-  const totalRowIndex = nextRowIndex;
-  sheet.mergeCells(`A${totalRowIndex}:P${totalRowIndex}`);
-  const totalLabelCell = sheet.getCell(`A${totalRowIndex}`);
-  totalLabelCell.value = 'Total :';
-  totalLabelCell.font = { bold: true, size: 11 };
-  totalLabelCell.alignment = { horizontal: 'right', vertical: 'middle' };
 
   const travelAllowanceTotal = Number(travelAllowanceSummary?.totalAmount || 0);
   const finalTotal =
     totalAmount + (Number.isFinite(travelAllowanceTotal) ? travelAllowanceTotal : 0);
+  const title = `SPPL : Expenses by ${context.employeeName} in ${context.monthLabel} ${context.yearLabel}`;
+  const logoDataUrl = await loadLogoDataUrl();
 
-  const totalValueCell = sheet.getCell(`Q${totalRowIndex}`);
-  totalValueCell.value = finalTotal;
-  totalValueCell.numFmt = '₹ #,##0.00';
-  totalValueCell.font = { bold: true, size: 11 };
-  totalValueCell.alignment = { horizontal: 'right', vertical: 'middle' };
-  for (let col = reportLeftCol; col <= reportRightCol; col += 1) {
-    applyThinBorder(sheet.getCell(totalRowIndex, col));
-  }
-  sheet.getRow(totalRowIndex).height = 22;
+  const headerFontSize = 7;
+  const bodyFontSize = 7;
+  const lineHeight = 8;
+  const cellPadX = 1.5;
+  const cellPadY = 1.5;
 
-  const signatureRowIndex = totalRowIndex + 1;
+  let y = marginTop;
 
-  const signatureEndRow = signatureRowIndex + 2;
-  const signatureDividerCol = 8;
+  const measureWrapped = (text: string, width: number, fontSize: number, bold: boolean) => {
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setFontSize(fontSize);
+    const lines = doc.splitTextToSize(String(text || ''), Math.max(6, width - cellPadX * 2));
+    return Array.isArray(lines) ? lines : [String(text || '')];
+  };
 
-  sheet.mergeCells(`A${signatureRowIndex}:H${signatureEndRow}`);
-  sheet.mergeCells(`I${signatureRowIndex}:Q${signatureEndRow}`);
-
-  const claimedCell = sheet.getCell(`A${signatureRowIndex}`);
-  claimedCell.value = 'Claimed by & Signature';
-  claimedCell.font = { bold: true, size: 11 };
-  claimedCell.alignment = { horizontal: 'center', vertical: 'top' };
-
-  const approvedCell = sheet.getCell(`I${signatureRowIndex}`);
-  approvedCell.value = 'Approved by & Signature';
-  approvedCell.font = { bold: true, size: 11 };
-  approvedCell.alignment = { horizontal: 'center', vertical: 'top' };
-
-  for (let row = signatureRowIndex; row <= signatureEndRow; row += 1) {
-    sheet.getRow(row).height = 24;
-  }
-
-  applySectionEnvelope(
-    sheet,
-    logoStartRow,
-    logoEndRow,
-    reportLeftCol,
-    reportRightCol,
-  );
-  applySectionEnvelope(sheet, titleRow, titleRow, reportLeftCol, reportRightCol);
-  applySectionEnvelope(
-    sheet,
-    signatureRowIndex,
-    signatureEndRow,
-    reportLeftCol,
-    signatureDividerCol,
-  );
-  applySectionEnvelope(
-    sheet,
-    signatureRowIndex,
-    signatureEndRow,
-    signatureDividerCol + 1,
-    reportRightCol,
-  );
-  applySignatureDivider(sheet, signatureRowIndex, signatureEndRow, signatureDividerCol);
-
-  applyOuterFrameMedium(
-    sheet,
-    logoStartRow,
-    signatureEndRow,
-    reportLeftCol,
-    reportRightCol,
-  );
-
-  const MIN_COL_WIDTH = 5;
-  const MAX_COL_WIDTH = 12;
-  for (let colIndex = 1; colIndex <= COL_COUNT; colIndex += 1) {
-    const headerText = String(EXPORT_COLUMNS[colIndex - 1] || '');
-    let contentWidth = longestSegment(headerText, /\s+/);
-    for (let rowIndex = headerRowIndex + 1; rowIndex < dataEndRowIndex; rowIndex += 1) {
-      const cell = sheet.getCell(rowIndex, colIndex);
-      const value = cell.value == null ? '' : String(cell.value);
-      const wordWidth = longestSegment(value, /\s+/);
-      if (wordWidth > contentWidth) contentWidth = wordWidth;
+  const drawPageChrome = (includeLogoAndTitle: boolean) => {
+    y = marginTop;
+    if (includeLogoAndTitle) {
+      if (logoDataUrl) {
+        try {
+          const logoW = 150;
+          const logoH = 34;
+          doc.addImage(logoDataUrl, 'PNG', (pageWidth - logoW) / 2, y, logoW, logoH);
+          y += logoH + 4;
+        } catch {
+          // continue without logo
+        }
+      }
+      doc.setTextColor(0, 0, 0);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.text(title, pageWidth / 2, y + 10, { align: 'center' });
+      y += 16;
     }
-    const minWidth = colIndex === COL_COUNT ? 11 : MIN_COL_WIDTH;
-    const width = Math.max(minWidth, Math.min(MAX_COL_WIDTH, contentWidth + 1));
-    sheet.getColumn(colIndex).width = width;
+  };
+
+  const drawTableHeader = () => {
+    const headerLines = EXPORT_COLUMNS.map((label, i) =>
+      measureWrapped(label, colWidths[i], headerFontSize, true),
+    );
+    const headerHeight = Math.max(
+      18,
+      ...headerLines.map((lines) => lines.length * lineHeight + cellPadY * 2),
+    );
+
+    let x = marginX;
+    for (let i = 0; i < COL_COUNT; i += 1) {
+      // Re-apply yellow fill every cell (avoids jsPDF fill-state corruption → black bar).
+      doc.setFillColor(255, 255, 0);
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.4);
+      doc.rect(x, y, colWidths[i], headerHeight, 'F');
+      doc.rect(x, y, colWidths[i], headerHeight, 'S');
+
+      doc.setTextColor(0, 0, 0);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(headerFontSize);
+      const lines = headerLines[i];
+      const textBlockH = lines.length * lineHeight;
+      let textY = y + (headerHeight - textBlockH) / 2 + lineHeight - 1.5;
+      for (const line of lines) {
+        doc.text(String(line), x + colWidths[i] / 2, textY, { align: 'center' });
+        textY += lineHeight;
+      }
+      x += colWidths[i];
+    }
+    y += headerHeight;
+  };
+
+  const startNewPage = () => {
+    doc.addPage();
+    // Continuation: table header only (compact, like printing Excel pages).
+    drawPageChrome(false);
+    drawTableHeader();
+  };
+
+  const ensureSpace = (needed: number) => {
+    if (y + needed <= pageHeight - marginBottom) return;
+    startNewPage();
+  };
+
+  const drawRow = (values: string[], opts?: { bold?: boolean }) => {
+    const bold = Boolean(opts?.bold);
+    const wrapped = values.map((value, i) =>
+      measureWrapped(value, colWidths[i], bodyFontSize, bold),
+    );
+    const rowHeight = Math.max(
+      11,
+      ...wrapped.map((lines) => lines.length * lineHeight + cellPadY * 2),
+    );
+    ensureSpace(rowHeight);
+
+    let x = marginX;
+    for (let i = 0; i < COL_COUNT; i += 1) {
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.35);
+      doc.rect(x, y, colWidths[i], rowHeight, 'S');
+
+      doc.setTextColor(0, 0, 0);
+      doc.setFont('helvetica', bold ? 'bold' : 'normal');
+      doc.setFontSize(bodyFontSize);
+
+      const lines = wrapped[i];
+      const textBlockH = lines.length * lineHeight;
+      let textY = y + (rowHeight - textBlockH) / 2 + lineHeight - 1.5;
+      const isAmount = i === COL_COUNT - 1;
+      const isSr = i === 0;
+      for (const line of lines) {
+        if (isAmount) {
+          doc.text(String(line), x + colWidths[i] - cellPadX, textY, { align: 'right' });
+        } else if (isSr) {
+          doc.text(String(line), x + colWidths[i] / 2, textY, { align: 'center' });
+        } else {
+          doc.text(String(line), x + cellPadX, textY);
+        }
+        textY += lineHeight;
+      }
+      x += colWidths[i];
+    }
+    y += rowHeight;
+  };
+
+  // First page: logo + title + header
+  drawPageChrome(true);
+  drawTableHeader();
+
+  for (const row of bodyRows) {
+    drawRow(row);
   }
 
-  for (let rowIndex = headerRowIndex; rowIndex < signatureRowIndex; rowIndex += 1) {
-    const row = sheet.getRow(rowIndex);
-    if (rowIndex >= dataEndRowIndex) {
-      row.height = 22;
-      continue;
-    }
-    let maxLines = rowIndex === headerRowIndex ? 2 : 1;
-    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      cell.alignment = {
-        ...(cell.alignment || {}),
-        wrapText: true,
-        vertical: 'middle',
-      };
-      const text = cell.value == null ? '' : String(cell.value);
-      if (!text) return;
-      const colWidth = Math.max(4, Number(sheet.getColumn(colNumber).width ?? 10) - 1);
-      const wrappedLines = text
-        .split('\n')
-        .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / colWidth)), 0);
-      if (wrappedLines > maxLines) maxLines = wrappedLines;
-    });
-    row.height = Math.max(18, Math.min(72, maxLines * 15));
+  if ((travelAllowanceSummary?.recordCount ?? 0) > 0) {
+    const allowanceValues = Array.from({ length: COL_COUNT }, () => '');
+    allowanceValues[0] = `Travel Allowances for ${context.monthLabel} ${context.yearLabel}`;
+    allowanceValues[COL_COUNT - 1] = formatAmount(
+      Number.isFinite(travelAllowanceTotal) ? travelAllowanceTotal : 0,
+    );
+    drawRow(allowanceValues, { bold: true });
   }
-  const buffer = await workbook.xlsx.writeBuffer();
-  const blob = new Blob([buffer], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `SPPL-Expenses-${context.employeeName.replace(/\s+/g, '-')}-${context.monthLabel}-${context.yearLabel}.xlsx`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+
+  // Total row — Excel style: "Total :" + one unbroken amount (no cell wrapping).
+  // Do not use "₹" — Helvetica lacks that glyph and jsPDF spaces digits incorrectly.
+  const totalRowHeight = 14;
+  ensureSpace(totalRowHeight);
+  {
+    let x = marginX;
+    for (let i = 0; i < COL_COUNT; i += 1) {
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.35);
+      doc.rect(x, y, colWidths[i], totalRowHeight, 'S');
+      x += colWidths[i];
+    }
+    const amountColWidth = colWidths[COL_COUNT - 1];
+    const amountColRight = marginX + usableWidth;
+    const amountColLeft = amountColRight - amountColWidth;
+    const totalAmountText = formatAmount(finalTotal);
+
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(bodyFontSize);
+    doc.text('Total :', amountColLeft - cellPadX, y + 10, { align: 'right' });
+    doc.text(totalAmountText, amountColRight - cellPadX, y + 10, { align: 'right' });
+    y += totalRowHeight;
+  }
+
+  // Signature section — keep with total when possible (Excel layout)
+  const signatureHeight = 48;
+  ensureSpace(signatureHeight + 6);
+  y += 2;
+  const half = usableWidth / 2;
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.6);
+  doc.rect(marginX, y, half, signatureHeight, 'S');
+  doc.rect(marginX + half, y, half, signatureHeight, 'S');
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.text('Claimed by & Signature', marginX + half / 2, y + 12, { align: 'center' });
+  doc.text('Approved by & Signature', marginX + half + half / 2, y + 12, { align: 'center' });
+
+  downloadPdfBlob(doc, buildExportFileName(context));
 }
+
+/** @deprecated Use exportExpensesToPdf */
+export const exportExpensesToExcel = exportExpensesToPdf;
