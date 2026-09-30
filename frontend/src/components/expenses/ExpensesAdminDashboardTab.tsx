@@ -28,7 +28,6 @@ import { Skeleton } from '../ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '../ui/chart';
-import AuditHistoryModal from '../audit/AuditHistoryModal';
 import {
   useCompanyOverviewQuery,
   useDashboardEmployeesQuery,
@@ -1423,7 +1422,6 @@ export default function ExpensesAdminDashboardTab() {
   const [drillSubcategory, setDrillSubcategory] = useState<string | null>(null);
   /** Location Analysis — selected location from Company Overview treemap */
   const [drillLocation, setDrillLocation] = useState<string | null>(null);
-  const [auditOpen, setAuditOpen] = useState(false);
 
   const isSubcategoryView = drillExpenseHead != null && drillSubcategory != null;
   const isHeadView = drillExpenseHead != null && drillSubcategory == null;
@@ -1906,9 +1904,6 @@ export default function ExpensesAdminDashboardTab() {
               </Button>
             </div>
           ) : null}
-          <Button type="button" variant="outline" size="sm" className="h-9" onClick={() => setAuditOpen(true)}>
-            Audit History
-          </Button>
         </div>
       </div>
 
@@ -2319,13 +2314,6 @@ export default function ExpensesAdminDashboardTab() {
           ) : null}
         </>
       ) : null}
-
-      <AuditHistoryModal
-        open={auditOpen}
-        onOpenChange={setAuditOpen}
-        title="Expenses Audit History"
-        listParams={{ module: 'expenses', limit: 40 }}
-      />
     </div>
   );
 }
