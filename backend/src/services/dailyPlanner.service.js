@@ -8,7 +8,7 @@ import * as SalesPlannerEventsModel from '../models/SalesPlannerEvents.js';
 import * as PlanningRecognitionService from './planningRecognition.service.js';
 import * as TeamPerformanceService from './teamPerformance.service.js';
 import * as PlanningAnalyticsService from './planningAnalytics.service.js';
-import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, isTaskCountedTowardDailyMinimum, getMinPlannedHoursForLocation, formatDurationLabel, PRIORITY_SORT_ORDER, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow, assertExactSevenPlannedHours, isManagerReviewWindow, MANAGER_REVIEW_WINDOW_MESSAGE, nextWorkingDayIstDateKey } from '../utils/planningRecognition.js';
+import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, PLANNING_SOURCE_EXTRA, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, isTaskCountedTowardDailyMinimum, getMinPlannedHoursForLocation, formatDurationLabel, PRIORITY_SORT_ORDER, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow, assertExactSevenPlannedHours, isManagerReviewWindow, MANAGER_REVIEW_WINDOW_MESSAGE, nextWorkingDayIstDateKey, getPlanningTargetDateMode, isEmployeePlanningWindow, EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE, resolveActivePlanningWindow } from '../utils/planningRecognition.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
@@ -519,6 +519,122 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     throw err;
   }
 
+  const isExtraTask =
+    body.isExtraTask === true ||
+    body.isExtraTask === 'true' ||
+    String(body.source || '').trim() === PLANNING_SOURCE_EXTRA;
+
+  // Extra Task: unplanned work already performed during today's completion flow.
+  // Completed + self-approved immediately; no planning score / min-hours.
+  // Must still be inside the employee planning window (5:30 PM → 11:00 AM).
+  if (isExtraTask) {
+    const now = new Date();
+    if (!isEmployeePlanningWindow(now)) {
+      const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
+      err.statusCode = 400;
+      throw err;
+    }
+    const today = todayIstDateKey(now);
+    if (date !== today) {
+      const err = new Error('Extra tasks can only be added for today');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const location = await getEmployeeLocation(code);
+    if (!isCompanyWorkingDayDateKey(date, location)) {
+      const err = new Error('Selected date must be a working day');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const priority = normalizePriorityValue(body.priority, 'Medium');
+    const description = String(body.description || '').trim();
+    const workDone = String(body.workDone || body.reason || '').trim();
+    if (!workDone) {
+      const err = new Error('Work done is required');
+      err.statusCode = 400;
+      throw err;
+    }
+    const startTimeRaw = body.startTime ?? body.completionStartTime;
+    const endTimeRaw = body.endTime ?? body.completionEndTime;
+    const completionDurationHours = durationHoursFromStartEnd(startTimeRaw, endTimeRaw);
+    const completionStartTime = normalizeClockTime(startTimeRaw);
+    const completionEndTime = normalizeClockTime(endTimeRaw);
+    const hoursRequired = assertValidHoursRequired(completionDurationHours, { required: true });
+    const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
+    const projectName = isProjectBased ? String(body.projectName || '').trim() : '';
+    if (isProjectBased && !projectName) {
+      const err = new Error('Project Name is required when the task is project-based');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (projectName) {
+      await DailyPlannerProjectsModel.upsertProject(projectName, code);
+    }
+
+    const planningScore = 0;
+    const completionScore = computeTaskCompletionContribution('Completed');
+    const nowIso = now.toISOString();
+
+    const task = await DailyPlannerTasksModel.createTask({
+      employeeCode: code,
+      employeeName: employeeNameOf(authUser),
+      date,
+      taskName,
+      description,
+      priority,
+      originalPriority: priority,
+      currentPriority: priority,
+      hoursRequired,
+      originalHoursRequired: hoursRequired,
+      hoursRequiredEdited: false,
+      taskType: 'Manual',
+      source: PLANNING_SOURCE_EXTRA,
+      status: 'Verified Complete',
+      approved: true,
+      approvalStatus: 'APPROVED',
+      approvedBy: code,
+      approvedByName: employeeNameOf(authUser),
+      approvedAt: nowIso,
+      approvedDate: nowIso,
+      reason: workDone,
+      managerComments: '',
+      managerInstructions: '',
+      isProjectBased,
+      projectName,
+      createdByRole: 'User',
+      planningCategory: planningCategoryFromPriority(priority),
+      urgentReason: '',
+      planningWindowUsed: resolveActivePlanningWindow(now),
+      planningTimestamp: nowIso,
+      planningScore,
+      completionScore,
+      finalScore: planningScore + completionScore,
+      completionStartTime,
+      completionEndTime,
+      completionDurationHours: hoursRequired,
+      verificationStatus: 'VERIFIED_COMPLETED',
+      verifiedBy: code,
+      verifiedByName: employeeNameOf(authUser),
+      verifiedAt: nowIso,
+      clientBatchId: String(body.clientBatchId || '').trim() || null,
+    });
+
+    auditPlannerTask(authUser, AUDIT_ACTIONS.CREATE, task, 'Extra Task Created', {
+      newValues: {
+        taskName: task.taskName,
+        priority: task.priority,
+        hoursRequired: task.hoursRequired,
+        date: task.date,
+        status: task.status,
+        source: task.source,
+      },
+    });
+
+    return { task, planningAward: null };
+  }
+
   const elevated = canAccessAllRecords(effectiveRole);
   const now = new Date();
   const location = await getEmployeeLocation(code);
@@ -543,6 +659,7 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
 
   // Self-create must meet minimum planned hours for the day (existing + this task).
   // Applies to all roles on My Daily Planner; Team for-employee uses createTaskForEmployee.
+  // Dates after tomorrow (advance planning) allow partial hours — no daily minimum.
   const revisesTaskIdEarly = String(body.revisesTaskId || '').trim();
   const existingForDate = await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date);
   if (
@@ -558,7 +675,8 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     err.statusCode = 400;
     throw err;
   }
-  if (!revisesTaskIdEarly && !options.skipExactSevenCheck) {
+  const dateMode = getPlanningTargetDateMode(date, now);
+  if (!revisesTaskIdEarly && !options.skipExactSevenCheck && dateMode !== 'other') {
     const existingHours = sumPlannedHoursForDate(existingForDate, date);
     assertExactSevenPlannedHours(
       Math.round((existingHours + hoursRequired) * 100) / 100,
@@ -738,13 +856,16 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
     }
   }
 
-  // Batch create is the My Daily Planner plan submit path — enforce minimum hours for all roles.
+  // Batch create is the My Daily Planner plan submit path — enforce minimum hours for
+  // today/tomorrow. Dates after tomorrow allow partial advance planning.
   const location = await getEmployeeLocation(code);
   const existingHours = sumPlannedHoursForDate(existing, sharedDate);
-  assertExactSevenPlannedHours(
-    Math.round((existingHours + batchHours) * 100) / 100,
-    location,
-  );
+  if (getPlanningTargetDateMode(sharedDate, new Date()) !== 'other') {
+    assertExactSevenPlannedHours(
+      Math.round((existingHours + batchHours) * 100) / 100,
+      location,
+    );
+  }
 
   const created = [];
   for (const draft of drafts) {

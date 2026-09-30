@@ -241,6 +241,15 @@ export function evaluateMyDailyPlannerCreateEligibility(
   const mins = getIstMinutesFromServerTime(config.serverTimeIso);
 
   if (!elevated) {
+    // Advance planning for dates after tomorrow: no time-window restriction.
+    const target = getPlanningTargetDateMode(taskDateIso, config);
+    if (target === 'other') {
+      if (!normalized || normalized < config.todayIst) {
+        return { allowed: false, message: TASK_CREATE_DATE_BLOCKED_MESSAGE };
+      }
+      return { allowed: true, mode: 'regular' };
+    }
+
     // Backend sets evening.active true for the full 5:30 PM → 11:00 AM span.
     if (!config.windows.evening.active) {
       return { allowed: false, message: EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE };
@@ -255,7 +264,7 @@ export function evaluateMyDailyPlannerCreateEligibility(
       }
       return { allowed: true, mode: 'regular' };
     }
-    // Future working day during active planning window.
+    // Tomorrow during active planning window.
     return { allowed: true, mode: 'regular' };
   }
 
@@ -274,7 +283,12 @@ export function evaluateMyDailyPlannerCreateEligibility(
     return { allowed: false, message: URGENT_TASK_TODAY_BLOCKED_MESSAGE };
   }
 
-  // Future working days during evening/active planning window for elevated own planning
+  // Dates after tomorrow: advance planning without time-window restriction.
+  if (target === 'other') {
+    return { allowed: true, mode: 'regular' };
+  }
+
+  // Tomorrow during evening/active planning window for elevated own planning
   if (config.windows.evening.active) {
     return { allowed: true, mode: 'regular' };
   }
@@ -299,6 +313,8 @@ export function assertCanCreateRegularTask(
     throw new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
   }
   if (isRegularTaskAllowed(taskDateIso, config)) return;
+  // Dates after tomorrow: advance planning without time-window restriction.
+  if (target === 'other') return;
   if (target === 'today') {
     throw new Error(REGULAR_TASK_TODAY_BLOCKED_MESSAGE);
   }

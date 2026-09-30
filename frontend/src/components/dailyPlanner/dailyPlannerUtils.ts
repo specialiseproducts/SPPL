@@ -161,6 +161,8 @@ export function isRescheduledTask(task: DailyPlannerTask): boolean {
  */
 export function isTaskCountedTowardDailyMinimum(task: DailyPlannerTask): boolean {
   if (String(task.status || '').trim() === 'Rescheduled') return false;
+  // Extra (unplanned completed) work is not advance planning.
+  if (String(task.source || '').trim() === 'EXTRA') return false;
   // Handled Needs Revision parents are replaced by a child — do not double-count.
   if (String(task.revisionOutcome || '').trim()) return false;
   return true;

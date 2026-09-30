@@ -3,8 +3,15 @@ import { queryDefaults } from '../queryDefaults';
 import { measureAsync } from '../../lib/observability/performance';
 import type { ExpenseRecord } from '../../types/expenses';
 import {
+  fetchAuditApprovedTotal,
   fetchAuditEmployeeDirectory,
   fetchAuditExpensesFiltered,
+  fetchCompanyOverview,
+  fetchDashboardEmployees,
+  fetchExpenseHeadAnalysis,
+  fetchExpenseLocationMasters,
+  fetchExpenseServiceProviderMasters,
+  fetchExpenseSubcategoryAnalysis,
   fetchExpensesPage,
   fetchExpenseTravelRates,
   type AuditExpenseFilters,
@@ -124,12 +131,162 @@ export function useAuditExpenseEmployeesQuery() {
   });
 }
 
+export function useAuditApprovedTotalQuery(
+  filters: AuditExpenseFilters,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: expensesQueryKeys.auditApprovedTotal(filters),
+    queryFn: () => fetchAuditApprovedTotal(filters),
+    enabled,
+    ...queryDefaults.list,
+  });
+}
+
+export function useExpenseServiceProviderMastersQuery(enabled = true) {
+  return useQuery({
+    queryKey: expensesQueryKeys.serviceProviderMasters(),
+    queryFn: fetchExpenseServiceProviderMasters,
+    enabled,
+    ...queryDefaults.reference,
+  });
+}
+
+export function useExpenseLocationMastersQuery(enabled = true) {
+  return useQuery({
+    queryKey: expensesQueryKeys.locationMasters(),
+    queryFn: fetchExpenseLocationMasters,
+    enabled,
+    ...queryDefaults.reference,
+  });
+}
+
 export function useExpenseTravelRatesQuery(enabled: boolean) {
   return useQuery({
     queryKey: expensesQueryKeys.travelRates(),
     queryFn: fetchExpenseTravelRates,
     enabled,
     ...queryDefaults.reference,
+  });
+}
+
+/** Super Admin — Company Overview analytics for a selected From/To month range. */
+export function useCompanyOverviewQuery(
+  range: { from: string; to: string; employeeCode?: string; location?: string } | null,
+  enabled = true,
+) {
+  const from = range?.from ?? '';
+  const to = range?.to ?? '';
+  const employeeCode = String(range?.employeeCode ?? '').trim();
+  const location = String(range?.location ?? '').trim();
+  return useQuery({
+    queryKey: expensesQueryKeys.companyOverview({ from, to, employeeCode, location }),
+    queryFn: () =>
+      measureAsync('pagination', 'expenses-company-overview', () =>
+        fetchCompanyOverview({
+          from,
+          to,
+          employeeCode: employeeCode || undefined,
+          location: location || undefined,
+        }),
+      ),
+    enabled: enabled && Boolean(from && to),
+    ...queryDefaults.list,
+  });
+}
+
+/** Super Admin — Phase 2D employees with non-deleted expense records. */
+export function useDashboardEmployeesQuery(enabled = true) {
+  return useQuery({
+    queryKey: expensesQueryKeys.dashboardEmployees(),
+    queryFn: () =>
+      measureAsync('pagination', 'expenses-dashboard-employees', () =>
+        fetchDashboardEmployees(),
+      ),
+    enabled,
+    ...queryDefaults.reference,
+  });
+}
+
+/** Super Admin — Phase 2B Month + Expense Head analytics. */
+export function useExpenseHeadAnalysisQuery(
+  params: {
+    from: string;
+    to: string;
+    expenseHead: string;
+    employeeCode?: string;
+    location?: string;
+  } | null,
+  enabled = true,
+) {
+  const from = params?.from ?? '';
+  const to = params?.to ?? '';
+  const expenseHead = params?.expenseHead ?? '';
+  const employeeCode = String(params?.employeeCode ?? '').trim();
+  const location = String(params?.location ?? '').trim();
+  return useQuery({
+    queryKey: expensesQueryKeys.expenseHeadAnalysis({
+      from,
+      to,
+      expenseHead,
+      employeeCode,
+      location,
+    }),
+    queryFn: () =>
+      measureAsync('pagination', 'expenses-expense-head-analysis', () =>
+        fetchExpenseHeadAnalysis({
+          from,
+          to,
+          expenseHead,
+          employeeCode: employeeCode || undefined,
+          location: location || undefined,
+        }),
+      ),
+    enabled: enabled && Boolean(from && to && expenseHead),
+    ...queryDefaults.list,
+  });
+}
+
+/** Super Admin — Phase 2C Month + Expense Head + Subcategory transactions. */
+export function useExpenseSubcategoryAnalysisQuery(
+  params: {
+    from: string;
+    to: string;
+    expenseHead: string;
+    subCategory: string;
+    employeeCode?: string;
+    location?: string;
+  } | null,
+  enabled = true,
+) {
+  const from = params?.from ?? '';
+  const to = params?.to ?? '';
+  const expenseHead = params?.expenseHead ?? '';
+  const subCategory = params?.subCategory ?? '';
+  const employeeCode = String(params?.employeeCode ?? '').trim();
+  const location = String(params?.location ?? '').trim();
+  return useQuery({
+    queryKey: expensesQueryKeys.expenseSubcategoryAnalysis({
+      from,
+      to,
+      expenseHead,
+      subCategory,
+      employeeCode,
+      location,
+    }),
+    queryFn: () =>
+      measureAsync('pagination', 'expenses-expense-subcategory-analysis', () =>
+        fetchExpenseSubcategoryAnalysis({
+          from,
+          to,
+          expenseHead,
+          subCategory,
+          employeeCode: employeeCode || undefined,
+          location: location || undefined,
+        }),
+      ),
+    enabled: enabled && Boolean(from && to && expenseHead && subCategory),
+    ...queryDefaults.list,
   });
 }
 

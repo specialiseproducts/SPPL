@@ -6,6 +6,7 @@
 
 import * as ExpenseService from '../services/expense.service.js';
 import * as ExpenseEditRequestService from '../services/expenseEditRequest.service.js';
+import * as ExpenseDashboardService from '../services/expenseDashboard.service.js';
 import { DEFAULT_QUERY_LIMIT } from '../utils/dynamoPagination.js';
 import log from '../utils/logger.js';
 
@@ -120,6 +121,57 @@ export const getExpensesForAudit = async (req, res, next) => {
     });
   } catch (error) {
     log.error('Get audit expenses controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Approved-only total for Audit Expenses filters.
+ * GET /api/expenses/audit/approved-total
+ */
+export const getAuditApprovedTotal = async (req, res, next) => {
+  try {
+    const filters = {
+      employeeId: req.query.employeeId || req.query.employeeCode || '',
+      month: req.query.month || '',
+      year: req.query.year || '',
+    };
+    const data = await ExpenseService.getAuditApprovedTotal(
+      filters,
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Get audit approved total controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Master dropdown values for Service Provider Name.
+ * GET /api/expenses/masters/service-providers
+ */
+export const listExpenseServiceProviders = async (req, res, next) => {
+  try {
+    const data = await ExpenseService.listExpenseServiceProviders();
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List expense service providers controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Shared Location master values (Location / From / To).
+ * GET /api/expenses/masters/locations
+ */
+export const listExpenseLocations = async (req, res, next) => {
+  try {
+    const data = await ExpenseService.listExpenseLocations();
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('List expense locations controller error:', error);
     next(error);
   }
 };
@@ -420,6 +472,95 @@ export const deleteExpense = async (req, res, next) => {
     });
   } catch (error) {
     log.error('Delete expense controller error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Super Admin — Company Overview analytics for a selected month range.
+ * GET /api/expenses/dashboard/company-overview?from=YYYY-MM&to=YYYY-MM
+ * Phase 2B — Expense Head analysis:
+ * GET /api/expenses/dashboard/company-overview?from=YYYY-MM&to=YYYY-MM&expenseHead=Travel
+ * Phase 2C — Subcategory transactions:
+ * GET /api/expenses/dashboard/company-overview?from=YYYY-MM&to=YYYY-MM&expenseHead=Travel&subCategory=Flight
+ * Phase 2D — optional employeeCode scopes Approved analytics to one employee.
+ * Omitting both from and to defaults to the latest 12 calendar months (overview only).
+ */
+export const getCompanyOverview = async (req, res, next) => {
+  try {
+    const from = req.query?.from;
+    const to = req.query?.to;
+    const employeeCodeRaw = req.query?.employeeCode ?? req.query?.employeeId;
+    const employeeCode =
+      employeeCodeRaw != null && String(employeeCodeRaw).trim() !== ''
+        ? String(employeeCodeRaw).trim()
+        : '';
+    const locationRaw = req.query?.location;
+    const location =
+      locationRaw != null && String(locationRaw).trim() !== ''
+        ? String(locationRaw).trim()
+        : '';
+    const expenseHeadRaw = req.query?.expenseHead;
+    const expenseHead =
+      expenseHeadRaw != null && String(expenseHeadRaw).trim() !== ''
+        ? String(expenseHeadRaw).trim()
+        : '';
+    const subCategoryRaw = req.query?.subCategory;
+    const subCategory =
+      subCategoryRaw != null && String(subCategoryRaw).trim() !== ''
+        ? String(subCategoryRaw).trim()
+        : '';
+
+    let data;
+    if (expenseHead && subCategory) {
+      data = await ExpenseDashboardService.getExpenseSubcategoryAnalysis({
+        from,
+        to,
+        expenseHead,
+        subCategory,
+        employeeCode,
+        location,
+      });
+    } else if (expenseHead) {
+      data = await ExpenseDashboardService.getExpenseHeadAnalysis({
+        from,
+        to,
+        expenseHead,
+        employeeCode,
+        location,
+      });
+    } else {
+      data = await ExpenseDashboardService.getCompanyOverview({
+        from,
+        to,
+        employeeCode,
+        location,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    log.error('Get company overview dashboard error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Super Admin — employees with at least one non-deleted expense (for analytics filter).
+ * GET /api/expenses/dashboard/employees
+ */
+export const getDashboardEmployees = async (req, res, next) => {
+  try {
+    const data = await ExpenseDashboardService.getDashboardEmployees();
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    log.error('Get dashboard employees error:', error);
     next(error);
   }
 };

@@ -33,6 +33,14 @@ const FIELD_LABELS: Record<string, string> = {
   arrivalTime: 'Arrival Time',
   departureDate: 'Departure Date (last)',
   departureTime: 'Departure Time',
+  durationHours: 'Duration Hours',
+  durationDays: 'Duration Days',
+  travelAllowanceAmount: 'Travel Allowance',
+  employeeName: 'Employee Name',
+  employeeId: 'Employee Code',
+  auditStatus: 'Status',
+  monthYear: 'Month-Year',
+  documentFileName: 'Supporting File',
 };
 
 const EDITABLE_KEYS = Object.keys(FIELD_LABELS);
@@ -209,4 +217,396 @@ export function getExpenseDisplayFields(record: ExpenseRecord): ExpenseDisplayFi
 export function formatExpenseFieldValue(value: unknown): string {
   if (value === undefined || value === null || String(value).trim() === '') return '—';
   return String(value);
+}
+
+export type ExpenseTransactionDetailColumn = {
+  key: string;
+  label: string;
+};
+
+type ExpenseFormShape = {
+  expenseHead?: string;
+  subCategory?: string;
+  outStation?: string;
+};
+
+/**
+ * Form-applicable field keys for a head/sub/outStation combination.
+ * Mirrors ExpenseFormModal / getExpenseDisplayFields branch order (always include applicable fields).
+ */
+export function getApplicableExpenseFormFieldKeys(record: ExpenseFormShape): string[] {
+  const head = String(record.expenseHead || '').trim();
+  const sub = String(record.subCategory || '').trim();
+  const outStation = String(record.outStation || '').trim();
+  const keys: string[] = [];
+
+  const push = (key: string) => {
+    if (!keys.includes(key)) keys.push(key);
+  };
+
+  if (head === 'Travel') {
+    push('outStation');
+  }
+
+  const asRecord = {
+    expenseHead: head,
+    subCategory: sub,
+    outStation: outStation === 'Yes' ? 'Yes' : 'No',
+  } as ExpenseRecord;
+
+  if (isOutstationRecord(asRecord)) {
+    push('arrivalDate');
+    push('arrivalTime');
+    push('departureDate');
+    push('departureTime');
+    push('durationHours');
+    push('durationDays');
+    push('travelAllowanceAmount');
+    push('subCategory');
+    push('date');
+    push('amount');
+    push('location');
+    push('purpose');
+    return keys;
+  }
+
+  push('subCategory');
+  if (isTravelTicketTransportRecord(asRecord)) {
+    push('pnrNo');
+  }
+  push('date');
+  push('amount');
+  if (!isTravelTicketTransportRecord(asRecord)) {
+    push('location');
+  }
+  push('purpose');
+  if (isTravelTicketTransportRecord(asRecord) || isTravelCarOrBikeRecord(asRecord)) {
+    push('fromLocation');
+    push('toLocation');
+  }
+  if (isTravelCarOrBikeRecord(asRecord)) {
+    push('returnType');
+    push('kilometers');
+    push('fuelType');
+  } else {
+    push('serviceProvider');
+    push('billNumber');
+    push('supportingDocument');
+    push('documentFileName');
+  }
+  if (isHotelSelfRecord(asRecord)) {
+    push('stayDateFrom');
+    push('stayDateTo');
+  }
+
+  return keys;
+}
+
+/**
+ * Dynamic Transaction Details columns for Admin Dashboard subcategory view.
+ * Uses the same form-branch field set as Expense forms; unions outstation +
+ * record variants so all applicable fields appear (empty cells use —).
+ * Then applies analytics-only visibility exclusions (does not affect forms/API/data).
+ */
+export function getExpenseTransactionDetailColumns(
+  expenseHead: string,
+  subCategory: string,
+  transactions: Array<ExpenseFormShape & Record<string, unknown>> = [],
+): ExpenseTransactionDetailColumn[] {
+  const orderedKeys: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (key: string) => {
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    orderedKeys.push(key);
+  };
+
+  // Identity / context — always first (matches getExpenseDisplayFields identity block).
+  add('date');
+  add('employeeName');
+  add('employeeId');
+  add('expenseHead');
+  add('subCategory');
+
+  const head = String(expenseHead || '').trim();
+  const sub = String(subCategory || '').trim();
+
+  for (const key of getApplicableExpenseFormFieldKeys({
+    expenseHead: head,
+    subCategory: sub,
+    outStation: 'No',
+  })) {
+    add(key);
+  }
+
+  // Travel may include outstation records under the same subcategory filter.
+  if (head === 'Travel') {
+    for (const key of getApplicableExpenseFormFieldKeys({
+      expenseHead: head,
+      subCategory: sub,
+      outStation: 'Yes',
+    })) {
+      add(key);
+    }
+  }
+
+  for (const txn of transactions) {
+    const txnHead = String(txn.expenseHead || head).trim();
+    const txnSub = String(txn.subCategory || sub).trim();
+    const txnOut = String(txn.outStation || 'No').trim();
+    for (const key of getApplicableExpenseFormFieldKeys({
+      expenseHead: txnHead,
+      subCategory: txnSub,
+      outStation: txnOut,
+    })) {
+      add(key);
+    }
+  }
+
+  add('auditStatus');
+  add('monthYear');
+
+  const hidden = getTransactionDetailHiddenFieldKeys(head, sub);
+  const visibleKeys = hidden.size
+    ? orderedKeys.filter((key) => !hidden.has(key))
+    : orderedKeys;
+
+  return visibleKeys.map((key) => ({
+    key,
+    label: FIELD_LABELS[key] || key,
+  }));
+}
+
+/**
+ * Analytics Transaction Details only — fields hidden for specific Travel subcategories.
+ * Does NOT remove fields from forms, DynamoDB, API payloads, or other Expenses views.
+ */
+const TRAVEL_TXN_DETAIL_HIDDEN_BASE = [
+  'employeeId',
+  'expenseHead',
+  'subCategory',
+  'outStation',
+  'billNumber',
+  'supportingDocument',
+  'documentFileName',
+  'arrivalDate',
+  'arrivalTime',
+  'departureDate',
+  'departureTime',
+  'durationHours',
+  'durationDays',
+  'travelAllowanceAmount',
+  'auditStatus',
+  'monthYear',
+] as const;
+
+/** Same as base, plus PNR No. */
+const TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR = [...TRAVEL_TXN_DETAIL_HIDDEN_BASE, 'pnrNo'] as const;
+
+const TRAVEL_TRANSACTION_DETAIL_HIDDEN_FIELDS: Record<string, readonly string[]> = {
+  Flight: TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR,
+  Taxi: TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR,
+  Bus: TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR,
+  'Railway Pass': TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR,
+  'Driver Charges': TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR,
+  Metro: TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR,
+  'Toll Tax': TRAVEL_TXN_DETAIL_HIDDEN_WITH_PNR,
+  // Car / Auto — do not hide PNR No.
+  Car: TRAVEL_TXN_DETAIL_HIDDEN_BASE,
+  Auto: TRAVEL_TXN_DETAIL_HIDDEN_BASE,
+};
+
+/**
+ * Analytics Transaction Details only — fields hidden for specific Hotel_Booking subcategories.
+ * Does NOT remove fields from forms, DynamoDB, API payloads, or other Expenses views.
+ */
+const HOTEL_BOOKING_TXN_DETAIL_HIDDEN = [
+  'employeeId',
+  'expenseHead',
+  'subCategory',
+  'billNumber',
+  'supportingDocument',
+  'documentFileName',
+  'auditStatus',
+  'monthYear',
+] as const;
+
+const HOTEL_BOOKING_TRANSACTION_DETAIL_HIDDEN_FIELDS: Record<string, readonly string[]> = {
+  Self: HOTEL_BOOKING_TXN_DETAIL_HIDDEN,
+  'By Office': HOTEL_BOOKING_TXN_DETAIL_HIDDEN,
+};
+
+/**
+ * Analytics Transaction Details only — fields hidden for specific Food subcategories.
+ * Does NOT remove fields from forms, DynamoDB, API payloads, or other Expenses views.
+ */
+const FOOD_TXN_DETAIL_HIDDEN = [
+  'employeeId',
+  'expenseHead',
+  'subCategory',
+  'serviceProvider',
+  'billNumber',
+  'supportingDocument',
+  'documentFileName',
+  'auditStatus',
+  'monthYear',
+] as const;
+
+const FOOD_TRANSACTION_DETAIL_HIDDEN_FIELDS: Record<string, readonly string[]> = {
+  Breakfast: FOOD_TXN_DETAIL_HIDDEN,
+  Cake: FOOD_TXN_DETAIL_HIDDEN,
+  Dinner: FOOD_TXN_DETAIL_HIDDEN,
+  'Ice-cream': FOOD_TXN_DETAIL_HIDDEN,
+  Lunch: FOOD_TXN_DETAIL_HIDDEN,
+  Snacks: FOOD_TXN_DETAIL_HIDDEN,
+  Sweets: FOOD_TXN_DETAIL_HIDDEN,
+  'Tea/Coffee': FOOD_TXN_DETAIL_HIDDEN,
+  Water: FOOD_TXN_DETAIL_HIDDEN,
+};
+
+/**
+ * Analytics Transaction Details only — fields hidden for specific Communication subcategories.
+ * Does NOT remove fields from forms, DynamoDB, API payloads, or other Expenses views.
+ */
+const COMMUNICATION_TXN_DETAIL_HIDDEN = [
+  'employeeId',
+  'expenseHead',
+  'subCategory',
+  'serviceProvider',
+  'billNumber',
+  'supportingDocument',
+  'documentFileName',
+  'auditStatus',
+  'monthYear',
+] as const;
+
+const COMMUNICATION_TRANSACTION_DETAIL_HIDDEN_FIELDS: Record<string, readonly string[]> = {
+  Internet: COMMUNICATION_TXN_DETAIL_HIDDEN,
+  Mobile: COMMUNICATION_TXN_DETAIL_HIDDEN,
+};
+
+/**
+ * Analytics Transaction Details only — fields hidden for specific Fuel subcategories.
+ * Does NOT remove fields from forms, DynamoDB, API payloads, or other Expenses views.
+ */
+const FUEL_TXN_DETAIL_HIDDEN = [
+  'employeeId',
+  'expenseHead',
+  'subCategory',
+  'serviceProvider',
+  'billNumber',
+  'supportingDocument',
+  'documentFileName',
+  'auditStatus',
+  'monthYear',
+] as const;
+
+const FUEL_TRANSACTION_DETAIL_HIDDEN_FIELDS: Record<string, readonly string[]> = {
+  CNG: FUEL_TXN_DETAIL_HIDDEN,
+  EV: FUEL_TXN_DETAIL_HIDDEN,
+  Diesel: FUEL_TXN_DETAIL_HIDDEN,
+  Petrol: FUEL_TXN_DETAIL_HIDDEN,
+};
+
+/**
+ * Analytics Transaction Details only — fields hidden for specific Foreign_Travel subcategories.
+ * Does NOT remove fields from forms, DynamoDB, API payloads, or other Expenses views.
+ */
+const FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN = [
+  'employeeId',
+  'expenseHead',
+  'subCategory',
+  'serviceProvider',
+  'billNumber',
+  'supportingDocument',
+  'documentFileName',
+  'auditStatus',
+  'monthYear',
+] as const;
+
+const FOREIGN_TRAVEL_TRANSACTION_DETAIL_HIDDEN_FIELDS: Record<string, readonly string[]> = {
+  'Advance from Office': FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN,
+  'City Tax': FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN,
+  'International Trip': FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN,
+  'Paid By Company': FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN,
+  'Return to Office': FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN,
+  'Visa Fee': FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN,
+  Chocolate: FOREIGN_TRAVEL_TXN_DETAIL_HIDDEN,
+};
+
+/**
+ * Analytics Transaction Details only — fields hidden for specific Misc. subcategories.
+ * Does NOT remove fields from forms, DynamoDB, API payloads, or other Expenses views.
+ */
+const MISC_TXN_DETAIL_HIDDEN = [
+  'employeeId',
+  'expenseHead',
+  'subCategory',
+  'serviceProvider',
+  'billNumber',
+  'supportingDocument',
+  'documentFileName',
+  'auditStatus',
+  'monthYear',
+] as const;
+
+const MISC_TRANSACTION_DETAIL_HIDDEN_FIELDS: Record<string, readonly string[]> = {
+  Courier: MISC_TXN_DETAIL_HIDDEN,
+  EMD: MISC_TXN_DETAIL_HIDDEN,
+  Flower: MISC_TXN_DETAIL_HIDDEN,
+  'Gift Item': MISC_TXN_DETAIL_HIDDEN,
+  Insurance: MISC_TXN_DETAIL_HIDDEN,
+  'Labour Charges': MISC_TXN_DETAIL_HIDDEN,
+  Photocopy: MISC_TXN_DETAIL_HIDDEN,
+  Refund: MISC_TXN_DETAIL_HIDDEN,
+  'Speed Post': MISC_TXN_DETAIL_HIDDEN,
+  'Stamp Paper': MISC_TXN_DETAIL_HIDDEN,
+  Stationary: MISC_TXN_DETAIL_HIDDEN,
+  'Tender Fee': MISC_TXN_DETAIL_HIDDEN,
+};
+
+function getTransactionDetailHiddenFieldKeys(
+  expenseHead: string,
+  subCategory: string,
+): Set<string> {
+  const head = String(expenseHead || '').trim();
+  const sub = String(subCategory || '').trim();
+
+  if (head === 'Travel') {
+    const hidden = TRAVEL_TRANSACTION_DETAIL_HIDDEN_FIELDS[sub];
+    return hidden ? new Set(hidden) : new Set();
+  }
+
+  if (head === 'Hotel_Booking') {
+    const hidden = HOTEL_BOOKING_TRANSACTION_DETAIL_HIDDEN_FIELDS[sub];
+    return hidden ? new Set(hidden) : new Set();
+  }
+
+  if (head === 'Food') {
+    const hidden = FOOD_TRANSACTION_DETAIL_HIDDEN_FIELDS[sub];
+    return hidden ? new Set(hidden) : new Set();
+  }
+
+  if (head === 'Communication') {
+    const hidden = COMMUNICATION_TRANSACTION_DETAIL_HIDDEN_FIELDS[sub];
+    return hidden ? new Set(hidden) : new Set();
+  }
+
+  if (head === 'Fuel') {
+    const hidden = FUEL_TRANSACTION_DETAIL_HIDDEN_FIELDS[sub];
+    return hidden ? new Set(hidden) : new Set();
+  }
+
+  if (head === 'Foreign_Travel') {
+    const hidden = FOREIGN_TRAVEL_TRANSACTION_DETAIL_HIDDEN_FIELDS[sub];
+    return hidden ? new Set(hidden) : new Set();
+  }
+
+  if (head === 'Misc.') {
+    const hidden = MISC_TRANSACTION_DETAIL_HIDDEN_FIELDS[sub];
+    return hidden ? new Set(hidden) : new Set();
+  }
+
+  return new Set();
 }

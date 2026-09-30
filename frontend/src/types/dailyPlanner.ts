@@ -11,7 +11,7 @@ export type DailyPlannerStatus =
   | 'Awaiting Verification'
   | 'Verified Complete';
 export type DailyPlannerTaskType = 'Manual' | 'Sales Visit';
-export type DailyPlannerSource = 'MANUAL' | 'SALES_FORECASTING' | 'RESCHEDULED';
+export type DailyPlannerSource = 'MANUAL' | 'SALES_FORECASTING' | 'RESCHEDULED' | 'EXTRA';
 export type DailyPlannerNotCompletedAction = 'terminate' | 'next_date';
 export type DailyPlannerPlanningCategory = 'Regular' | 'Urgent';
 export type DailyPlannerPlanningWindow = 'Morning' | 'Evening' | 'Outside' | null;
@@ -146,6 +146,14 @@ export interface DailyPlannerTaskDraft {
   managerInstructions?: string;
   employeeCode?: string;
   clientBatchId?: string;
+  /** Unplanned work logged during Mark Completed — immediately Verified Complete. */
+  isExtraTask?: boolean;
+  /** Extra Task: completion start (HH:mm), same as Mark Completed. */
+  startTime?: string;
+  /** Extra Task: completion end (HH:mm), same as Mark Completed. */
+  endTime?: string;
+  /** Extra Task: work done (bullet text), same as Mark Completed. */
+  workDone?: string;
 }
 
 /** Manager-facing pending day-completion submission (Team Daily Planner). */

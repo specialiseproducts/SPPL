@@ -19,7 +19,9 @@ import {
   buildMinimumHoursRequirementMessage,
   formatDurationLabel,
   getMinPlannedHours,
+  getPlanningTargetDateMode,
   getPlanningWindowUiState,
+  partsToDecimalHours,
   PLANNING_CATEGORY_REGULAR,
   PLANNING_CATEGORY_URGENT,
   PLANNING_WINDOW_CLOSED_MESSAGE,
@@ -31,6 +33,21 @@ import { fetchDailyPlannerProjects } from '../../hooks/dailyPlanner/dailyPlanner
 import DailyPlannerPlanSummaryDialog from './DailyPlannerPlanSummaryDialog';
 import HoursMinutesFields from './HoursMinutesFields';
 
+/** Same duration helper as Mark Completed (Start/End → decimal hours). */
+function calcDurationFromTimes(startTime: string, endTime: string): number | null {
+  const start = String(startTime || '').trim();
+  const end = String(endTime || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return null;
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  if (![sh, sm, eh, em].every((n) => Number.isFinite(n))) return null;
+  const startMins = sh * 60 + sm;
+  const endMins = eh * 60 + em;
+  if (endMins < startMins) return null;
+  const diff = endMins - startMins;
+  return partsToDecimalHours(Math.floor(diff / 60), diff % 60);
+}
+
 type TaskSectionState = {
   id: string;
   taskName: string;
@@ -40,6 +57,8 @@ type TaskSectionState = {
   isProjectBased: 'Yes' | 'No';
   projectName: string;
   managerInstructions: string;
+  startTime: string;
+  endTime: string;
 };
 
 type SectionErrors = Record<
@@ -48,6 +67,8 @@ type SectionErrors = Record<
     taskName?: boolean;
     hoursRequired?: boolean;
     projectName?: boolean;
+    startEnd?: boolean;
+    workDone?: boolean;
   }
 >;
 
@@ -61,6 +82,8 @@ function createEmptySection(): TaskSectionState {
     isProjectBased: 'No',
     projectName: '',
     managerInstructions: '',
+    startTime: '',
+    endTime: '',
   };
 }
 
@@ -227,6 +250,170 @@ function TaskSectionRow({
   );
 }
 
+interface ExtraTaskSectionFieldsProps {
+  section: TaskSectionState;
+  projectOptions: string[];
+  showTaskNameError: boolean;
+  showProjectNameError: boolean;
+  showStartEndError: boolean;
+  showWorkDoneError: boolean;
+  onChange: (patch: Partial<TaskSectionState>) => void;
+  onDescriptionRef: (handle: BulletPointEditorHandle | null) => void;
+  onWorkDoneRef: (handle: BulletPointEditorHandle | null) => void;
+}
+
+/** Extra Task field set — reuses existing Daily Planner field components / Mark Completed time + Work Done. */
+function ExtraTaskSectionFields({
+  section,
+  projectOptions,
+  showTaskNameError,
+  showProjectNameError,
+  showStartEndError,
+  showWorkDoneError,
+  onChange,
+  onDescriptionRef,
+  onWorkDoneRef,
+}: ExtraTaskSectionFieldsProps) {
+  const durationPreview = calcDurationFromTimes(section.startTime, section.endTime);
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50/40 p-4 space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor={`task-name-${section.id}`}>Task Name *</Label>
+        <Input
+          id={`task-name-${section.id}`}
+          value={section.taskName}
+          onChange={(e) => onChange({ taskName: e.target.value })}
+          className={cn(showTaskNameError && 'border-red-500 focus-visible:ring-red-500/30')}
+          aria-invalid={showTaskNameError}
+        />
+        {showTaskNameError ? (
+          <p className="text-xs text-red-600">Task name is required.</p>
+        ) : null}
+      </div>
+
+      <BulletPointEditor
+        key={`${section.id}-description`}
+        ref={onDescriptionRef}
+        id={`task-description-${section.id}`}
+        label="Task Description"
+        defaultValue={section.description}
+      />
+
+      <div className="space-y-2">
+        <Label>Priority *</Label>
+        <Select
+          value={section.priority}
+          onValueChange={(v) => onChange({ priority: v as DailyPlannerPriority })}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Urgent">Urgent</SelectItem>
+            <SelectItem value="High">High</SelectItem>
+            <SelectItem value="Medium">Medium</SelectItem>
+            <SelectItem value="Low">Low</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Is this task based on the project?</Label>
+        <Select
+          value={section.isProjectBased}
+          onValueChange={(v) =>
+            onChange({
+              isProjectBased: v as 'Yes' | 'No',
+              projectName: v === 'No' ? '' : section.projectName,
+            })
+          }
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="No">No</SelectItem>
+            <SelectItem value="Yes">Yes</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {section.isProjectBased === 'Yes' ? (
+        <div className="space-y-2">
+          <Label htmlFor={`project-name-${section.id}`}>Project Name *</Label>
+          <Input
+            id={`project-name-${section.id}`}
+            list={`project-options-${section.id}`}
+            value={section.projectName}
+            onChange={(e) => onChange({ projectName: e.target.value })}
+            placeholder="Select or type a project name"
+            className={cn(showProjectNameError && 'border-red-500 focus-visible:ring-red-500/30')}
+            aria-invalid={showProjectNameError}
+          />
+          <datalist id={`project-options-${section.id}`}>
+            {projectOptions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          {showProjectNameError ? (
+            <p className="text-xs text-red-600">Project Name is required.</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <Label htmlFor={`extra-start-time-${section.id}`}>Start Time *</Label>
+          <Input
+            id={`extra-start-time-${section.id}`}
+            type="time"
+            value={section.startTime}
+            onChange={(e) => onChange({ startTime: e.target.value })}
+            className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
+            aria-invalid={showStartEndError}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`extra-end-time-${section.id}`}>End Time *</Label>
+          <Input
+            id={`extra-end-time-${section.id}`}
+            type="time"
+            value={section.endTime}
+            onChange={(e) => onChange({ endTime: e.target.value })}
+            className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
+            aria-invalid={showStartEndError}
+          />
+        </div>
+      </div>
+      {durationPreview != null && durationPreview > 0 ? (
+        <p className="text-sm text-gray-600">Duration: {formatDurationLabel(durationPreview)}</p>
+      ) : section.startTime && section.endTime ? (
+        <p className="text-sm text-red-600">
+          {durationPreview === 0
+            ? 'Duration must be greater than 0.'
+            : 'End Time must be on or after Start Time.'}
+        </p>
+      ) : showStartEndError ? (
+        <p className="text-xs text-red-600">Start Time and End Time are required.</p>
+      ) : null}
+
+      <div className={cn(showWorkDoneError && 'rounded-md ring-1 ring-red-500/40')}>
+        <BulletPointEditor
+          key={`${section.id}-work-done`}
+          ref={onWorkDoneRef}
+          id={`work-done-${section.id}`}
+          label="Work Done"
+          required
+        />
+      </div>
+      {showWorkDoneError ? (
+        <p className="text-xs text-red-600">Work done is required.</p>
+      ) : null}
+    </div>
+  );
+}
+
 interface DailyPlannerCreateTaskModalProps {
   open: boolean;
   date: string;
@@ -239,6 +426,11 @@ interface DailyPlannerCreateTaskModalProps {
   forEmployeeCode?: string;
   /** Skip employee evening-window assert (manager creating for employee). */
   skipPlanningWindowAssert?: boolean;
+  /**
+   * Extra Task from Mark Completed / Not Completed — same fields as Add Task,
+   * saved as Completed + self-approved (no min-hours / plan-summary).
+   */
+  isExtraTask?: boolean;
   /** Existing tasks already planned for `date` (same set the calendar uses for that day). */
   existingTasksForDate?: DailyPlannerTask[];
   onClose: () => void;
@@ -253,6 +445,7 @@ export default function DailyPlannerCreateTaskModal({
   elevated = false,
   forEmployeeCode,
   skipPlanningWindowAssert = false,
+  isExtraTask = false,
   existingTasksForDate = [],
   onClose,
   onSave,
@@ -265,10 +458,14 @@ export default function DailyPlannerCreateTaskModal({
   const [hoursAlert, setHoursAlert] = useState<string | null>(null);
   const [summaryDrafts, setSummaryDrafts] = useState<DailyPlannerTaskDraft[] | null>(null);
   const descriptionRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
+  const workDoneRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
   const submitLockRef = useRef(false);
   const clientBatchIdRef = useRef('');
 
-  const requireMinHours = !elevated && !forEmployeeCode;
+  const advancePartialPlanning =
+    Boolean(planningConfig) && getPlanningTargetDateMode(date, planningConfig!) === 'other';
+  const requireMinHours =
+    !elevated && !forEmployeeCode && !isExtraTask && !advancePartialPlanning;
   const minPlannedHours = getMinPlannedHours(planningConfig);
 
   const windowState = useMemo(
@@ -295,11 +492,12 @@ export default function DailyPlannerCreateTaskModal({
       setHoursAlert(null);
       setSummaryDrafts(null);
       descriptionRefs.current = {};
+      workDoneRefs.current = {};
       void fetchDailyPlannerProjects()
         .then((projects) => setProjectOptions(projects.map((p) => p.projectName).filter(Boolean)))
         .catch(() => setProjectOptions([]));
     }
-  }, [open, date, elevated]);
+  }, [open, date, elevated, isExtraTask]);
 
   const existingPlannedHours = useMemo(
     () => sumPlannedHoursForDate(existingTasksForDate, date),
@@ -314,6 +512,16 @@ export default function DailyPlannerCreateTaskModal({
   }, [sections]);
 
   const liveTotalHours = Math.round((existingPlannedHours + liveFormHours) * 100) / 100;
+
+  /** Extra Task: Planned Hours from Start → End (same duration helper as Mark Completed). */
+  const extraPlannedHours = useMemo(() => {
+    if (!isExtraTask) return null;
+    const section = sections[0];
+    if (!section) return null;
+    const duration = calcDurationFromTimes(section.startTime, section.endTime);
+    if (duration == null || duration <= 0) return null;
+    return Math.round(duration * 100) / 100;
+  }, [isExtraTask, sections]);
 
   const handleClose = () => {
     onClose();
@@ -359,6 +567,65 @@ export default function DailyPlannerCreateTaskModal({
     for (const section of sections) {
       const description =
         descriptionRefs.current[section.id]?.getFormattedValue() ?? '';
+
+      if (isExtraTask) {
+        if (!section.taskName.trim()) {
+          validationErrors[section.id] = {
+            ...(validationErrors[section.id] || {}),
+            taskName: true,
+          };
+        }
+        if (section.isProjectBased === 'Yes' && !section.projectName.trim()) {
+          validationErrors[section.id] = {
+            ...(validationErrors[section.id] || {}),
+            projectName: true,
+          };
+        }
+        const duration = calcDurationFromTimes(section.startTime, section.endTime);
+        if (
+          !section.startTime.trim() ||
+          !section.endTime.trim() ||
+          duration == null ||
+          duration <= 0
+        ) {
+          validationErrors[section.id] = {
+            ...(validationErrors[section.id] || {}),
+            startEnd: true,
+          };
+        }
+        const workDoneEditor = workDoneRefs.current[section.id];
+        const workDone = workDoneEditor?.getFormattedValue() ?? '';
+        if (!workDoneEditor?.hasContent()) {
+          validationErrors[section.id] = {
+            ...(validationErrors[section.id] || {}),
+            workDone: true,
+          };
+        }
+        if (validationErrors[section.id]) {
+          continue;
+        }
+
+        const category =
+          section.priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR;
+        drafts.push({
+          date,
+          taskName: section.taskName.trim(),
+          description,
+          priority: section.priority,
+          hoursRequired: Math.round((duration as number) * 100) / 100,
+          planningCategory: category,
+          urgentReason: '',
+          isProjectBased: section.isProjectBased === 'Yes',
+          projectName: section.isProjectBased === 'Yes' ? section.projectName.trim() : '',
+          managerInstructions: '',
+          employeeCode: forEmployeeCode || undefined,
+          isExtraTask: true,
+          startTime: section.startTime.trim(),
+          endTime: section.endTime.trim(),
+          workDone,
+        });
+        continue;
+      }
 
       if (isSectionEmpty(section.taskName, description)) {
         continue;
@@ -475,7 +742,7 @@ export default function DailyPlannerCreateTaskModal({
       return;
     }
 
-    if (!skipPlanningWindowAssert && planningConfig) {
+    if (!skipPlanningWindowAssert && !isExtraTask && planningConfig) {
       try {
         for (const draft of drafts) {
           assertCanCreateRegularTask(draft.date, planningConfig, { elevated });
@@ -497,15 +764,20 @@ export default function DailyPlannerCreateTaskModal({
           : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     }
 
-    // My Daily Planner review is not a database save. Team for-employee create still saves immediately.
-    if (!forEmployeeCode) {
-      setSummaryDrafts(
-        drafts.map((draft) => ({ ...draft, clientBatchId: clientBatchIdRef.current })),
-      );
+    const draftsWithFlags = drafts.map((draft) => ({
+      ...draft,
+      clientBatchId: clientBatchIdRef.current,
+      ...(isExtraTask ? { isExtraTask: true } : {}),
+    }));
+
+    // Extra Task and Team for-employee create save immediately (no plan-summary step).
+    // My Daily Planner plan create still shows the review summary first.
+    if (!forEmployeeCode && !isExtraTask) {
+      setSummaryDrafts(draftsWithFlags);
       return;
     }
 
-    await persistDrafts(drafts);
+    await persistDrafts(draftsWithFlags);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -530,6 +802,22 @@ export default function DailyPlannerCreateTaskModal({
     </div>
   );
 
+  const extraHoursIndicator = (
+    <div
+      className={cn(
+        'rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-[#212529] shrink-0 text-right',
+      )}
+    >
+      Planned Hours:{' '}
+      {extraPlannedHours != null ? formatDurationLabel(extraPlannedHours) : '—'}
+      {existingPlannedHours > 0 ? (
+        <span className="mt-0.5 block text-xs font-normal text-gray-500">
+          Existing: {formatDurationLabel(existingPlannedHours)}
+        </span>
+      ) : null}
+    </div>
+  );
+
   return (
     <>
       <Dialog open={open && !summaryDrafts} onOpenChange={(v) => !v && !summaryDrafts && handleClose()}>
@@ -538,7 +826,7 @@ export default function DailyPlannerCreateTaskModal({
           style={{ height: '90vh', maxHeight: '90vh' }}
         >
           <DialogHeader className="shrink-0 border-b border-gray-200 px-6 py-4 pr-12 text-left">
-            <DialogTitle>Create Task</DialogTitle>
+            <DialogTitle>{isExtraTask ? 'Extra Task' : 'Create Task'}</DialogTitle>
           </DialogHeader>
 
           <form
@@ -547,10 +835,12 @@ export default function DailyPlannerCreateTaskModal({
           >
             <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth overscroll-contain px-6 py-4">
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Date</Label>
-                  <Input value={date} readOnly disabled className="bg-gray-50" />
-                </div>
+                {!isExtraTask ? (
+                  <div className="space-y-2">
+                    <Label>Date</Label>
+                    <Input value={date} readOnly disabled className="bg-gray-50" />
+                  </div>
+                ) : null}
 
                 {planningClosed ? (
                   <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 whitespace-pre-wrap">
@@ -570,7 +860,28 @@ export default function DailyPlannerCreateTaskModal({
                   </div>
                 ) : null}
 
-                {!planningClosed
+                {!planningClosed && isExtraTask
+                  ? sections.slice(0, 1).map((section) => (
+                      <ExtraTaskSectionFields
+                        key={section.id}
+                        section={section}
+                        projectOptions={projectOptions}
+                        showTaskNameError={Boolean(errors[section.id]?.taskName)}
+                        showProjectNameError={Boolean(errors[section.id]?.projectName)}
+                        showStartEndError={Boolean(errors[section.id]?.startEnd)}
+                        showWorkDoneError={Boolean(errors[section.id]?.workDone)}
+                        onChange={(patch) => updateSection(section.id, patch)}
+                        onDescriptionRef={(handle) => {
+                          descriptionRefs.current[section.id] = handle;
+                        }}
+                        onWorkDoneRef={(handle) => {
+                          workDoneRefs.current[section.id] = handle;
+                        }}
+                      />
+                    ))
+                  : null}
+
+                {!planningClosed && !isExtraTask
                   ? sections.map((section, index) => (
                       <TaskSectionRow
                         key={section.id}
@@ -594,7 +905,7 @@ export default function DailyPlannerCreateTaskModal({
             </div>
 
             <div className="shrink-0 space-y-3 border-t border-gray-200 bg-white px-6 py-4">
-              {!planningClosed ? (
+              {!planningClosed && !isExtraTask ? (
                 <Button
                   type="button"
                   variant="outline"
@@ -610,7 +921,8 @@ export default function DailyPlannerCreateTaskModal({
                 <p className="text-sm text-red-600 whitespace-pre-wrap">{hoursAlert}</p>
               ) : null}
               <div className="flex flex-wrap items-center justify-end gap-2">
-                {!planningClosed ? totalHoursIndicator : null}
+                {!planningClosed && !isExtraTask ? totalHoursIndicator : null}
+                {!planningClosed && isExtraTask ? extraHoursIndicator : null}
                 <Button
                   type="button"
                   variant="outline"
@@ -620,7 +932,7 @@ export default function DailyPlannerCreateTaskModal({
                   Cancel
                 </Button>
                 <Button type="submit" disabled={saving || planningClosed}>
-                  {saving ? 'Saving…' : multipleSections ? 'Save Tasks' : 'Save Task'}
+                  {saving ? 'Saving…' : !isExtraTask && multipleSections ? 'Save Tasks' : 'Save Task'}
                 </Button>
               </div>
             </div>

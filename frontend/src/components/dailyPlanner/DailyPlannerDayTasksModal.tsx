@@ -36,7 +36,6 @@ import {
 } from './dailyPlannerUtils';
 import {
   canCompleteTasksOnDate,
-  canPlanTasksOnDate,
   FUTURE_COMPLETION_BLOCKED_MESSAGE,
   getDailyPlannerDateMode,
   PAST_DATE_READONLY_MESSAGE,
@@ -87,6 +86,8 @@ interface DailyPlannerDayTasksModalProps {
     hideRevisionParentId?: string;
   }) => void;
   onAddTask: (revisesTaskId?: string) => void;
+  /** Log unplanned work already done during today's Mark Completed flow. */
+  onExtraTask?: () => void;
   onViewFinalPlan?: () => void;
 }
 
@@ -98,6 +99,7 @@ export default function DailyPlannerDayTasksModal({
   onClose,
   onChanged,
   onAddTask,
+  onExtraTask,
   onViewFinalPlan,
 }: DailyPlannerDayTasksModalProps) {
   const { user } = useAuth();
@@ -132,7 +134,6 @@ export default function DailyPlannerDayTasksModal({
       ),
     [visibleTasks],
   );
-  const canPlan = canPlanTasksOnDate(date) && !dayPlanFinalized;
   const canCompleteByDate = canCompleteTasksOnDate(date);
   const canModifyTasks = useMemo(
     () => canCompleteByDate && canUpdateTasksOnDate(date, planningConfig),
@@ -140,6 +141,8 @@ export default function DailyPlannerDayTasksModal({
   );
   const isReadOnlyWindow = canCompleteByDate && !canModifyTasks;
   const canEditPlanTasks = !isPastDate && !dayPlanFinalized;
+  /** Extra Task uses the same 5:30 PM → 11:00 AM employee planning window as other today updates. */
+  const canCreateExtraTask = Boolean(canCompleteByDate && onExtraTask && canModifyTasks);
 
   const completeDurationPreview = useMemo(
     () => calcDurationFromTimes(completeStartTime, completeEndTime),
@@ -653,11 +656,24 @@ export default function DailyPlannerDayTasksModal({
           </div>
 
           <DialogFooter
-            className={`shrink-0 gap-2 border-t border-gray-200 bg-white px-6 py-4 ${canPlan ? 'sm:justify-between' : 'sm:justify-end'}`}
+            className={`shrink-0 gap-2 border-t border-gray-200 bg-white px-6 py-4 ${
+              canCompleteByDate && onExtraTask ? 'sm:justify-between' : 'sm:justify-end'
+            }`}
           >
-            {canPlan ? (
-              <Button type="button" variant="outline" onClick={() => onAddTask()}>
-                + Add Task
+            {canCompleteByDate && onExtraTask ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!canCreateExtraTask}
+                onClick={() => {
+                  if (!canCreateExtraTask) {
+                    toast.error(TASK_UPDATES_READONLY_MESSAGE);
+                    return;
+                  }
+                  onExtraTask();
+                }}
+              >
+                + Extra Task
               </Button>
             ) : null}
             <div className="flex flex-wrap items-center justify-end gap-2">

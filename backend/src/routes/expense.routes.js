@@ -53,9 +53,23 @@ router.put(
   ExpenseTravelRateSettingsController.putTravelRateSettings
 );
 
+router.get(
+  '/dashboard/company-overview',
+  requireExpensesSuperAdmin,
+  ExpenseController.getCompanyOverview
+);
+router.get(
+  '/dashboard/employees',
+  requireExpensesSuperAdmin,
+  ExpenseController.getDashboardEmployees
+);
+
 // Expense CRUD operations
 router.get('/', ExpenseController.getExpenses);
+router.get('/masters/service-providers', ExpenseController.listExpenseServiceProviders);
+router.get('/masters/locations', ExpenseController.listExpenseLocations);
 router.get('/audit/employees', ExpenseController.getAuditEmployeeDirectory);
+router.get('/audit/approved-total', ExpenseController.getAuditApprovedTotal);
 router.get('/audit', ExpenseController.getExpensesForAudit);
 router.get('/edit-requests/pending', ExpenseController.listPendingExpenseEditRequests);
 router.post('/edit-requests/:requestId/approve', ExpenseController.approveExpenseEditRequest);

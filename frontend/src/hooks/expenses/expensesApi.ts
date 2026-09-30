@@ -177,6 +177,62 @@ export async function fetchAuditExpensesFiltered(
   };
 }
 
+export async function fetchAuditApprovedTotal(
+  filters: AuditExpenseFilters,
+): Promise<number> {
+  const params = new URLSearchParams();
+  if (filters.employeeId !== 'all') {
+    params.set('employeeId', filters.employeeId);
+  }
+  if (filters.month !== 'all') {
+    params.set('month', filters.month);
+  }
+  if (filters.year !== 'all') {
+    params.set('year', filters.year);
+  }
+  const qs = params.toString();
+  const payload = await apiFetch(
+    `/api/expenses/audit/approved-total${qs ? `?${qs}` : ''}`,
+  );
+  if (!payload?.success) {
+    throw new Error(
+      typeof payload?.message === 'string' && payload.message.trim()
+        ? payload.message
+        : 'Failed to fetch audit approved total',
+    );
+  }
+  const total = Number((payload.data as { total?: number } | undefined)?.total);
+  return Number.isFinite(total) ? total : 0;
+}
+
+export async function fetchExpenseServiceProviderMasters(): Promise<string[]> {
+  const payload = await apiFetch('/api/expenses/masters/service-providers');
+  if (!payload?.success) {
+    throw new Error(
+      typeof payload?.message === 'string' && payload.message.trim()
+        ? payload.message
+        : 'Failed to load service providers',
+    );
+  }
+  return Array.isArray(payload.data)
+    ? (payload.data as unknown[]).map((v) => String(v ?? '').trim()).filter(Boolean)
+    : [];
+}
+
+export async function fetchExpenseLocationMasters(): Promise<string[]> {
+  const payload = await apiFetch('/api/expenses/masters/locations');
+  if (!payload?.success) {
+    throw new Error(
+      typeof payload?.message === 'string' && payload.message.trim()
+        ? payload.message
+        : 'Failed to load locations',
+    );
+  }
+  return Array.isArray(payload.data)
+    ? (payload.data as unknown[]).map((v) => String(v ?? '').trim()).filter(Boolean)
+    : [];
+}
+
 export async function fetchExpenseDetail(expenseId: string): Promise<ExpenseRecord> {
   const res = (await apiFetch(`/api/expenses/${encodeURIComponent(expenseId)}`)) as {
     success?: boolean;
@@ -309,6 +365,306 @@ export async function fetchExpenseTravelRates(): Promise<ExpenseTravelRateSettin
     throw new Error('Invalid travel rates response from server');
   }
   return parsed;
+}
+
+export type CompanyOverviewKpis = {
+  totalExpenses: number;
+  highestExpenseMonth: {
+    monthYear: string;
+    label: string;
+    amount: number;
+  } | null;
+  highestExpenseHead: {
+    expenseHead: string;
+    amount: number;
+  } | null;
+  averageMonthlyExpense: number;
+  momChange?: {
+    percent: number | null;
+    latestMonthYear: string;
+    latestMonthLabel: string;
+    previousMonthYear: string;
+    previousMonthLabel: string;
+    latestAmount: number;
+    previousAmount: number;
+  } | null;
+};
+
+export type CompanyOverviewMonthlyPoint = {
+  monthYear: string;
+  label: string;
+  amount: number;
+};
+
+export type CompanyOverviewExpenseHead = {
+  expenseHead: string;
+  amount: number;
+  percentage: number;
+};
+
+export type CompanyOverviewServiceProvider = {
+  serviceProvider: string;
+  amount: number;
+  percentage: number;
+};
+
+export type CompanyOverviewEmployeeExpense = {
+  employeeCode: string;
+  employeeName: string;
+  amount: number;
+  percentage: number;
+};
+
+export type CompanyOverviewLocation = {
+  location: string;
+  amount: number;
+  percentage: number;
+};
+
+export type CompanyOverviewPurpose = {
+  purpose: string;
+  amount: number;
+  percentage: number;
+  cumulativeAmount: number;
+  cumulativePercent: number;
+};
+
+export type MonthWaterfallContribution = {
+  expenseHead: string;
+  change: number;
+  currentAmount: number;
+  previousAmount: number;
+};
+
+export type MonthWaterfallData = {
+  previousMonthYear: string;
+  previousMonthLabel: string;
+  currentMonthYear: string;
+  currentMonthLabel: string;
+  previousMonthTotal: number;
+  currentMonthTotal: number;
+  contributions: MonthWaterfallContribution[];
+};
+
+export type CompanyOverviewData = {
+  period: {
+    start: string;
+    end: string;
+    label: string;
+    months: string[];
+    monthCount?: number;
+    from?: string;
+    to?: string;
+  };
+  kpis: CompanyOverviewKpis;
+  monthlyTrend: CompanyOverviewMonthlyPoint[];
+  expenseHeads: CompanyOverviewExpenseHead[];
+  serviceProviders?: CompanyOverviewServiceProvider[];
+  employeesByExpense?: CompanyOverviewEmployeeExpense[];
+  locations?: CompanyOverviewLocation[];
+  purposes?: CompanyOverviewPurpose[];
+  waterfall?: MonthWaterfallData | null;
+  location?: string | null;
+};
+
+export async function fetchCompanyOverview(params: {
+  from: string;
+  to: string;
+  employeeCode?: string;
+  location?: string;
+}): Promise<CompanyOverviewData> {
+  const qs = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+  });
+  const employeeCode = String(params.employeeCode ?? '').trim();
+  if (employeeCode) qs.set('employeeCode', employeeCode);
+  const location = String(params.location ?? '').trim();
+  if (location) qs.set('location', location);
+  const res = (await apiFetch(
+    `/api/expenses/dashboard/company-overview?${qs.toString()}`,
+  )) as {
+    success?: boolean;
+    message?: string;
+    data?: CompanyOverviewData;
+  };
+  if (!res?.success || !res.data) {
+    throw new Error(
+      typeof res?.message === 'string' && res.message.trim()
+        ? res.message
+        : 'Failed to load company overview analytics',
+    );
+  }
+  return res.data;
+}
+
+export type DashboardEmployeeOption = {
+  employeeCode: string;
+  employeeName: string;
+};
+
+export async function fetchDashboardEmployees(): Promise<DashboardEmployeeOption[]> {
+  const res = (await apiFetch('/api/expenses/dashboard/employees')) as {
+    success?: boolean;
+    message?: string;
+    data?: { employees?: DashboardEmployeeOption[] };
+  };
+  if (!res?.success || !res.data) {
+    throw new Error(
+      typeof res?.message === 'string' && res.message.trim()
+        ? res.message
+        : 'Failed to load dashboard employees',
+    );
+  }
+  return Array.isArray(res.data.employees) ? res.data.employees : [];
+}
+
+export type ExpenseHeadAnalysisSubcategory = {
+  subCategory: string;
+  amount: number;
+  count: number;
+  percentage: number;
+};
+
+export type ExpenseHeadAnalysisData = {
+  period: {
+    start: string;
+    end: string;
+    label: string;
+    months: string[];
+    monthCount?: number;
+    from?: string;
+    to?: string;
+  };
+  expenseHead: string;
+  kpis: {
+    totalExpenses: number;
+    recordCount: number;
+  };
+  subcategories: ExpenseHeadAnalysisSubcategory[];
+};
+
+export async function fetchExpenseHeadAnalysis(params: {
+  from: string;
+  to: string;
+  expenseHead: string;
+  employeeCode?: string;
+  location?: string;
+}): Promise<ExpenseHeadAnalysisData> {
+  const qs = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+    expenseHead: params.expenseHead,
+  });
+  const employeeCode = String(params.employeeCode ?? '').trim();
+  if (employeeCode) qs.set('employeeCode', employeeCode);
+  const location = String(params.location ?? '').trim();
+  if (location) qs.set('location', location);
+  const res = (await apiFetch(
+    `/api/expenses/dashboard/company-overview?${qs.toString()}`,
+  )) as {
+    success?: boolean;
+    message?: string;
+    data?: ExpenseHeadAnalysisData;
+  };
+  if (!res?.success || !res.data) {
+    throw new Error(
+      typeof res?.message === 'string' && res.message.trim()
+        ? res.message
+        : 'Failed to load expense head analytics',
+    );
+  }
+  return res.data;
+}
+
+export type ExpenseSubcategoryTransaction = {
+  expenseId: string;
+  date: string;
+  dateLabel: string;
+  employeeName: string;
+  employeeId?: string;
+  expenseHead?: string;
+  subCategory?: string;
+  outStation?: string;
+  billNumber: string;
+  amount: number;
+  serviceProvider: string;
+  purpose: string;
+  location?: string;
+  pnrNo?: string;
+  fromLocation?: string;
+  toLocation?: string;
+  returnType?: string;
+  kilometers?: number | null;
+  stayDateFrom?: string;
+  stayDateTo?: string;
+  fuelType?: string;
+  arrivalDate?: string;
+  arrivalTime?: string;
+  departureDate?: string;
+  departureTime?: string;
+  durationHours?: number | null;
+  durationDays?: number | null;
+  travelAllowanceAmount?: number | null;
+  supportingDocument: string;
+  documentUrl: string;
+  documentFileName: string;
+  auditStatus?: string;
+  monthYear: string;
+};
+
+export type ExpenseSubcategoryAnalysisData = {
+  period: {
+    start: string;
+    end: string;
+    label: string;
+    months: string[];
+    monthCount?: number;
+    from?: string;
+    to?: string;
+  };
+  expenseHead: string;
+  subCategory: string;
+  kpis: {
+    totalExpenses: number;
+    recordCount: number;
+  };
+  transactions: ExpenseSubcategoryTransaction[];
+};
+
+export async function fetchExpenseSubcategoryAnalysis(params: {
+  from: string;
+  to: string;
+  expenseHead: string;
+  subCategory: string;
+  employeeCode?: string;
+  location?: string;
+}): Promise<ExpenseSubcategoryAnalysisData> {
+  const qs = new URLSearchParams({
+    from: params.from,
+    to: params.to,
+    expenseHead: params.expenseHead,
+    subCategory: params.subCategory,
+  });
+  const employeeCode = String(params.employeeCode ?? '').trim();
+  if (employeeCode) qs.set('employeeCode', employeeCode);
+  const location = String(params.location ?? '').trim();
+  if (location) qs.set('location', location);
+  const res = (await apiFetch(
+    `/api/expenses/dashboard/company-overview?${qs.toString()}`,
+  )) as {
+    success?: boolean;
+    message?: string;
+    data?: ExpenseSubcategoryAnalysisData;
+  };
+  if (!res?.success || !res.data) {
+    throw new Error(
+      typeof res?.message === 'string' && res.message.trim()
+        ? res.message
+        : 'Failed to load subcategory analytics',
+    );
+  }
+  return res.data;
 }
 
 export async function fetchPendingExpenseEditRequests(): Promise<ExpenseEditRequest[]> {

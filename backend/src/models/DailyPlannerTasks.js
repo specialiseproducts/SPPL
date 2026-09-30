@@ -349,6 +349,10 @@ export async function createTask(payload) {
       payload.completionDurationHours === ''
         ? null
         : Number(payload.completionDurationHours),
+    verifiedBy: String(payload.verifiedBy || '').trim(),
+    verifiedByName: String(payload.verifiedByName || '').trim(),
+    verifiedAt: payload.verifiedAt || null,
+    verificationStatus: String(payload.verificationStatus || '').trim(),
     planningCategory: String(payload.planningCategory || 'Regular').trim(),
     urgentReason: String(payload.urgentReason || '').trim(),
     planningWindowUsed: payload.planningWindowUsed ? String(payload.planningWindowUsed).trim() : null,

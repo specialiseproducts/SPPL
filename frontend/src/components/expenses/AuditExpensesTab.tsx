@@ -29,6 +29,7 @@ import {
 } from '../../hooks/expenses/expensesApi';
 import {
   fetchNextAuditFilteredPage,
+  useAuditApprovedTotalQuery,
   useAuditExpenseEmployeesQuery,
   useAuditExpensesFilteredQuery,
   useInvalidateExpensesList,
@@ -117,9 +118,11 @@ export default function AuditExpensesTab() {
   );
 
   const auditQuery = useAuditExpensesFilteredQuery(activeFilters, filtersApplied);
+  const approvedTotalQuery = useAuditApprovedTotalQuery(activeFilters, filtersApplied);
 
   const expenses = auditQuery.data?.pages ?? [];
   const nextCursor = auditQuery.data?.nextCursor ?? null;
+  const approvedTotal = approvedTotalQuery.data ?? 0;
 
   const markFiltersApplied = useCallback(() => {
     setFiltersApplied(true);
@@ -245,7 +248,7 @@ export default function AuditExpensesTab() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
         <div className="space-y-2">
           <label className="text-sm text-gray-700">Employee Name</label>
           <Select value={selectedEmployee} onValueChange={handleEmployeeChange}>
@@ -296,6 +299,20 @@ export default function AuditExpensesTab() {
               ))}
             </SelectContent>
           </Select>
+        </div>
+        <div className="space-y-2">
+          <label className="text-sm text-gray-700">Total Amount</label>
+          <Button
+            type="button"
+            variant="outline"
+            disabled
+            aria-readonly
+            className="w-full justify-start font-normal cursor-default opacity-100"
+          >
+            {filtersApplied
+              ? `Total Amount ₹${approvedTotal.toLocaleString('en-IN')}`
+              : 'Total Amount ₹0'}
+          </Button>
         </div>
       </div>
 

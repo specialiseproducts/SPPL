@@ -38,6 +38,7 @@ import {
 } from '../utils/expenseValidation.js';
 import { computeTravelCarBikeRupeeAmount } from '../utils/expenseTravelAmount.js';
 import * as ExpenseTravelRateSettingsService from './expenseTravelRateSettings.service.js';
+import * as ExpenseMasterValuesModel from '../models/ExpenseMasterValues.js';
 import { resolveLocationFieldsFromRow } from '../utils/expenseLocationFields.js';
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy.js';
 import {
@@ -449,9 +450,37 @@ export const createExpense = async (expenseData, documents = [], authUser = null
 
     const travelExtras = {};
     const pnrNo = trimText(raw.pnrNo);
-    const fromLoc = trimText(raw.fromLocation);
-    const toLoc = trimText(raw.toLocation);
+    let fromLoc = trimText(raw.fromLocation);
+    let toLoc = trimText(raw.toLocation);
     const retT = trimText(raw.returnType);
+
+    let resolvedServiceProvider = serviceProvider;
+    let resolvedLocation = location;
+    if (resolvedServiceProvider) {
+      resolvedServiceProvider = await ExpenseMasterValuesModel.ensureMasterValue(
+        ExpenseMasterValuesModel.MASTER_TYPES.SERVICE_PROVIDER,
+        resolvedServiceProvider,
+      );
+    }
+    if (resolvedLocation) {
+      resolvedLocation = await ExpenseMasterValuesModel.ensureMasterValue(
+        ExpenseMasterValuesModel.MASTER_TYPES.LOCATION,
+        resolvedLocation,
+      );
+    }
+    if (fromLoc) {
+      fromLoc = await ExpenseMasterValuesModel.ensureMasterValue(
+        ExpenseMasterValuesModel.MASTER_TYPES.LOCATION,
+        fromLoc,
+      );
+    }
+    if (toLoc) {
+      toLoc = await ExpenseMasterValuesModel.ensureMasterValue(
+        ExpenseMasterValuesModel.MASTER_TYPES.LOCATION,
+        toLoc,
+      );
+    }
+
     if (pnrNo) {
       travelExtras.pnrNo = pnrNo;
     }
@@ -568,10 +597,10 @@ export const createExpense = async (expenseData, documents = [], authUser = null
         ? { serviceProvider: '', billNumber: '' }
         : travelOutstation
           ? { serviceProvider: '', billNumber: '' }
-          : { serviceProvider, billNumber }),
+          : { serviceProvider: resolvedServiceProvider, billNumber }),
       date,
       ...(resolvedMonthYear ? { monthYear: resolvedMonthYear } : monthYear ? { monthYear } : {}),
-      location: travelOutstation ? '' : location,
+      location: travelOutstation ? '' : resolvedLocation,
       purpose: travelOutstation ? '' : purpose,
       employeeId: String(authUser.employeeCode || '').trim(),
       employeeName,
@@ -966,6 +995,20 @@ export const getExpensesForAudit = async (
     page.items.map((row) => toExpenseListDto(row, enrichExpenseRow))
   );
   return toPaginatedResponse(mapped, page.lastEvaluatedKey);
+};
+
+export const listExpenseServiceProviders = async () => {
+  return ExpenseMasterValuesModel.listServiceProviders();
+};
+
+export const listExpenseLocations = async () => {
+  return ExpenseMasterValuesModel.listLocations();
+};
+
+export const getAuditApprovedTotal = async (filters = {}, authUser = null, effectiveRole = 'User') => {
+  assertCanModerateExpenseAudit(effectiveRole);
+  const total = await ExpenseModel.sumApprovedAuditAmounts(filters);
+  return { total };
 };
 
 export const approveExpense = async (expenseId, authUser, effectiveRole) => {

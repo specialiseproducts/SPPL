@@ -34,6 +34,12 @@ import {
   buildOutstationScreenshotsPdf,
   isOutstationScreenshotFile,
 } from '../utils/outstationProofPdf';
+import { ExpenseSearchableCombobox } from './expenses/ExpenseSearchableCombobox';
+import {
+  useExpenseLocationMastersQuery,
+  useExpenseServiceProviderMastersQuery,
+} from '../hooks/expenses/useExpensesQueries';
+import { resolveMasterDisplayValue } from '../utils/expenseMasterNormalize';
 
 interface ExpenseFormModalProps {
   isOpen: boolean;
@@ -137,6 +143,11 @@ export default function ExpenseFormModal({
   const isOutstationTravel = formData.expenseHead === 'Travel' && formData.outStation === 'Yes';
   const showHotelStay = isHotelBookingSelf(formData.expenseHead, effectiveSubCategory);
   const isAutoAmount = showTravelDetail && !isOutstationTravel;
+
+  const serviceProviderMastersQuery = useExpenseServiceProviderMastersQuery(isOpen);
+  const locationMastersQuery = useExpenseLocationMastersQuery(isOpen);
+  const serviceProviderOptions = serviceProviderMastersQuery.data ?? [];
+  const locationOptions = locationMastersQuery.data ?? [];
 
   useEffect(() => {
     let src = '';
@@ -467,9 +478,15 @@ export default function ExpenseFormModal({
       expenseId: '',
       expenseHead: formData.expenseHead,
       subCategory: subCategoryResolved || undefined,
-      location: isOutstationTravel || showTicketTransport ? '' : formData.location.trim(),
+      location:
+        isOutstationTravel || showTicketTransport
+          ? ''
+          : resolveMasterDisplayValue(formData.location, locationOptions),
       purpose: isOutstationTravel ? '' : formData.purpose.trim(),
-      serviceProvider: showTravelDetail || isOutstationTravel ? '' : formData.serviceProvider.trim(),
+      serviceProvider:
+        showTravelDetail || isOutstationTravel
+          ? ''
+          : resolveMasterDisplayValue(formData.serviceProvider, serviceProviderOptions),
       billNumber: showTravelDetail || isOutstationTravel ? '' : formData.billNumber.trim(),
       date: submissionDate,
       amount: amountNum,
@@ -490,14 +507,14 @@ export default function ExpenseFormModal({
       ...(showTicketTransport && !isOutstationTravel
         ? {
             pnrNo: formData.pnrNo.trim(),
-            fromLocation: formData.fromLocation.trim(),
-            toLocation: formData.toLocation.trim(),
+            fromLocation: resolveMasterDisplayValue(formData.fromLocation, locationOptions),
+            toLocation: resolveMasterDisplayValue(formData.toLocation, locationOptions),
           }
         : {}),
       ...(showTravelDetail && !isOutstationTravel
         ? {
-            fromLocation: formData.fromLocation.trim(),
-            toLocation: formData.toLocation.trim(),
+            fromLocation: resolveMasterDisplayValue(formData.fromLocation, locationOptions),
+            toLocation: resolveMasterDisplayValue(formData.toLocation, locationOptions),
             returnType: formData.returnType.trim(),
             kilometers: parseFloat(formData.kilometers) || 0,
             fuelType: formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType : undefined,
@@ -841,21 +858,23 @@ export default function ExpenseFormModal({
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="from_location_ticket">From *</Label>
-                  <Input
+                  <ExpenseSearchableCombobox
                     id="from_location_ticket"
-                    value={formData.fromLocation}
-                    onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
+                    label="From *"
                     placeholder="From"
+                    value={formData.fromLocation}
+                    options={locationOptions}
+                    onChange={(value) => setFormData({ ...formData, fromLocation: value })}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="to_location_ticket">To *</Label>
-                  <Input
+                  <ExpenseSearchableCombobox
                     id="to_location_ticket"
-                    value={formData.toLocation}
-                    onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
+                    label="To *"
                     placeholder="To"
+                    value={formData.toLocation}
+                    options={locationOptions}
+                    onChange={(value) => setFormData({ ...formData, toLocation: value })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -868,12 +887,13 @@ export default function ExpenseFormModal({
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="service_provider_ticket">Service Provider Name *</Label>
-                  <Input
+                  <ExpenseSearchableCombobox
                     id="service_provider_ticket"
+                    label="Service Provider Name *"
                     placeholder="Enter service provider"
                     value={formData.serviceProvider}
-                    onChange={(e) => setFormData({ ...formData, serviceProvider: e.target.value })}
+                    options={serviceProviderOptions}
+                    onChange={(value) => setFormData({ ...formData, serviceProvider: value })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -991,21 +1011,23 @@ export default function ExpenseFormModal({
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="from_location">From *</Label>
-                <Input
+                <ExpenseSearchableCombobox
                   id="from_location"
-                  value={formData.fromLocation}
-                  onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
+                  label="From *"
                   placeholder="Start location"
+                  value={formData.fromLocation}
+                  options={locationOptions}
+                  onChange={(value) => setFormData({ ...formData, fromLocation: value })}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="to_location">To *</Label>
-                <Input
+                <ExpenseSearchableCombobox
                   id="to_location"
-                  value={formData.toLocation}
-                  onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
+                  label="To *"
                   placeholder="Destination"
+                  value={formData.toLocation}
+                  options={locationOptions}
+                  onChange={(value) => setFormData({ ...formData, toLocation: value })}
                 />
               </div>
               <div className="space-y-2">
@@ -1058,12 +1080,13 @@ export default function ExpenseFormModal({
           {!isOutstationTravel && !showTicketTransport ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="location">Location *</Label>
-              <Input
+              <ExpenseSearchableCombobox
                 id="location"
+                label="Location *"
                 placeholder="Enter location"
                 value={formData.location}
-                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                options={locationOptions}
+                onChange={(value) => setFormData({ ...formData, location: value })}
               />
             </div>
             <div className="space-y-2">
@@ -1081,12 +1104,13 @@ export default function ExpenseFormModal({
           {!isOutstationTravel && !showTravelDetail && !showTicketTransport ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="service_provider">Service Provider Name *</Label>
-                <Input
+                <ExpenseSearchableCombobox
                   id="service_provider"
+                  label="Service Provider Name *"
                   placeholder="Enter service provider"
                   value={formData.serviceProvider}
-                  onChange={(e) => setFormData({ ...formData, serviceProvider: e.target.value })}
+                  options={serviceProviderOptions}
+                  onChange={(value) => setFormData({ ...formData, serviceProvider: value })}
                 />
               </div>
               <div className="space-y-2">

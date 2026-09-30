@@ -26,4 +26,7 @@ build/
 # Local fallback when DynamoDB ExpenseTravelRateSettings table is not created
 data/expense-travel-rates.json
 
+# One-time cleanup backups (Developer Tester export)
+scripts/.cleanup-output/
+
 

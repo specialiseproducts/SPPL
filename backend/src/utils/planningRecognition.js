@@ -77,6 +77,7 @@ export const PLANNING_WINDOW_OUTSIDE = 'Outside';
 export const PLANNING_SOURCE_MANUAL = 'MANUAL';
 export const PLANNING_SOURCE_IMPORTED = 'SALES_FORECASTING';
 export const PLANNING_SOURCE_RESCHEDULED = 'RESCHEDULED';
+export const PLANNING_SOURCE_EXTRA = 'EXTRA';
 
 export const REGULAR_TASK_BLOCKED_MESSAGE =
   'Tasks can only be planned during the planning window.\n\n' +
@@ -238,19 +239,15 @@ export function assertTaskCreationNotOnHoliday(taskDateIso, location) {
 }
 
 /**
- * Employee My Daily Planner create: any today/future working day during
+ * Employee My Daily Planner create: today/tomorrow during
  * 5:30 PM → next day 11:00 AM planning window.
+ * Dates after tomorrow (advance planning) have no time-window restriction.
  */
 export function assertEmployeeNextDayRegularAllowed(taskDateIso, reference = new Date(), location) {
   assertTaskCreationNotOnHoliday(taskDateIso, location);
   const target = String(taskDateIso || '').trim().slice(0, 10);
   const today = todayIstDateKey(reference);
-
-  if (!isEmployeePlanningWindow(reference)) {
-    const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
+  const mode = getPlanningTargetDateMode(taskDateIso, reference);
 
   if (!target || target < today) {
     const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
@@ -258,10 +255,31 @@ export function assertEmployeeNextDayRegularAllowed(taskDateIso, reference = new
     throw err;
   }
 
-  // Evening portion (after 5:30 PM): future working days only (strictly after today).
-  // Morning portion (before 11:00 AM): today and future working days.
+  if (!isCompanyWorkingDayDateKey(target, location)) {
+    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+
   const mins = getIstMinutesSinceMidnight(reference);
   const morningEnd = minutesFrom(MORNING_END_HOUR, MORNING_END_MINUTE);
+
+  // Advance planning for dates after tomorrow: no time-window restriction.
+  if (mode === 'other') {
+    if (isEmployeePlanningWindow(reference)) {
+      return mins < morningEnd ? PLANNING_WINDOW_MORNING : PLANNING_WINDOW_EVENING;
+    }
+    return PLANNING_WINDOW_OUTSIDE;
+  }
+
+  if (!isEmployeePlanningWindow(reference)) {
+    const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Evening portion (after 5:30 PM): future working days only (strictly after today).
+  // Morning portion (before 11:00 AM): today and future working days.
   if (mins >= minutesFrom(EVENING_START_HOUR, EVENING_START_MINUTE) && target <= today) {
     const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
     err.statusCode = 400;
@@ -269,12 +287,6 @@ export function assertEmployeeNextDayRegularAllowed(taskDateIso, reference = new
   }
   if (mins < morningEnd && target < today) {
     const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (!isCompanyWorkingDayDateKey(target, location)) {
-    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
     err.statusCode = 400;
     throw err;
   }
@@ -347,6 +359,10 @@ export function assertRegularTaskAllowed(taskDateIso, reference = new Date(), lo
     const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
     err.statusCode = 400;
     throw err;
+  }
+  // Dates after tomorrow: advance planning allowed without time-window restriction.
+  if (target === 'other') {
+    return resolvePlanningWindowForRegularTask(taskDateIso, reference);
   }
   if (isRegularTaskAllowed(taskDateIso, reference)) {
     return resolvePlanningWindowForRegularTask(taskDateIso, reference);
@@ -428,6 +444,8 @@ export function isTaskCountedTowardDailyMinimum(task) {
   if (!task) return false;
   const status = String(task.status || '').trim();
   if (status === 'Rescheduled') return false;
+  // Extra (unplanned completed) work is not advance planning.
+  if (String(task.source || '').trim() === PLANNING_SOURCE_EXTRA) return false;
   // Handled Needs Revision parents are replaced by a child task — do not double-count.
   if (String(task.revisionOutcome || '').trim()) return false;
   return true;

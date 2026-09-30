@@ -24,7 +24,7 @@ function ExpensesIntro({ moduleRole }: { moduleRole: UserRole }) {
   } else if (auditLayout) {
     blurb = null;
   } else if (superLayout) {
-    blurb = 'My Expenses: your own records. Admin Dashboard: analytics placeholders (APIs coming).';
+    blurb = null;
   }
 
   return (

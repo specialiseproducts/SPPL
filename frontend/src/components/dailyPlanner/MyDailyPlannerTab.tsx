@@ -39,6 +39,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import {
   evaluateMyDailyPlannerCreateEligibility,
+  TASK_UPDATES_READONLY_MESSAGE,
 } from '../../utils/planningRecognition';
 import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
 import { getDailyPlannerDateMode } from './dailyPlannerDateRules';
@@ -146,6 +147,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
   const [createDate, setCreateDate] = useState<string | null>(null);
   const [createBlockedReason, setCreateBlockedReason] = useState<string | null>(null);
   const [reviseTaskId, setReviseTaskId] = useState<string | null>(null);
+  const [isExtraTaskMode, setIsExtraTaskMode] = useState(false);
   const [dayDate, setDayDate] = useState<string | null>(null);
   const [finalPlanOpen, setFinalPlanOpen] = useState(false);
 
@@ -287,6 +289,23 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
     }
 
     setReviseTaskId(revisesTaskId || null);
+    setIsExtraTaskMode(false);
+    setCreateBlockedReason(null);
+    setCreateDate(iso);
+  };
+  const openExtraTask = (iso: string) => {
+    const config = planningConfigQuery.data;
+    if (!config) {
+      toast.error('Planning window information is loading. Please try again.');
+      return;
+    }
+    // Extra Task uses the same 5:30 PM → 11:00 AM employee planning window.
+    if (!config.windows.evening.active) {
+      toast.error(TASK_UPDATES_READONLY_MESSAGE);
+      return;
+    }
+    setReviseTaskId(null);
+    setIsExtraTaskMode(true);
     setCreateBlockedReason(null);
     setCreateDate(iso);
   };
@@ -327,6 +346,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
       return;
     }
     setReviseTaskId(null);
+    setIsExtraTaskMode(false);
     setCreateBlockedReason(null);
     setCreateDate(planDate);
   };
@@ -507,6 +527,8 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
           planningConfig={planningConfigQuery.data}
           regularCreationBlockedMessage={createBlockedReason}
           elevated={false}
+          isExtraTask={isExtraTaskMode}
+          skipPlanningWindowAssert={isExtraTaskMode}
           existingTasksForDate={
             createDate
               ? tasks.filter((t) => String(t.date || '').trim().slice(0, 10) === createDate)
@@ -516,25 +538,37 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
             setCreateDate(null);
             setCreateBlockedReason(null);
             setReviseTaskId(null);
+            setIsExtraTaskMode(false);
           }}
           onSave={async (drafts) => {
+            const withExtra = isExtraTaskMode
+              ? drafts.map((draft) => ({ ...draft, isExtraTask: true }))
+              : drafts;
             const payload =
-              reviseTaskId && drafts.length > 0
-                ? drafts.map((draft, index) =>
+              reviseTaskId && withExtra.length > 0
+                ? withExtra.map((draft, index) =>
                     index === 0 ? { ...draft, revisesTaskId: reviseTaskId } : draft,
                   )
-                : drafts;
+                : withExtra;
             // My Daily Planner always uses the employee create path (same form + rules for Admin).
             const created = await createDailyPlannerTasks(payload, planningConfigQuery.data, {
               elevated: false,
               nextWorkingDayIst,
-              useBatch: !reviseTaskId,
+              useBatch: !reviseTaskId && !isExtraTaskMode,
+              isExtraTask: isExtraTaskMode,
             });
             toast.success(
-              drafts.length === 1 ? 'Task created' : `${drafts.length} tasks created`,
+              isExtraTaskMode
+                ? drafts.length === 1
+                  ? 'Extra task saved'
+                  : `${drafts.length} extra tasks saved`
+                : drafts.length === 1
+                  ? 'Task created'
+                  : `${drafts.length} tasks created`,
             );
             const parentId = reviseTaskId;
             setReviseTaskId(null);
+            setIsExtraTaskMode(false);
             setCreateBlockedReason(null);
             refresh({
               upsert: created,
@@ -553,6 +587,10 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
           onAddTask={(revisesTaskId) => {
             if (!dayDate) return;
             openCreate(dayDate, revisesTaskId);
+          }}
+          onExtraTask={() => {
+            if (!dayDate) return;
+            openExtraTask(dayDate);
           }}
           onViewFinalPlan={dayPlanFinalized ? () => setFinalPlanOpen(true) : undefined}
         />

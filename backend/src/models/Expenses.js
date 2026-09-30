@@ -118,6 +118,39 @@ async function scanExpensesFallback(employeeCode = null) {
   return sortExpensesDesc(items.filter(notDeletedFilter));
 }
 
+/**
+ * Lightweight full-table scan for Company Overview analytics.
+ * Excludes soft-deleted rows; projects only aggregation fields.
+ * Caller must apply Approved + month-window filters.
+ */
+export async function scanExpensesForCompanyOverview() {
+  const params = {
+    TableName: TABLE_NAME,
+    ProjectionExpression:
+      'expenseId, amount, expenseHead, subCategory, serviceProvider, monthYear, #expenseDate, approval_status, auditStatus, is_deleted, employeeName, employeeId, created_by_employee_code, created_by_name, #expenseLocation, purpose, billNumber, supportingDocument, documents, outStation, pnrNo, fromLocation, toLocation, returnType, kilometers, stayDateFrom, stayDateTo, fuelType, arrivalDate, arrivalTime, departureDate, departureTime, durationHours, durationDays, travelAllowanceAmount',
+    ExpressionAttributeNames: {
+      '#expenseDate': 'date',
+      '#expenseLocation': 'location',
+    },
+    FilterExpression: '(attribute_not_exists(is_deleted) OR is_deleted = :notDeleted)',
+    ExpressionAttributeValues: {
+      ':notDeleted': false,
+    },
+  };
+
+  let items = [];
+  let startKey;
+  do {
+    const result = await dynamoDB
+      .scan({ ...params, ExclusiveStartKey: startKey })
+      .promise();
+    items = items.concat(result.Items || []);
+    startKey = result.LastEvaluatedKey;
+  } while (startKey);
+
+  return items;
+}
+
 export const queryExpensesByEmployeeCode = async (employeeCode, options = {}) => {
   const code = String(employeeCode ?? '').trim();
   if (!code) return [];
@@ -331,6 +364,65 @@ export const queryExpensesForAuditPage = async (filters = {}, options = {}) => {
   }
 
   return scanExpensesAuditPage(filters, pagination);
+};
+
+/**
+ * Sum Approved + non-deleted amounts for Audit Expenses filters (full filter scope).
+ */
+export const sumApprovedAuditAmounts = async (filters = {}) => {
+  const monthYearFilter = buildAuditMonthYearFilter(filters.month, filters.year);
+  const employeeCode = String(filters.employeeId || filters.employeeCode || '').trim();
+
+  let total = 0;
+  let ExclusiveStartKey;
+
+  const baseFilterParts = [
+    '(attribute_not_exists(is_deleted) OR is_deleted = :notDeleted)',
+    '(auditStatus = :approved OR approval_status = :approved)',
+  ];
+  const ExpressionAttributeValues = {
+    ':notDeleted': false,
+    ':approved': 'Approved',
+  };
+
+  if (employeeCode) {
+    baseFilterParts.push('(created_by_employee_code = :auditEmp OR employeeId = :auditEmp)');
+    ExpressionAttributeValues[':auditEmp'] = employeeCode;
+  }
+
+  if (monthYearFilter?.type === 'eq') {
+    baseFilterParts.push('monthYear = :auditMonthYear');
+    ExpressionAttributeValues[':auditMonthYear'] = monthYearFilter.value;
+  } else if (monthYearFilter?.type === 'prefix') {
+    baseFilterParts.push('begins_with(monthYear, :auditMonthPrefix)');
+    ExpressionAttributeValues[':auditMonthPrefix'] = monthYearFilter.value;
+  } else if (monthYearFilter?.type === 'suffix') {
+    baseFilterParts.push('contains(monthYear, :auditMonthSuffix)');
+    ExpressionAttributeValues[':auditMonthSuffix'] = monthYearFilter.value;
+  }
+
+  do {
+    const result = await dynamoDB
+      .scan({
+        TableName: TABLE_NAME,
+        ProjectionExpression:
+          'amount, auditStatus, approval_status, is_deleted, monthYear, created_by_employee_code, employeeId',
+        FilterExpression: baseFilterParts.join(' AND '),
+        ExpressionAttributeValues,
+        ExclusiveStartKey,
+      })
+      .promise();
+
+    for (const row of result.Items || []) {
+      if (!notDeletedFilter(row)) continue;
+      if (!isApprovedExpense(row)) continue;
+      const amount = Number(row.amount);
+      if (Number.isFinite(amount)) total += amount;
+    }
+    ExclusiveStartKey = result.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+
+  return Math.round(total * 100) / 100;
 };
 
 /**

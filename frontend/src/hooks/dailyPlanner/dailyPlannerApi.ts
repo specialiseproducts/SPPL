@@ -177,20 +177,21 @@ export async function fetchDailyPlannerDay(date: string): Promise<DailyPlannerTa
 export async function createDailyPlannerTask(
   draft: DailyPlannerTaskDraft,
   planningConfig?: PlanningConfig,
-  options?: { elevated?: boolean; nextWorkingDayIst?: string },
+  options?: { elevated?: boolean; nextWorkingDayIst?: string; isExtraTask?: boolean },
 ): Promise<DailyPlannerTask> {
   const priority = String(draft.priority || 'Medium').trim();
   const category =
     draft.planningCategory ||
     (priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR);
   const elevated = Boolean(options?.elevated);
-  if (planningConfig) {
+  const isExtraTask = Boolean(options?.isExtraTask || draft.isExtraTask);
+  if (planningConfig && !isExtraTask) {
     // Priority Urgent maps to planningCategory for scoring; creation uses the planning window.
     assertCanCreateRegularTask(draft.date, planningConfig, {
       elevated,
       nextWorkingDayIst: options?.nextWorkingDayIst,
     });
-  } else {
+  } else if (!isExtraTask) {
     assertCanPlanTasks(draft.date);
   }
 
@@ -202,6 +203,7 @@ export async function createDailyPlannerTask(
       priority,
       planningCategory: category,
       urgentReason: draft.urgentReason || '',
+      ...(isExtraTask ? { isExtraTask: true, source: 'EXTRA' } : {}),
     }),
   })) as { data?: { task?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Create failed');
@@ -212,25 +214,45 @@ export async function createDailyPlannerTask(
 export async function createDailyPlannerTasks(
   drafts: DailyPlannerTaskDraft[],
   planningConfig?: PlanningConfig,
-  options?: { elevated?: boolean; nextWorkingDayIst?: string; useBatch?: boolean },
+  options?: {
+    elevated?: boolean;
+    nextWorkingDayIst?: string;
+    useBatch?: boolean;
+    isExtraTask?: boolean;
+  },
 ): Promise<DailyPlannerTask[]> {
   if (drafts.length === 0) {
     throw new Error('At least one task is required');
   }
   const sharedDate = drafts[0].date;
   const elevated = Boolean(options?.elevated);
-  if (planningConfig) {
+  const isExtraTask = Boolean(options?.isExtraTask || drafts.some((d) => d.isExtraTask));
+  if (planningConfig && !isExtraTask) {
     for (const draft of drafts) {
       assertCanCreateRegularTask(draft.date, planningConfig, {
         elevated,
         nextWorkingDayIst: options?.nextWorkingDayIst,
       });
     }
-  } else {
+  } else if (!isExtraTask) {
     assertCanPlanTasks(sharedDate);
   }
   if (drafts.some((d) => d.date !== sharedDate)) {
     throw new Error('All tasks must use the same date');
+  }
+
+  if (isExtraTask) {
+    const created: DailyPlannerTask[] = [];
+    for (const draft of drafts) {
+      created.push(
+        await createDailyPlannerTask(draft, planningConfig, {
+          elevated,
+          nextWorkingDayIst: options?.nextWorkingDayIst,
+          isExtraTask: true,
+        }),
+      );
+    }
+    return created;
   }
 
   const useBatch = options?.useBatch !== false && !elevated;
