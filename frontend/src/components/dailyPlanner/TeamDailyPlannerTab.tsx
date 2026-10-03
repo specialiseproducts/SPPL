@@ -33,7 +33,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import { getNextWorkingDayDateKey, isCompanyWorkingDay } from '../../utils/companyWorkingDays';
+import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
 import { createDailyPlannerTaskForEmployee, finalizeEmployeeDailyPlan } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import { isSuperAdmin } from '../../utils/accessControl';
 import { toast } from 'sonner';
@@ -231,12 +231,20 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
   const selectedEmployeeLocation = useMemo(() => {
     const code = String(selectedEmployeeCode || '').trim();
     if (!code) return undefined;
+    // Prefer team-mapping location (dailyPlanner-authorized) over /api/employees
+    // (userManagement-scoped; missing location previously defaulted to Office Saturdays).
+    const mapping = (mappingsQuery.data ?? []).find(
+      (m) =>
+        String(m.employeeCode || '').trim() === code &&
+        String(m.managerCode || '').trim() === managerCode,
+    );
+    if (mapping?.location) return mapping.location;
     const emp = (employeesQuery.data ?? []).find((e) => {
       const empCode = String(e.employee_code || e.employeeCode || '').trim();
       return empCode === code;
     });
     return emp?.location || undefined;
-  }, [selectedEmployeeCode, employeesQuery.data]);
+  }, [selectedEmployeeCode, mappingsQuery.data, employeesQuery.data, managerCode]);
 
   const defaultReviewDate = useMemo(
     () =>
@@ -468,10 +476,6 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
       return;
     }
     if (!dateKey) return;
-    if (!isCompanyWorkingDay(dateKey, selectedEmployeeLocation)) {
-      toast.error('Tasks can only be created on a working day.');
-      return;
-    }
     const todayKey = String(planningConfigQuery.data?.todayIst || today).slice(0, 10);
     if (dateKey < todayKey) {
       toast.error('Cannot create tasks for past dates.');

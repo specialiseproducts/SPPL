@@ -10,11 +10,8 @@ import {
   todayIstDateKey,
 } from './salesQuotationDates.js';
 import {
-  assertRegularPlanningAllowedOnDate,
-  COMPANY_HOLIDAY_TASK_CREATE_MESSAGE,
   getPreviousWorkingDayDateKey,
   getNextWorkingDayDateKey,
-  isCompanyHolidayDateKey,
   isCompanyWorkingDayDateKey,
 } from './companyWorkingDays.js';
 
@@ -230,33 +227,25 @@ export function nextWorkingDayIstDateKey(reference = new Date(), location) {
   return getNextWorkingDayDateKey(today, location);
 }
 
-export function assertTaskCreationNotOnHoliday(taskDateIso, location) {
-  if (isCompanyHolidayDateKey(taskDateIso, location)) {
-    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
+/** Kept for call-site compatibility; holidays no longer block Daily Planner create/reschedule. */
+export function assertTaskCreationNotOnHoliday(_taskDateIso, _location) {
+  return;
 }
 
 /**
  * Employee My Daily Planner create: today/tomorrow during
  * 5:30 PM → next day 11:00 AM planning window.
  * Dates after tomorrow (advance planning) have no time-window restriction.
+ * Holidays are allowed for task create/reschedule (display unchanged).
  */
 export function assertEmployeeNextDayRegularAllowed(taskDateIso, reference = new Date(), location) {
-  assertTaskCreationNotOnHoliday(taskDateIso, location);
+  void location;
   const target = String(taskDateIso || '').trim().slice(0, 10);
   const today = todayIstDateKey(reference);
   const mode = getPlanningTargetDateMode(taskDateIso, reference);
 
   if (!target || target < today) {
     const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (!isCompanyWorkingDayDateKey(target, location)) {
-    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
     err.statusCode = 400;
     throw err;
   }
@@ -353,7 +342,7 @@ export function isUrgentTaskAllowed(taskDateIso, reference = new Date()) {
 }
 
 export function assertRegularTaskAllowed(taskDateIso, reference = new Date(), location) {
-  assertRegularPlanningAllowedOnDate(taskDateIso, location);
+  void location;
   const target = getPlanningTargetDateMode(taskDateIso, reference);
   if (target === 'past') {
     const err = new Error(TASK_CREATE_DATE_BLOCKED_MESSAGE);
@@ -378,7 +367,7 @@ export function assertRegularTaskAllowed(taskDateIso, reference = new Date(), lo
 }
 
 export function assertUrgentTaskAllowed(taskDateIso, reference = new Date(), location) {
-  assertTaskCreationNotOnHoliday(taskDateIso, location);
+  void location;
   if (isUrgentTaskAllowed(taskDateIso, reference)) {
     return;
   }

@@ -126,6 +126,8 @@ export interface DailyPlannerTeamMapping {
   managerName: string;
   employeeCode: string;
   employeeName: string;
+  /** Canonical EmployeeMaster location (Office | Factory) for holiday/working-day rules. */
+  location?: string;
   status: string;
   createdBy: string;
   createdAt?: string;

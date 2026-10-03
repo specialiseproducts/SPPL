@@ -20,11 +20,14 @@ import type {
 } from '../../types/dailyPlanner';
 import type { PlanningConfig } from '../../utils/planningRecognition';
 import {
+  buildMinimumHoursRequirementMessage,
   canUpdateTasksOnDate,
   formatDurationLabel,
+  getMinPlannedHours,
   partsToDecimalHours,
   TASK_UPDATES_READONLY_MESSAGE,
 } from '../../utils/planningRecognition';
+import { cn } from '../ui/utils';
 import {
   getDailyTaskChipStyle,
   getDailyTaskStatusLabel,
@@ -50,7 +53,6 @@ import {
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import BulletPointList from './BulletPointList';
 import { parseBulletPoints } from './bulletPointUtils';
-import { isCompanyHoliday } from '../../utils/companyWorkingDays';
 import { todayIso } from './dailyPlannerUtils';
 import { useAuth } from '../../context/AuthContext';
 import { hasEmployeeCompletionOutcome } from './todayTaskReviewWizardUtils';
@@ -149,6 +151,37 @@ export default function DailyPlannerDayTasksModal({
     [completeStartTime, completeEndTime],
   );
 
+  const minRequiredHours = useMemo(
+    () => getMinPlannedHours(undefined, employeeLocation),
+    [employeeLocation],
+  );
+
+  /** Live reported hours from Start/End (completed tasks + open Mark Completed preview). */
+  const liveReportedHours = useMemo(() => {
+    const done = new Set(['Completed', 'Awaiting Verification', 'Verified Complete']);
+    let total = 0;
+    for (const task of visibleTasks) {
+      if (completeTaskId && task.plannerTaskId === completeTaskId) {
+        if (completeDurationPreview != null) total += completeDurationPreview;
+        continue;
+      }
+      if (!done.has(String(task.status || '').trim())) continue;
+      const fromTimes = calcDurationFromTimes(
+        String(task.completionStartTime || ''),
+        String(task.completionEndTime || ''),
+      );
+      if (fromTimes != null) {
+        total += fromTimes;
+        continue;
+      }
+      const stored = Number(task.completionDurationHours);
+      if (Number.isFinite(stored) && stored >= 0) total += stored;
+    }
+    return Math.round(total * 100) / 100;
+  }, [visibleTasks, completeTaskId, completeDurationPreview]);
+
+  const meetsMinReportedHours = liveReportedHours >= minRequiredHours;
+
   useEffect(() => {
     if (!completeTaskId) {
       setCompleteStartTime('');
@@ -163,7 +196,8 @@ export default function DailyPlannerDayTasksModal({
     canCompleteByDate &&
     allHaveCompletionOutcomes &&
     !completionAlreadySubmitted &&
-    !submittingDay;
+    !submittingDay &&
+    meetsMinReportedHours;
 
   const openEdit = (task: DailyPlannerTask) => {
     setEditTaskId(task.plannerTaskId);
@@ -214,14 +248,17 @@ export default function DailyPlannerDayTasksModal({
   };
 
   const handleSubmitDayCompletion = async () => {
-    if (!canSubmitDayCompletion) {
-      if (!allHaveCompletionOutcomes) {
-        toast.error(
-          'Mark every task as Completed, Not Completed, or Rescheduled before submitting.',
-        );
-      }
+    if (!allHaveCompletionOutcomes) {
+      toast.error(
+        'Mark every task as Completed, Not Completed, or Rescheduled before submitting.',
+      );
       return;
     }
+    if (!meetsMinReportedHours) {
+      toast.error(buildMinimumHoursRequirementMessage(undefined, employeeLocation));
+      return;
+    }
+    if (!canSubmitDayCompletion) return;
     setSubmittingDay(true);
     try {
       const updated = await submitDayCompletion(date);
@@ -339,10 +376,6 @@ export default function DailyPlannerDayTasksModal({
         toast.error('Past dates are not allowed');
         return;
       }
-      if (isCompanyHoliday(nextDate, employeeLocation)) {
-        toast.error('Selected date must be a working day');
-        return;
-      }
       if (nextDate === (task?.date ?? date)) {
         toast.error('New date must be different from the current task date');
         return;
@@ -398,17 +431,32 @@ export default function DailyPlannerDayTasksModal({
     <>
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
         <DialogContent
-          className="!flex !h-[90vh] !max-h-[90vh] !w-[min(92vw,42rem)] !max-w-2xl !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-2xl"
+          className="!flex !h-[90vh] !max-h-[90vh] !w-[min(92vw,48rem)] !max-w-3xl !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-3xl"
           style={{ height: '90vh', maxHeight: '90vh' }}
         >
           <DialogHeader className="shrink-0 border-b border-gray-200 px-6 py-4 text-left">
-            <div className="flex flex-wrap items-center justify-between gap-2 pr-8">
-              <DialogTitle>Tasks for {date}</DialogTitle>
-              {onViewFinalPlan && visibleTasks.some((t) => Boolean(t.planFinalizedAt)) ? (
-                <Button type="button" variant="outline" size="sm" onClick={onViewFinalPlan}>
-                  View Final Plan
-                </Button>
-              ) : null}
+            <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
+              <DialogTitle className="min-w-0 shrink">Tasks for {date}</DialogTitle>
+              <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                {canCompleteByDate && visibleTasks.length > 0 && !completionAlreadySubmitted ? (
+                  <div
+                    className={cn(
+                      'rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-[#212529] shrink-0 text-right',
+                      !meetsMinReportedHours && allHaveCompletionOutcomes && 'border-amber-300 bg-amber-50',
+                    )}
+                  >
+                    Reported Hours: {formatDurationLabel(liveReportedHours)}
+                    <span className="mt-0.5 block text-xs font-normal text-gray-500">
+                      Minimum Required: {formatDurationLabel(minRequiredHours)}
+                    </span>
+                  </div>
+                ) : null}
+                {onViewFinalPlan && visibleTasks.some((t) => Boolean(t.planFinalizedAt)) ? (
+                  <Button type="button" variant="outline" size="sm" onClick={onViewFinalPlan}>
+                    View Final Plan
+                  </Button>
+                ) : null}
+              </div>
             </div>
           </DialogHeader>
 

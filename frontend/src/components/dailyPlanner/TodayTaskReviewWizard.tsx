@@ -51,7 +51,7 @@ import {
   getMinPlannedHours,
 } from '../../utils/planningRecognition';
 import { usePlanningConfigQuery } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
-import { isSuperAdmin } from '../../utils/accessControl';
+import { canManageDailyPlannerTeam } from '../../utils/accessControl';
 import { todayIso } from './dailyPlannerUtils';
 
 function displayCell(value: string | number | undefined | null): string {
@@ -213,7 +213,8 @@ export default function TodayTaskReviewWizard({
   onFinish,
   onTasksUpdated,
 }: TodayTaskReviewWizardProps) {
-  const canSuperAdminCorrect = isSuperAdmin(String(moduleRole || ''));
+  /** Admin / Super Admin / Developer — backend still enforces team scope for Admin. */
+  const canCorrectTeamTask = canManageDailyPlannerTeam(String(moduleRole || ''));
   const [currentIndex, setCurrentIndex] = useState(0);
   const [editingPriority, setEditingPriority] = useState(false);
   const [stagedPriority, setStagedPriority] = useState<DailyPlannerPriority>('Medium');
@@ -376,9 +377,9 @@ export default function TodayTaskReviewWizard({
       task?.status === 'Approved' ||
       awaitingVerification);
   const showReopenTask =
-    canSuperAdminCorrect && !completionReviewMode && task?.status === 'Approved';
+    canCorrectTeamTask && !completionReviewMode && task?.status === 'Approved';
   const showSuperAdminReschedule =
-    canSuperAdminCorrect &&
+    canCorrectTeamTask &&
     Boolean(task) &&
     task?.status !== 'Rescheduled' &&
     task?.status !== 'Verified Complete';

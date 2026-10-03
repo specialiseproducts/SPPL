@@ -2,11 +2,6 @@
  * Planning Recognition — client helpers (IST windows use server time from API config).
  */
 
-import {
-  COMPANY_HOLIDAY_TASK_CREATE_MESSAGE,
-  isCompanyHoliday,
-} from './companyWorkingDays';
-
 export const PLANNING_CATEGORY_REGULAR = 'Regular' as const;
 export const PLANNING_CATEGORY_URGENT = 'Urgent' as const;
 
@@ -223,8 +218,8 @@ export function isUrgentTaskAllowed(taskDateIso: string, config: PlanningConfig)
 
 /**
  * Central eligibility for My Daily Planner create entry points (before opening the form).
- * Holiday always takes priority.
- * Employees: any today/future working day during 5:30 PM → 11:00 AM window; always Regular mode.
+ * Holidays are allowed for create (calendar still labels them as holidays).
+ * Employees: today/future dates during 5:30 PM → 11:00 AM window; always Regular mode.
  * Elevated (Admin/Manager/Developer): prior today morning / urgent / tomorrow evening rules.
  */
 export function evaluateMyDailyPlannerCreateEligibility(
@@ -232,10 +227,7 @@ export function evaluateMyDailyPlannerCreateEligibility(
   config: PlanningConfig,
   options?: { elevated?: boolean; nextWorkingDayIst?: string },
 ): MyDailyPlannerCreateEligibility {
-  if (isCompanyHoliday(taskDateIso, config.employeeLocation)) {
-    return { allowed: false, message: COMPANY_HOLIDAY_TASK_CREATE_MESSAGE };
-  }
-
+  // Holidays remain labeled on the calendar but no longer block task creation.
   const elevated = Boolean(options?.elevated);
   const normalized = String(taskDateIso || '').trim().slice(0, 10);
   const mins = getIstMinutesFromServerTime(config.serverTimeIso);
@@ -300,9 +292,6 @@ export function assertCanCreateRegularTask(
   config: PlanningConfig,
   options?: { elevated?: boolean; nextWorkingDayIst?: string },
 ): void {
-  if (isCompanyHoliday(taskDateIso, config.employeeLocation)) {
-    throw new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
-  }
   if (!options?.elevated) {
     const eligibility = evaluateMyDailyPlannerCreateEligibility(taskDateIso, config, options);
     if (!eligibility.allowed) throw new Error(eligibility.message);
@@ -328,9 +317,6 @@ export function assertCanCreateUrgentTask(
 ): void {
   if (!options?.elevated) {
     throw new Error(USER_URGENT_FORBIDDEN_MESSAGE);
-  }
-  if (isCompanyHoliday(taskDateIso, config.employeeLocation)) {
-    throw new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
   }
   const target = getPlanningTargetDateMode(taskDateIso, config);
   if (target === 'past') {

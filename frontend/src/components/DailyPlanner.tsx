@@ -77,6 +77,10 @@ export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
         refetchType: 'active',
       });
       void queryClient.invalidateQueries({
+        queryKey: dailyPlannerQueryKeys.mappings(),
+        refetchType: 'active',
+      });
+      void queryClient.invalidateQueries({
         queryKey: dailyPlannerQueryKeys.completionApprovalsPending(),
         refetchType: 'active',
       });

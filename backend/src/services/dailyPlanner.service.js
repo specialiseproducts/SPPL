@@ -8,11 +8,11 @@ import * as SalesPlannerEventsModel from '../models/SalesPlannerEvents.js';
 import * as PlanningRecognitionService from './planningRecognition.service.js';
 import * as TeamPerformanceService from './teamPerformance.service.js';
 import * as PlanningAnalyticsService from './planningAnalytics.service.js';
-import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, PLANNING_SOURCE_EXTRA, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, isTaskCountedTowardDailyMinimum, getMinPlannedHoursForLocation, formatDurationLabel, PRIORITY_SORT_ORDER, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, assertValidHoursRequired, isMorningPlanningWindow, assertExactSevenPlannedHours, isManagerReviewWindow, MANAGER_REVIEW_WINDOW_MESSAGE, nextWorkingDayIstDateKey, getPlanningTargetDateMode, isEmployeePlanningWindow, EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE, resolveActivePlanningWindow } from '../utils/planningRecognition.js';
+import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RESCHEDULED, PLANNING_SOURCE_EXTRA, computeTaskPlanningContribution, computeTaskCompletionContribution, sumPlannedHoursForDate, isTaskCountedTowardDailyMinimum, getMinPlannedHoursForLocation, formatDurationLabel, PRIORITY_SORT_ORDER, buildMinimumHoursWarningMessage, buildMinimumHoursManagerWarningMessage, buildMinimumHoursRequirementMessage, assertValidHoursRequired, isMorningPlanningWindow, assertExactSevenPlannedHours, isManagerReviewWindow, MANAGER_REVIEW_WINDOW_MESSAGE, nextWorkingDayIstDateKey, getPlanningTargetDateMode, isEmployeePlanningWindow, EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE, resolveActivePlanningWindow } from '../utils/planningRecognition.js';
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
-import { canAccessAllRecords, isSuperAdmin } from '../utils/accessControl.js';
+import { canAccessAllRecords, isAdmin, isDeveloper, isSuperAdmin } from '../utils/accessControl.js';
 import { notifyUser } from '../utils/notifications.js';
 import * as PlannerNotificationEmitters from './notificationEmitters.js';
 import * as AuditTrailService from './auditTrail.service.js';
@@ -140,8 +140,30 @@ function assertCanModerateTeamTask(effectiveRole) {
   }
 }
 
-function assertIsSuperAdmin(effectiveRole) {
-  if (!isSuperAdmin(effectiveRole)) {
+/**
+ * Super Admin: unrestricted (existing behavior).
+ * Admin / Developer: only employees on their Active team mapping.
+ */
+async function assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, employeeCode) {
+  if (isSuperAdmin(effectiveRole)) return;
+
+  if (!isAdmin(effectiveRole) && !isDeveloper(effectiveRole)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const target = String(employeeCode || '').trim();
+  const managerCode = employeeCodeOf(authUser);
+  if (!target || !managerCode) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const team = await DailyPlannerTeamMappingsModel.listEmployeesForManager(managerCode);
+  const allowed = team.some((m) => String(m.employeeCode || '').trim() === target);
+  if (!allowed) {
     const err = new Error('Forbidden');
     err.statusCode = 403;
     throw err;
@@ -352,6 +374,21 @@ function sumDayCompletedHours(tasks) {
   ) / 100;
 }
 
+/** Recalculate reported hours from stored Start/End times (do not trust client totals). */
+function sumDayReportedHoursFromStartEnd(tasks) {
+  const done = new Set(['Completed', 'Awaiting Verification', 'Verified Complete']);
+  let total = 0;
+  for (const task of tasks || []) {
+    if (!done.has(String(task?.status || '').trim())) continue;
+    try {
+      total += durationHoursFromStartEnd(task.completionStartTime, task.completionEndTime);
+    } catch {
+      // Missing/invalid times contribute 0 — submission will fail min-hours check.
+    }
+  }
+  return Math.round(total * 100) / 100;
+}
+
 export function sortDailyPlannerTasks(tasks) {
   return [...tasks].sort((a, b) => {
     const doneStatuses = new Set(['Completed', 'Awaiting Verification', 'Verified Complete']);
@@ -537,13 +574,6 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     const today = todayIstDateKey(now);
     if (date !== today) {
       const err = new Error('Extra tasks can only be added for today');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    const location = await getEmployeeLocation(code);
-    if (!isCompanyWorkingDayDateKey(date, location)) {
-      const err = new Error('Selected date must be a working day');
       err.statusCode = 400;
       throw err;
     }
@@ -920,7 +950,8 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     throw err;
   }
 
-  // Allow Admin-tier to create for any employee; verify mapping when not global if needed.
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, targetCode);
+
   const employee = await EmployeeMasterModel.getEmployeeByCode(targetCode);
   const employeeName =
     String(employee?.fullName || '').trim() ||
@@ -1260,6 +1291,15 @@ export const submitDayCompletion = async (body, authUser) => {
     const err = new Error(
       'All tasks must have a completion outcome (Completed, Not Completed, or Rescheduled) before submitting.',
     );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const location = await getEmployeeLocation(code);
+  const minRequired = getMinPlannedHoursForLocation(location);
+  const reportedHours = sumDayReportedHoursFromStartEnd(dayTasks);
+  if (reportedHours < minRequired) {
+    const err = new Error(buildMinimumHoursRequirementMessage(location));
     err.statusCode = 400;
     throw err;
   }
@@ -1719,6 +1759,7 @@ export const updateTaskForEmployee = async (taskId, body, authUser, effectiveRol
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
   if (existing.taskType === 'Sales Visit' || existing.source === 'SALES_FORECASTING') {
     const err = new Error('Sales Visit tasks cannot be edited');
     err.statusCode = 400;
@@ -2452,17 +2493,17 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
 };
 
 /**
- * Super Admin only — reopen an Approved task for correction.
+ * Super Admin / Admin (team-scoped) — reopen an Approved task for correction.
  * Preserves prior approval actor/timestamps; clears current approved flag.
  */
 export const reopenApprovedTask = async (taskId, body, authUser, effectiveRole) => {
-  assertIsSuperAdmin(effectiveRole);
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing) {
     const err = new Error('Task not found');
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
   if (String(existing.status || '').trim() !== 'Approved') {
     const err = new Error('Only approved tasks can be reopened');
     err.statusCode = 400;
@@ -2523,17 +2564,18 @@ export const reopenApprovedTask = async (taskId, body, authUser, effectiveRole) 
 };
 
 /**
- * Super Admin only — reschedule a team task to a new date (creates linked RESCHEDULED child).
- * Reuses the employee not-completed next_date architecture without requiring task ownership.
+ * Super Admin / Admin (team-scoped) — reschedule a team task to a new date
+ * (creates linked RESCHEDULED child). Reuses the employee not-completed next_date
+ * architecture without requiring task ownership.
  */
 export const rescheduleTaskBySuperAdmin = async (taskId, body, authUser, effectiveRole) => {
-  assertIsSuperAdmin(effectiveRole);
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing) {
     const err = new Error('Task not found');
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
   assertTaskNotAlreadyRescheduled(existing);
   const status = String(existing.status || '').trim();
   if (status === 'Verified Complete') {
@@ -2646,16 +2688,16 @@ export const rescheduleTaskBySuperAdmin = async (taskId, body, authUser, effecti
 };
 
 /**
- * Super Admin only — soft-delete a team task (preserves row + audit history).
+ * Super Admin / Admin (team-scoped) — soft-delete a team task (preserves row + audit history).
  */
 export const deleteTaskBySuperAdmin = async (taskId, body, authUser, effectiveRole) => {
-  assertIsSuperAdmin(effectiveRole);
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing) {
     const err = new Error('Task not found');
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
   if (String(existing.status || '').trim() === 'Rescheduled') {
     const err = new Error('Rescheduled original tasks cannot be deleted');
     err.statusCode = 400;
@@ -2918,7 +2960,14 @@ export const listTeamMappings = async (authUser, effectiveRole) => {
     throw err;
   }
   const mappings = await DailyPlannerTeamMappingsModel.listAllMappings();
-  return { mappings };
+  // Canonical EmployeeMaster location for Team Daily Planner holiday/working-day rules.
+  const enriched = await Promise.all(
+    (mappings || []).map(async (mapping) => {
+      const location = await getEmployeeLocation(mapping?.employeeCode);
+      return { ...mapping, location };
+    }),
+  );
+  return { mappings: enriched };
 };
 
 export const assignTeamMapping = async (body, authUser, effectiveRole) => {

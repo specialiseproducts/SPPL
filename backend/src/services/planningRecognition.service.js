@@ -5,12 +5,6 @@
 import * as DailyPlannerPlanningModel from '../models/DailyPlannerPlanning.js';
 import * as DailyPlannerTasksModel from '../models/DailyPlannerTasks.js';
 import {
-  assertRegularPlanningAllowedOnDate,
-  isCompanyHolidayDateKey,
-  isCompanyWorkingDayDateKey,
-  COMPANY_HOLIDAY_TASK_CREATE_MESSAGE,
-} from '../utils/companyWorkingDays.js';
-import {
   computeWorkingDayPlanningScore,
   countWorkingDaysInMonth,
   derivePlanningDayFlags,
@@ -202,13 +196,7 @@ export async function validateRescheduleTargetDate(newDateIso, reference = new D
     err.statusCode = 400;
     throw err;
   }
-  assertRegularPlanningAllowedOnDate(newDate, location);
-  if (!isCompanyWorkingDayDateKey(newDate, location)) {
-    const err = new Error('Selected date must be a working day');
-    err.statusCode = 400;
-    throw err;
-  }
-
+  // Holidays remain visible on the calendar but may receive create/reschedule tasks.
   const tomorrow = tomorrowIstDateKey(reference);
   if (newDate === today || newDate === tomorrow) {
     assertRegularTaskAllowed(newDate, reference, location);
@@ -256,12 +244,6 @@ export function validateTaskPlanningPayload(body, reference = new Date(), locati
       ? PLANNING_CATEGORY_URGENT
       : PLANNING_CATEGORY_REGULAR;
 
-  if (isCompanyHolidayDateKey(taskDate, location)) {
-    const err = new Error(COMPANY_HOLIDAY_TASK_CREATE_MESSAGE);
-    err.statusCode = 400;
-    throw err;
-  }
-
   if (getPlanningTargetDateMode(taskDate, reference) === 'past') {
     const err = new Error('Cannot create tasks for past dates');
     err.statusCode = 400;
@@ -278,12 +260,7 @@ export function validateTaskPlanningPayload(body, reference = new Date(), locati
     };
   }
 
-  // Elevated: same priority→category mapping; no separate Urgent Task Type required.
-  if (!isCompanyWorkingDayDateKey(taskDate, location)) {
-    const err = new Error('Selected date must be a working day');
-    err.statusCode = 400;
-    throw err;
-  }
+  // Elevated: same priority→category mapping; holidays allowed for create/reschedule.
   try {
     assertRegularTaskAllowed(taskDate, reference, location);
   } catch (err) {
