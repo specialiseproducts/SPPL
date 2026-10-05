@@ -2,6 +2,11 @@ import type { AccessRule } from '../../AccessManagementTab';
 import type { ModuleName } from '../../Sidebar';
 import type { UserMaster } from '../../../types/userMaster';
 import { getEffectiveRole } from '../../../utils/accessControl';
+import {
+  getEmployeeExitDate,
+  isEmployeeActiveOnDate,
+  todayLocalDateKey,
+} from '../../../utils/employeeActiveStatus';
 
 export const MY_PLANNER_VALUE = '__my_planner__';
 export const ALL_TEAM_VALUE = '__all_team__';
@@ -31,14 +36,7 @@ function employeeCodeOf(emp: UserMaster): string {
 
 function isActiveEmployee(emp: UserMaster | undefined): boolean {
   if (!emp) return true;
-  const exit = String(emp.dateOfExit || emp.date_of_exit || '').trim();
-  if (!exit) return true;
-  const exitDate = new Date(exit);
-  if (Number.isNaN(exitDate.getTime())) return true;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  exitDate.setHours(0, 0, 0, 0);
-  return exitDate.getTime() > today.getTime();
+  return isEmployeeActiveOnDate(getEmployeeExitDate(emp), todayLocalDateKey());
 }
 
 function hasSalesForecastingAccess(rule: AccessRule): boolean {

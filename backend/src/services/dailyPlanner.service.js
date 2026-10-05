@@ -12,6 +12,10 @@ import { PLANNING_CATEGORY_REGULAR, PLANNING_CATEGORY_URGENT, PLANNING_SOURCE_RE
 import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { isCompanyWorkingDayDateKey } from '../utils/companyWorkingDays.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
+import {
+  assertEmployeeActiveOnDate,
+  EMPLOYEE_EXITED_OPERATION_MESSAGE,
+} from '../utils/employeeActiveStatus.js';
 import { canAccessAllRecords, isAdmin, isDeveloper, isSuperAdmin } from '../utils/accessControl.js';
 import { notifyUser } from '../utils/notifications.js';
 import * as PlannerNotificationEmitters from './notificationEmitters.js';
@@ -168,6 +172,17 @@ async function assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, employe
     err.statusCode = 403;
     throw err;
   }
+}
+
+async function assertEmployeeCodeActiveOnDate(employeeCode, operationDate) {
+  const code = String(employeeCode || '').trim();
+  if (!code) return;
+  const employee = await EmployeeMasterModel.getEmployeeByCode(code);
+  assertEmployeeActiveOnDate(
+    employee?.dateOfExit || employee?.date_of_exit,
+    operationDate,
+    EMPLOYEE_EXITED_OPERATION_MESSAGE,
+  );
 }
 
 function normalizePriorityValue(value, fallback = 'Medium') {
@@ -555,6 +570,8 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     err.statusCode = 400;
     throw err;
   }
+
+  await assertEmployeeCodeActiveOnDate(code, date);
 
   const isExtraTask =
     body.isExtraTask === true ||
@@ -965,6 +982,8 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     err.statusCode = 400;
     throw err;
   }
+
+  await assertEmployeeCodeActiveOnDate(targetCode, date);
 
   const now = new Date();
   const location = await getEmployeeLocation(targetCode);
@@ -2085,6 +2104,7 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
       err.statusCode = 400;
       throw err;
     }
+    await assertEmployeeCodeActiveOnDate(existing.employeeCode, newDate);
 
     const rescheduledAt = now.toISOString();
     const task = await DailyPlannerTasksModel.updateTask(taskId, {
@@ -2596,6 +2616,7 @@ export const rescheduleTaskBySuperAdmin = async (taskId, body, authUser, effecti
     err.statusCode = 400;
     throw err;
   }
+  await assertEmployeeCodeActiveOnDate(existing.employeeCode, newDate);
 
   const now = new Date();
   const actorCode = employeeCodeOf(authUser);
@@ -2987,10 +3008,14 @@ export const assignTeamMapping = async (body, authUser, effectiveRole) => {
     String(body.managerName || '').trim() ||
     (managerCode === actorCode ? employeeNameOf(authUser) : '') ||
     managerCode;
+  const employeeCode = String(body.employeeCode || '').trim();
+  const today = todayIstDateKey();
+  await assertEmployeeCodeActiveOnDate(employeeCode, today);
+  await assertEmployeeCodeActiveOnDate(managerCode, today);
   const mapping = await DailyPlannerTeamMappingsModel.createMapping({
     managerCode,
     managerName,
-    employeeCode: String(body.employeeCode || '').trim(),
+    employeeCode,
     employeeName: String(body.employeeName || '').trim(),
     createdBy: actorCode,
   });
@@ -3020,6 +3045,7 @@ export const transferTeamMapping = async (mappingId, body, effectiveRole) => {
     err.statusCode = 400;
     throw err;
   }
+  await assertEmployeeCodeActiveOnDate(newManagerCode, todayIstDateKey());
   const mapping = await DailyPlannerTeamMappingsModel.updateMapping(mappingId, {
     managerCode: newManagerCode,
     managerName: newManagerName,

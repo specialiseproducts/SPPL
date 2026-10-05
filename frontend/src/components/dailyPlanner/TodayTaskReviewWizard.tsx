@@ -16,7 +16,12 @@ import {
   reviewDailyPlannerTaskCompletion,
   submitDayCompletionReview,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
-import { getDailyTaskStatusLabel, sortDailyPlannerTasksByPriority, sumPlannedHoursForDate } from './dailyPlannerUtils';
+import {
+  getDailyTaskStatusLabel,
+  sortDailyPlannerTasksByPriority,
+  sumAllTaskDurationHours,
+  sumPlannedHoursForDate,
+} from './dailyPlannerUtils';
 import BulletPointList from './BulletPointList';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import HoursMinutesFields from './HoursMinutesFields';
@@ -267,9 +272,14 @@ export default function TodayTaskReviewWizard({
     [tasks],
   );
 
-  const planTotalHours = useMemo(() => {
-    return sumPlannedHoursForDate(sortedTasks, reviewDate);
-  }, [sortedTasks, reviewDate]);
+  /** Header total: exact sum of every task's Hours Required (minutes-accurate). */
+  const planTotalHours = useMemo(() => sumAllTaskDurationHours(sortedTasks), [sortedTasks]);
+
+  /** Finalize / minimum check: existing countable planned hours only (unchanged rules). */
+  const planHoursTowardMinimum = useMemo(
+    () => sumPlannedHoursForDate(sortedTasks, reviewDate),
+    [sortedTasks, reviewDate],
+  );
 
   const planFinalized = useMemo(
     () => sortedTasks.some((t) => Boolean(t.planFinalizedAt)),
@@ -498,9 +508,9 @@ export default function TodayTaskReviewWizard({
       return;
     }
     if (planFinalized && !canRefinalize) return;
-    if (planTotalHours < minPlannedHours) {
+    if (planHoursTowardMinimum < minPlannedHours) {
       toast.error(
-        `Final plan must total at least ${formatDurationLabel(minPlannedHours)} (currently ${formatDurationLabel(planTotalHours)}).`,
+        `Final plan must total at least ${formatDurationLabel(minPlannedHours)} (currently ${formatDurationLabel(planHoursTowardMinimum)}).`,
       );
       return;
     }

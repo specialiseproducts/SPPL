@@ -19,6 +19,11 @@ import { canManageDailyPlannerTeam } from '../../utils/accessControl';
 import { useAuth } from '../../context/AuthContext';
 import type { UserRole } from '../../App';
 import type { PlanningReportData } from '../../types/planningAnalytics';
+import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
+import {
+  getEmployeeExitDate,
+  isEmployeeActiveDuringMonth,
+} from '../../utils/employeeActiveStatus';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -80,16 +85,26 @@ export default function MonthlyPlanningReportTab({ moduleRole }: MonthlyPlanning
 
   const isManager = canManageDailyPlannerTeam(moduleRole);
   const mappingsQuery = useTeamMappingsQuery(isManager);
+  const employeesQuery = useEmployeesListQuery();
   const managerCode = String(user?.employeeCode || user?.id || '').trim();
 
   const employeeOptions = useMemo(() => {
     if (!isManager) return [];
     const mappings = mappingsQuery.data ?? [];
+    const employees = employeesQuery.data ?? [];
     return mappings
       .filter((m) => m.status === 'Active' && m.managerCode === managerCode)
+      .filter((m) => {
+        const code = String(m.employeeCode || '').trim();
+        const emp = employees.find((e) => {
+          const empCode = String(e.employee_code || e.employeeCode || '').trim();
+          return empCode === code;
+        });
+        return isEmployeeActiveDuringMonth(getEmployeeExitDate(emp), view.year, view.month);
+      })
       .map((m) => ({ value: m.employeeCode, label: m.employeeName || m.employeeCode }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [isManager, mappingsQuery.data, managerCode]);
+  }, [isManager, mappingsQuery.data, managerCode, employeesQuery.data, view.year, view.month]);
 
   const reportEmployeeCode = employeeCode === 'team' ? 'me' : employeeCode;
   const reportQuery = usePlanningReportQuery(

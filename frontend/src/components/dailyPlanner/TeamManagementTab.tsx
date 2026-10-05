@@ -29,6 +29,11 @@ import {
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
 import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
 import { isSuperAdmin } from '../../utils/accessControl';
+import {
+  getEmployeeExitDate,
+  isEmployeeActiveOnDate,
+  todayLocalDateKey,
+} from '../../utils/employeeActiveStatus';
 
 interface TeamManagementTabProps {
   user: User;
@@ -58,9 +63,11 @@ export default function TeamManagementTab({ user, moduleRole }: TeamManagementTa
   const [managerSearchQuery, setManagerSearchQuery] = useState('');
 
   const employees = employeesQuery.data ?? [];
+  const todayKey = todayLocalDateKey();
   const employeeOptions = useMemo(
     () =>
       employees
+        .filter((e) => isEmployeeActiveOnDate(getEmployeeExitDate(e), todayKey))
         .map((e) => {
           const code = String(e.employee_code || e.employeeCode || '').trim();
           const name =
@@ -71,7 +78,7 @@ export default function TeamManagementTab({ user, moduleRole }: TeamManagementTa
         })
         .filter((e) => e.code)
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [employees],
+    [employees, todayKey],
   );
 
   const nameByCode = useMemo(() => {

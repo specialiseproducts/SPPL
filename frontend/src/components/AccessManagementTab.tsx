@@ -11,6 +11,11 @@ import type { UserRole } from '../App';
 import type { ModuleName } from './Sidebar';
 import { apiFetch } from '../services/api';
 import { useEmployeesListQuery } from '../hooks/employees/useEmployeesQuery';
+import {
+  getEmployeeExitDate,
+  isEmployeeActiveOnDate,
+  todayLocalDateKey,
+} from '../utils/employeeActiveStatus';
 import { useAccessRulesQuery, useInvalidateAccessRules } from '../hooks/access/useAccessQueries';
 import { accessRuleToApiPayload } from '../hooks/access/accessApi';
 import { isQueryColdLoading } from '../utils/queryLoading';
@@ -32,6 +37,11 @@ export default function AccessManagementTab() {
 
   const accessRules = rulesQuery.data ?? [];
   const effectiveUsers = employeesQuery.data ?? [];
+  /** NEW access assignment: active employees only. Edit keeps full list. */
+  const activeUsersForNewAccess = useMemo(() => {
+    const today = todayLocalDateKey();
+    return effectiveUsers.filter((u) => isEmployeeActiveOnDate(getEmployeeExitDate(u), today));
+  }, [effectiveUsers]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<AccessRule | null>(null);
@@ -240,7 +250,7 @@ export default function AccessManagementTab() {
           setEditingRule(null);
         }}
         onSubmit={editingRule ? handleEditAccess : handleCreateAccess}
-        availableUsers={effectiveUsers}
+        availableUsers={editingRule ? effectiveUsers : activeUsersForNewAccess}
         initialData={editingRule || undefined}
         isEdit={!!editingRule}
       />

@@ -36,6 +36,11 @@ import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
 import { createDailyPlannerTaskForEmployee, finalizeEmployeeDailyPlan } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import { isSuperAdmin } from '../../utils/accessControl';
+import {
+  getEmployeeExitDate,
+  isEmployeeActiveDuringMonth,
+  isEmployeeActiveOnDate,
+} from '../../utils/employeeActiveStatus';
 import { toast } from 'sonner';
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -204,14 +209,25 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
   const employeesQuery = useEmployeesListQuery();
   const employeeOptions = useMemo(() => {
     const mappings = mappingsQuery.data ?? [];
+    const employees = employeesQuery.data ?? [];
     return mappings
       .filter((m) => m.status === 'Active' && m.managerCode === managerCode)
+      .filter((m) => {
+        const code = String(m.employeeCode || '').trim();
+        const emp = employees.find((e) => {
+          const empCode = String(e.employee_code || e.employeeCode || '').trim();
+          return empCode === code;
+        });
+        // Keep employees who were active during the viewed month (historical visible);
+        // fully exited before the month starts are omitted from current selectors.
+        return isEmployeeActiveDuringMonth(getEmployeeExitDate(emp), year, month);
+      })
       .map((m) => ({
         value: m.employeeCode,
         label: m.employeeName || m.employeeCode,
       }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [mappingsQuery.data, managerCode]);
+  }, [mappingsQuery.data, managerCode, employeesQuery.data, year, month]);
 
   useEffect(() => {
     if (employeeOptions.length === 0) return;
@@ -479,6 +495,16 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
     const todayKey = String(planningConfigQuery.data?.todayIst || today).slice(0, 10);
     if (dateKey < todayKey) {
       toast.error('Cannot create tasks for past dates.');
+      return;
+    }
+    const emp = (employeesQuery.data ?? []).find((e) => {
+      const empCode = String(e.employee_code || e.employeeCode || '').trim();
+      return empCode === selectedEmployeeCode;
+    });
+    if (!isEmployeeActiveOnDate(getEmployeeExitDate(emp), dateKey)) {
+      toast.error(
+        'This employee is no longer active (Date of Exit reached) and cannot receive new tasks on the selected date.',
+      );
       return;
     }
     setCreateDate(dateKey);

@@ -5,7 +5,9 @@
 
 import * as DailyPlannerPlanningModel from '../models/DailyPlannerPlanning.js';
 import * as DailyPlannerTeamMappingsModel from '../models/DailyPlannerTeamMappings.js';
+import * as EmployeeMasterModel from '../models/EmployeeMaster.js';
 import { canAccessAllRecords } from '../utils/accessControl.js';
+import { isEmployeeActiveDuringMonth } from '../utils/employeeActiveStatus.js';
 import {
   calculatePlannerRating,
   calculatePlanningScore,
@@ -100,6 +102,28 @@ async function resolveTeamMembers(managerCode, effectiveRole) {
     employeeCode: m.employeeCode,
     employeeName: m.employeeName || m.employeeCode,
   }));
+}
+
+/**
+ * Drop former employees for the selected performance month using Date of Exit.
+ * Employees active for any day of that month remain (historical months preserved).
+ */
+async function filterTeamMembersActiveForMonth(members, year, month) {
+  const results = await Promise.all(
+    (members || []).map(async (member) => {
+      const code = String(member?.employeeCode || '').trim();
+      if (!code) return null;
+      try {
+        const employee = await EmployeeMasterModel.getEmployeeByCode(code);
+        const exit = employee?.dateOfExit || employee?.date_of_exit;
+        if (!isEmployeeActiveDuringMonth(exit, year, month)) return null;
+      } catch {
+        // If employee master lookup fails, keep the member (avoid hiding data on transient errors).
+      }
+      return member;
+    }),
+  );
+  return results.filter(Boolean);
 }
 
 export async function assertCanManageTeam(authUser, effectiveRole) {
@@ -253,7 +277,11 @@ export function getPlanningInsights(employees) {
 export async function getTeamPerformance(authUser, effectiveRole, query = {}) {
   const managerCode = await assertCanManageTeam(authUser, effectiveRole);
   const { year, month } = parseMonthQuery(query.year, query.month);
-  const teamMembers = await resolveTeamMembers(managerCode, effectiveRole);
+  const teamMembers = await filterTeamMembersActiveForMonth(
+    await resolveTeamMembers(managerCode, effectiveRole),
+    year,
+    month,
+  );
 
   const employees = await Promise.all(
     teamMembers.map((member) =>

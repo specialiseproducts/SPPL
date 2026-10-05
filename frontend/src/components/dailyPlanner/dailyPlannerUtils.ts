@@ -174,6 +174,25 @@ export function getEffectiveHoursRequired(task: DailyPlannerTask): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Convert decimal hours to whole minutes (half-hours stay exact: 0.5 → 30). */
+export function hoursRequiredToMinutes(hoursRequired: number | null | undefined): number {
+  const n = Number(hoursRequired);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(n * 60);
+}
+
+/**
+ * Sum Hours Required for every task in the list (no date / EXTRA / revision filters).
+ * Uses minutes internally so 7.5h is never truncated to 7h.
+ */
+export function sumAllTaskDurationHours(tasks: DailyPlannerTask[]): number {
+  const totalMinutes = (tasks || []).reduce(
+    (sum, task) => sum + hoursRequiredToMinutes(task.hoursRequired),
+    0,
+  );
+  return Math.round((totalMinutes / 60) * 100) / 100;
+}
+
 /** Sum planned hours for tasks whose effective `date` is dateKey (calendar source of truth). */
 export function sumPlannedHoursForDate(tasks: DailyPlannerTask[], dateKey: string): number {
   const target = String(dateKey || '').trim().slice(0, 10);
