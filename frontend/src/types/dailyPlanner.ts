@@ -68,6 +68,32 @@ export interface DailyPlannerTask {
   managerInstructions?: string;
   isProjectBased?: boolean;
   projectName?: string;
+  /** Enhanced (Factory / Office SuperAdmin): document required? */
+  needsDocument?: boolean | null;
+  /** Employee Document (create / mark completed). */
+  documentFileName?: string;
+  documentFileKey?: string;
+  documentUploadedAt?: string | null;
+  documentContentType?: string;
+  /** Manager Review Document (Team Daily Planner → Task Review). */
+  managerReviewDocumentFileName?: string;
+  managerReviewDocumentFileKey?: string;
+  managerReviewDocumentUploadedAt?: string | null;
+  managerReviewDocumentContentType?: string;
+  /** Manager Approval Document (Pending Completion Approval). */
+  managerApprovalDocumentFileName?: string;
+  managerApprovalDocumentFileKey?: string;
+  managerApprovalDocumentUploadedAt?: string | null;
+  managerApprovalDocumentContentType?: string;
+  /** Enhanced: explicit Progress Done 0–100; null = historical / unset. */
+  progressDone?: number | null;
+  flagStatus?: '' | 'Raised' | 'Accepted' | string;
+  flagInstruction?: string;
+  flagRaisedBy?: string;
+  flagRaisedByName?: string;
+  flagRaisedAt?: string | null;
+  flagAcceptedAt?: string | null;
+  flagHistory?: Array<Record<string, unknown>>;
   planFinalizedAt?: string | null;
   planFinalizedBy?: string;
   createdByRole?: string;
@@ -128,6 +154,8 @@ export interface DailyPlannerTeamMapping {
   employeeName: string;
   /** Canonical EmployeeMaster location (Office | Factory) for holiday/working-day rules. */
   location?: string;
+  /** Factory OR (Office + Super Admin) — enhanced Daily Planner features. */
+  enhancedEligible?: boolean;
   status: string;
   createdBy: string;
   createdAt?: string;
@@ -145,6 +173,8 @@ export interface DailyPlannerTaskDraft {
   revisesTaskId?: string;
   isProjectBased?: boolean;
   projectName?: string;
+  needsDocument?: boolean;
+  progressDone?: number | null;
   managerInstructions?: string;
   employeeCode?: string;
   clientBatchId?: string;

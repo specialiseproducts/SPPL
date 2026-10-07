@@ -302,7 +302,13 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
       employeeName: mapping?.employeeName || emp?.name || emp?.employee_name || code,
       department: emp?.department || '',
       designation: emp?.designation || '',
-      location: emp?.location || selectedEmployeeLocation || '',
+      // Prefer server-enriched mapping.location (EmployeeMaster) for min-hours rules.
+      location: mapping?.location || emp?.location || selectedEmployeeLocation || '',
+      enhancedEligible:
+        typeof mapping?.enhancedEligible === 'boolean'
+          ? mapping.enhancedEligible
+          : String(mapping?.location || emp?.location || selectedEmployeeLocation || '').trim() ===
+            'Factory',
     };
   }, [
     selectedEmployeeCode,
@@ -814,6 +820,7 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
           elevated
           forEmployeeCode={selectedEmployeeCode}
           skipPlanningWindowAssert
+          enhancedEligible={Boolean(selectedEmployeeProfile?.enhancedEligible)}
           existingTasksForDate={tasks.filter(
             (task) => String(task.date || '').trim().slice(0, 10) === createDate,
           )}
@@ -850,6 +857,7 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
                 : `${created.length} tasks added for employee`,
             );
             setCreateDate(null);
+            return created;
           }}
         />
       ) : null}

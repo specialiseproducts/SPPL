@@ -4,7 +4,10 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import type { DailyPlannerTask, PendingCompletionApproval } from '../../types/dailyPlanner';
-import { usePendingCompletionApprovalsQuery } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
+import {
+  usePendingCompletionApprovalsQuery,
+  useTeamMappingsQuery,
+} from '../../hooks/dailyPlanner/useDailyPlannerQueries';
 import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQueryKeys';
 import { useEmployeesListQuery } from '../../hooks/employees/useEmployeesQuery';
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
@@ -24,6 +27,7 @@ export default function DailyPlannerCompletionApprovalsPanel({
   const queryClient = useQueryClient();
   const pendingQuery = usePendingCompletionApprovalsQuery(true);
   const employeesQuery = useEmployeesListQuery();
+  const mappingsQuery = useTeamMappingsQuery(true);
   const rows = useMemo(() => {
     // Defensive: only render real approval rows (never injected task objects).
     return (pendingQuery.data || []).filter(
@@ -47,13 +51,21 @@ export default function DailyPlannerCompletionApprovalsPanel({
       const empCode = String(e.employee_code || e.employeeCode || '').trim();
       return empCode === code;
     });
+    const mapping = (mappingsQuery.data ?? []).find((m) => m.employeeCode === code);
+    const location = String(mapping?.location || emp?.location || '').trim();
     return {
       employeeCode: code,
       employeeName: activeRow.employeeName || emp?.name || emp?.employee_name || code,
       department: emp?.department || '',
       designation: emp?.designation || '',
+      location,
+      // Server-resolved for task owner (Factory OR Office+SuperAdmin).
+      enhancedEligible:
+        typeof mapping?.enhancedEligible === 'boolean'
+          ? mapping.enhancedEligible
+          : location === 'Factory',
     };
-  }, [activeRow, employeesQuery.data]);
+  }, [activeRow, employeesQuery.data, mappingsQuery.data]);
 
   const openReview = (row: PendingCompletionApproval) => {
     setActiveRow(row);

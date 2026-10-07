@@ -529,6 +529,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
           elevated={false}
           isExtraTask={isExtraTaskMode}
           skipPlanningWindowAssert={isExtraTaskMode}
+          enhancedEligible={Boolean(planningConfigQuery.data?.enhancedEligible)}
           existingTasksForDate={
             createDate
               ? tasks.filter((t) => String(t.date || '').trim().slice(0, 10) === createDate)
@@ -574,6 +575,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
               upsert: created,
               hideRevisionParentId: parentId || undefined,
             });
+            return created;
           }}
         />
 

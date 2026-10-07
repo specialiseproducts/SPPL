@@ -15,7 +15,7 @@ export function getSignedFileUrl(key) {
     throw new Error('key is required');
   }
 
-  const bucket = cleanedKey.startsWith('expenses/')
+  const bucket = cleanedKey.startsWith('expenses/') || cleanedKey.startsWith('daily-planner/')
     ? process.env.AWS_S3_BUCKET_NAME
     : process.env.AWS_S3_USER_MANAGEMENT_BUCKET_NAME ||
       process.env.AWS_S3_BUCKET_NAME;

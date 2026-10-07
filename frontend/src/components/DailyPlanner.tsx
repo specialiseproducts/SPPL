@@ -5,6 +5,7 @@ import TeamDailyPlannerTab from './dailyPlanner/TeamDailyPlannerTab';
 import TeamPerformanceTab from './dailyPlanner/TeamPerformanceTab';
 import TeamManagementTab from './dailyPlanner/TeamManagementTab';
 import MonthlyPlanningReportTab from './dailyPlanner/MonthlyPlanningReportTab';
+import ProjectProgressTab from './dailyPlanner/ProjectProgressTab';
 import type { User } from '../App';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import {
@@ -12,7 +13,9 @@ import {
   getDefaultDailyPlannerTab,
   type DailyPlannerTabId,
 } from '../utils/accessControl';
+import { isEnhancedDailyPlannerEligible } from '../utils/dailyPlannerEnhancedEligibility';
 import { dailyPlannerQueryKeys } from '../hooks/dailyPlanner/dailyPlannerQueryKeys';
+import { usePlanningConfigQuery } from '../hooks/dailyPlanner/useDailyPlannerQueries';
 
 interface DailyPlannerProps {
   user: User;
@@ -23,6 +26,7 @@ const INITIAL_TAB_KEY = 'dailyPlanner_initial_tab';
 
 const TAB_LABELS: Record<DailyPlannerTabId, string> = {
   'my-daily-planner': 'My Daily Planner',
+  'project-progress': 'Project Progress',
   'team-daily-planner': 'Team Daily Planner',
   'team-performance': 'Team Performance',
   reports: 'Reports',
@@ -31,9 +35,18 @@ const TAB_LABELS: Record<DailyPlannerTabId, string> = {
 
 export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
   const queryClient = useQueryClient();
+  const planningConfigQuery = usePlanningConfigQuery();
+  const enhancedEligible = useMemo(() => {
+    if (typeof planningConfigQuery.data?.enhancedEligible === 'boolean') {
+      return planningConfigQuery.data.enhancedEligible;
+    }
+    const location = String((user as { location?: string })?.location || '').trim();
+    return isEnhancedDailyPlannerEligible(location, moduleRole);
+  }, [planningConfigQuery.data?.enhancedEligible, user, moduleRole]);
+
   const visibleTabs = useMemo(
-    () => getDailyPlannerVisibleTabs(moduleRole),
-    [moduleRole],
+    () => getDailyPlannerVisibleTabs(moduleRole, { enhancedEligible }),
+    [moduleRole, enhancedEligible],
   );
   const defaultTab = useMemo(
     () => getDefaultDailyPlannerTab(moduleRole),
@@ -85,6 +98,12 @@ export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
         refetchType: 'active',
       });
     }
+    if (tab === 'project-progress') {
+      void queryClient.invalidateQueries({
+        queryKey: [...dailyPlannerQueryKeys.all, 'projectProgress'],
+        refetchType: 'active',
+      });
+    }
   }, [tab, queryClient]);
 
   const columns = Math.max(visibleTabs.length, 1);
@@ -101,7 +120,7 @@ export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
         className="w-full"
       >
         <TabsList
-          className="grid w-full max-w-4xl"
+          className="grid w-full max-w-5xl"
           style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
         >
           {visibleTabs.map((id) => (
@@ -114,6 +133,12 @@ export default function DailyPlanner({ user, moduleRole }: DailyPlannerProps) {
         {visibleTabs.includes('my-daily-planner') ? (
           <TabsContent value="my-daily-planner" className="mt-6 outline-none">
             <MyDailyPlannerTab moduleRole={moduleRole} />
+          </TabsContent>
+        ) : null}
+
+        {visibleTabs.includes('project-progress') ? (
+          <TabsContent value="project-progress" className="mt-6 outline-none">
+            <ProjectProgressTab />
           </TabsContent>
         ) : null}
 

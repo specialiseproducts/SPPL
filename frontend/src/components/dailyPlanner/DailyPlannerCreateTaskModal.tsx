@@ -29,9 +29,10 @@ import {
 import { hasBulletContent, parseBulletPoints } from './bulletPointUtils';
 import { sumPlannedHoursForDate } from './dailyPlannerUtils';
 import { cn } from '../ui/utils';
-import { fetchDailyPlannerProjects } from '../../hooks/dailyPlanner/dailyPlannerApi';
+import { fetchDailyPlannerProjects, uploadDailyPlannerTaskDocument } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import DailyPlannerPlanSummaryDialog from './DailyPlannerPlanSummaryDialog';
 import HoursMinutesFields from './HoursMinutesFields';
+import DailyPlannerEnhancedTaskFields from './DailyPlannerEnhancedTaskFields';
 
 /** Same duration helper as Mark Completed (Start/End → decimal hours). */
 function calcDurationFromTimes(startTime: string, endTime: string): number | null {
@@ -59,6 +60,9 @@ type TaskSectionState = {
   managerInstructions: string;
   startTime: string;
   endTime: string;
+  needsDocument: 'Yes' | 'No';
+  progressDone: number | null;
+  documentFile: File | null;
 };
 
 type SectionErrors = Record<
@@ -84,6 +88,9 @@ function createEmptySection(): TaskSectionState {
     managerInstructions: '',
     startTime: '',
     endTime: '',
+    needsDocument: 'No',
+    progressDone: null,
+    documentFile: null,
   };
 }
 
@@ -97,6 +104,7 @@ interface TaskSectionRowProps {
   section: TaskSectionState;
   canRemove: boolean;
   elevated: boolean;
+  enhancedEligible?: boolean;
   projectOptions: string[];
   showTaskNameError: boolean;
   showHoursRequiredError: boolean;
@@ -111,6 +119,7 @@ function TaskSectionRow({
   section,
   canRemove,
   elevated,
+  enhancedEligible = false,
   projectOptions,
   showTaskNameError,
   showHoursRequiredError,
@@ -199,6 +208,7 @@ function TaskSectionRow({
             onChange({
               isProjectBased: v as 'Yes' | 'No',
               projectName: v === 'No' ? '' : section.projectName,
+              progressDone: v === 'No' ? null : section.progressDone,
             })
           }
         >
@@ -245,6 +255,19 @@ function TaskSectionRow({
             placeholder="Special remarks / instructions"
           />
         </div>
+      ) : null}
+
+      {enhancedEligible ? (
+        <DailyPlannerEnhancedTaskFields
+          idPrefix={`create-${section.id}`}
+          isProjectBased={section.isProjectBased === 'Yes'}
+          values={{
+            needsDocument: section.needsDocument,
+            progressDone: section.progressDone,
+            documentFile: section.documentFile,
+          }}
+          onChange={(patch) => onChange(patch)}
+        />
       ) : null}
     </div>
   );
@@ -326,6 +349,7 @@ function ExtraTaskSectionFields({
             onChange({
               isProjectBased: v as 'Yes' | 'No',
               projectName: v === 'No' ? '' : section.projectName,
+              progressDone: v === 'No' ? null : section.progressDone,
             })
           }
         >
@@ -426,6 +450,8 @@ interface DailyPlannerCreateTaskModalProps {
   forEmployeeCode?: string;
   /** Skip employee evening-window assert (manager creating for employee). */
   skipPlanningWindowAssert?: boolean;
+  /** Factory / Office SuperAdmin — document + progress fields. */
+  enhancedEligible?: boolean;
   /**
    * Extra Task from Mark Completed / Not Completed — same fields as Add Task,
    * saved as Completed + self-approved (no min-hours / plan-summary).
@@ -434,7 +460,7 @@ interface DailyPlannerCreateTaskModalProps {
   /** Existing tasks already planned for `date` (same set the calendar uses for that day). */
   existingTasksForDate?: DailyPlannerTask[];
   onClose: () => void;
-  onSave: (drafts: DailyPlannerTaskDraft[]) => Promise<void>;
+  onSave: (drafts: DailyPlannerTaskDraft[]) => Promise<DailyPlannerTask[] | void>;
 }
 
 export default function DailyPlannerCreateTaskModal({
@@ -445,6 +471,7 @@ export default function DailyPlannerCreateTaskModal({
   elevated = false,
   forEmployeeCode,
   skipPlanningWindowAssert = false,
+  enhancedEligible = false,
   isExtraTask = false,
   existingTasksForDate = [],
   onClose,
@@ -617,6 +644,9 @@ export default function DailyPlannerCreateTaskModal({
           urgentReason: '',
           isProjectBased: section.isProjectBased === 'Yes',
           projectName: section.isProjectBased === 'Yes' ? section.projectName.trim() : '',
+          needsDocument: enhancedEligible ? section.needsDocument === 'Yes' : undefined,
+          progressDone:
+            enhancedEligible && section.isProjectBased === 'Yes' ? section.progressDone : undefined,
           managerInstructions: '',
           employeeCode: forEmployeeCode || undefined,
           isExtraTask: true,
@@ -670,6 +700,9 @@ export default function DailyPlannerCreateTaskModal({
         urgentReason: '',
         isProjectBased: section.isProjectBased === 'Yes',
         projectName: section.isProjectBased === 'Yes' ? section.projectName.trim() : '',
+        needsDocument: enhancedEligible ? section.needsDocument === 'Yes' : undefined,
+        progressDone:
+          enhancedEligible && section.isProjectBased === 'Yes' ? section.progressDone : undefined,
         managerInstructions: elevated ? section.managerInstructions.trim() : '',
         employeeCode: forEmployeeCode || undefined,
       });
@@ -683,7 +716,30 @@ export default function DailyPlannerCreateTaskModal({
     submitLockRef.current = true;
     setSaving(true);
     try {
-      await onSave(drafts);
+      const created = await onSave(drafts);
+      const createdList = Array.isArray(created) ? created : [];
+      if (enhancedEligible && createdList.length > 0) {
+        const filledSections = sections.filter((section) => {
+          const desc =
+            descriptionRefs.current[section.id]?.getFormattedValue() ?? section.description;
+          return !isSectionEmpty(section.taskName, desc);
+        });
+        for (let i = 0; i < Math.min(filledSections.length, createdList.length); i += 1) {
+          const file = filledSections[i]?.documentFile;
+          const taskId = createdList[i]?.plannerTaskId;
+          if (file && taskId && filledSections[i]?.needsDocument === 'Yes') {
+            try {
+              await uploadDailyPlannerTaskDocument(taskId, file);
+            } catch (uploadErr) {
+              toast.error(
+                uploadErr instanceof Error
+                  ? uploadErr.message
+                  : `Document upload failed for task ${i + 1}`,
+              );
+            }
+          }
+        }
+      }
       setSummaryDrafts(null);
       handleClose();
     } catch (err) {
@@ -889,6 +945,7 @@ export default function DailyPlannerCreateTaskModal({
                         section={section}
                         canRemove={sections.length > 1}
                         elevated={elevated}
+                        enhancedEligible={enhancedEligible}
                         projectOptions={projectOptions}
                         showTaskNameError={Boolean(errors[section.id]?.taskName)}
                         showHoursRequiredError={Boolean(errors[section.id]?.hoursRequired)}

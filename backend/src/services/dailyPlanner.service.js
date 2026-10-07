@@ -27,6 +27,11 @@ import * as DailyPlannerProjectsModel from '../models/DailyPlannerProjects.js';
 import * as EmployeeMasterModel from '../models/EmployeeMaster.js';
 import { sendEmail } from './emailService.js';
 import { buildFinalPlanEmail, buildRevisedPlanEmail } from './dailyPlannerFinalPlanEmail.js';
+import {
+  resolveEnhancedEligibilityForAuthUser,
+  resolveEnhancedEligibilityForEmployeeCode,
+} from '../utils/dailyPlannerEnhancedEligibility.js';
+import * as DailyPlannerEnhancedService from './dailyPlannerEnhanced.service.js';
 
 const PRIORITY_ORDER = PRIORITY_SORT_ORDER;
 
@@ -767,6 +772,12 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     ? String(body.managerInstructions || body.instructions || '').trim()
     : '';
 
+  const enhancedEligible = await resolveEnhancedEligibilityForAuthUser(authUser, effectiveRole);
+  const enhancedFields = DailyPlannerEnhancedService.parseOptionalEnhancedFields(
+    body,
+    enhancedEligible,
+  );
+
   // My Daily Planner self-create is Pending for User/Admin/Developer.
   // Super Admin own tasks (this endpoint always assigns the logged-in user) are self-approved
   // because Super Admin users have no reporting manager. Team Daily Planner uses
@@ -798,6 +809,7 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     managerInstructions,
     isProjectBased,
     projectName,
+    ...enhancedFields,
     createdByRole: elevated ? 'Manager' : 'User',
     planningCategory: planningMeta.planningCategory,
     urgentReason: planningMeta.urgentReason,
@@ -1023,6 +1035,11 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
   }
 
   const managerInstructions = String(body.managerInstructions || body.instructions || '').trim();
+  const targetEligible = await resolveEnhancedEligibilityForEmployeeCode(targetCode);
+  const enhancedFields = DailyPlannerEnhancedService.parseOptionalEnhancedFields(
+    body,
+    targetEligible,
+  );
   const task = await DailyPlannerTasksModel.createTask({
     employeeCode: targetCode,
     employeeName,
@@ -1048,6 +1065,7 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     managerInstructions,
     isProjectBased,
     projectName,
+    ...enhancedFields,
     createdByRole: 'Manager',
     planningCategory: planningMeta.planningCategory,
     urgentReason: planningMeta.urgentReason,
@@ -1711,6 +1729,12 @@ export const updateManualTask = async (taskId, body, authUser) => {
   }
   if (body.date !== undefined) patch.date = String(body.date || '').trim();
 
+  const ownerEligible = await resolveEnhancedEligibilityForEmployeeCode(existing.employeeCode);
+  Object.assign(
+    patch,
+    DailyPlannerEnhancedService.parseOptionalEnhancedFields(body, ownerEligible),
+  );
+
   const task = await DailyPlannerTasksModel.updateTask(taskId, patch);
 
   if (
@@ -2005,6 +2029,11 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
   const planningScore = Number(existing.planningScore) || 0;
   // Keep existing scoring: employee completion still awards Completed contribution.
   const completionScore = computeTaskCompletionContribution('Completed');
+  const ownerEligible = await resolveEnhancedEligibilityForEmployeeCode(existing.employeeCode);
+  const enhancedFields = DailyPlannerEnhancedService.parseOptionalEnhancedFields(
+    body || {},
+    ownerEligible,
+  );
   const task = await DailyPlannerTasksModel.updateTask(taskId, {
     status: 'Awaiting Verification',
     reason: workDone,
@@ -2014,6 +2043,7 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     completionDurationHours,
     completionScore,
     finalScore: planningScore + completionScore,
+    ...enhancedFields,
   });
 
   // Incomplete → Reschedule creates a child via parentTaskId. Completing the original
@@ -2075,6 +2105,11 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
   if (action === 'terminate') {
     const planningScore = Number(existing.planningScore) || 0;
     const completionScore = computeTaskCompletionContribution('Terminated');
+    const ownerEligible = await resolveEnhancedEligibilityForEmployeeCode(existing.employeeCode);
+    const enhancedFields = DailyPlannerEnhancedService.parseOptionalEnhancedFields(
+      body || {},
+      ownerEligible,
+    );
     const task = await DailyPlannerTasksModel.updateTask(taskId, {
       status: 'Terminated',
       reason,
@@ -2083,6 +2118,7 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
       terminatedByName: name,
       completionScore,
       finalScore: planningScore + completionScore,
+      ...enhancedFields,
     });
     if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
       await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
@@ -2985,7 +3021,10 @@ export const listTeamMappings = async (authUser, effectiveRole) => {
   const enriched = await Promise.all(
     (mappings || []).map(async (mapping) => {
       const location = await getEmployeeLocation(mapping?.employeeCode);
-      return { ...mapping, location };
+      const enhancedEligible = await resolveEnhancedEligibilityForEmployeeCode(
+        mapping?.employeeCode,
+      );
+      return { ...mapping, location, enhancedEligible };
     }),
   );
   return { mappings: enriched };
@@ -3072,9 +3111,11 @@ export const getTask = async (taskId, authUser, effectiveRole) => {
   return { task };
 };
 
-export const getPlanningConfig = async (authUser) => {
+export const getPlanningConfig = async (authUser, effectiveRole) => {
   const code = employeeCodeOf(authUser);
-  return { config: await PlanningRecognitionService.getPlanningConfig(new Date(), code) };
+  const config = await PlanningRecognitionService.getPlanningConfig(new Date(), code);
+  const enhancedEligible = await resolveEnhancedEligibilityForAuthUser(authUser, effectiveRole);
+  return { config: { ...config, enhancedEligible } };
 };
 
 export const getMyPlanningProfile = async (authUser) => {

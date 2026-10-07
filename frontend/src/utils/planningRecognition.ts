@@ -62,6 +62,8 @@ export interface PlanningConfig {
   employeeLocation?: string;
   minPlannedHoursPerWorkingDay?: number;
   minPlannedTasksPerWorkingDay?: number;
+  /** Factory OR (Office + Super Admin) — server-resolved. */
+  enhancedEligible?: boolean;
   windows: {
     morning: { start: string; end: string; active: boolean };
     evening: { start: string; end: string; active: boolean };
@@ -127,15 +129,23 @@ function getIstMinutesFromServerTime(serverTimeIso: string): number {
   return ist.getUTCHours() * 60 + ist.getUTCMinutes();
 }
 
-/** Location / config-based daily minimum planned hours (Office 7.5, Factory 7). */
+/**
+ * Location / config-based daily minimum planned hours (Office 7.5, Factory 7).
+ * When an explicit `location` is provided (e.g. task owner's location in Task Review),
+ * that location wins over the logged-in user's planning-config minimum.
+ */
 export function getMinPlannedHours(config?: PlanningConfig | null, location?: string | null): number {
+  const explicitLoc = String(location || '').trim();
+  if (explicitLoc) {
+    return explicitLoc === 'Factory' ? MIN_PLANNED_HOURS_FACTORY : MIN_PLANNED_HOURS_OFFICE;
+  }
   if (
     config?.minPlannedHoursPerWorkingDay != null &&
     Number.isFinite(Number(config.minPlannedHoursPerWorkingDay))
   ) {
     return Number(config.minPlannedHoursPerWorkingDay);
   }
-  const loc = String(location || config?.employeeLocation || '').trim();
+  const loc = String(config?.employeeLocation || '').trim();
   return loc === 'Factory' ? MIN_PLANNED_HOURS_FACTORY : MIN_PLANNED_HOURS_OFFICE;
 }
 

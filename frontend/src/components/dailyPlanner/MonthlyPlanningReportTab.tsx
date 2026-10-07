@@ -4,7 +4,6 @@ import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '../ui/chart';
 import { Line, LineChart, CartesianGrid, XAxis, YAxis } from 'recharts';
 import {

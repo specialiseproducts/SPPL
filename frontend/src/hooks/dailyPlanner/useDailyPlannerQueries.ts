@@ -97,9 +97,9 @@ export function usePlanningConfigQuery(enabled = true) {
     queryKey: dailyPlannerQueryKeys.planningConfig(),
     queryFn: fetchPlanningConfig,
     enabled,
+    ...queryDefaults.reference,
     staleTime: 60_000,
     refetchInterval: 60_000,
-    ...queryDefaults.reference,
   });
 }
 

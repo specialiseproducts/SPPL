@@ -3,6 +3,7 @@
  */
 
 import * as DailyPlannerService from '../services/dailyPlanner.service.js';
+import * as DailyPlannerEnhancedService from '../services/dailyPlannerEnhanced.service.js';
 import log from '../utils/logger.js';
 
 export const listMyMonth = async (req, res, next) => {
@@ -418,10 +419,86 @@ export const transferTeamMapping = async (req, res, next) => {
 
 export const getPlanningConfig = async (req, res, next) => {
   try {
-    const data = await DailyPlannerService.getPlanningConfig(req.user);
+    const data = await DailyPlannerService.getPlanningConfig(req.user, req.effectiveRole);
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Daily planner getPlanningConfig error:', error);
+    next(error);
+  }
+};
+
+export const uploadTaskDocument = async (req, res, next) => {
+  try {
+    const documentType =
+      req.body?.documentType || req.query?.documentType || 'employee';
+    const data = await DailyPlannerEnhancedService.uploadTaskDocument(
+      req.params.id,
+      req.file,
+      req.user,
+      req.effectiveRole,
+      documentType,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner uploadTaskDocument error:', error);
+    next(error);
+  }
+};
+
+export const getTaskDocumentUrl = async (req, res, next) => {
+  try {
+    const documentType = req.query?.documentType || 'employee';
+    const data = await DailyPlannerEnhancedService.getTaskDocumentUrl(
+      req.params.id,
+      req.user,
+      req.effectiveRole,
+      documentType,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner getTaskDocumentUrl error:', error);
+    next(error);
+  }
+};
+
+export const raiseTaskFlag = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerEnhancedService.raiseTaskFlag(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner raiseTaskFlag error:', error);
+    next(error);
+  }
+};
+
+export const acceptTaskFlag = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerEnhancedService.acceptTaskFlag(
+      req.params.id,
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner acceptTaskFlag error:', error);
+    next(error);
+  }
+};
+
+export const getProjectProgress = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerEnhancedService.getProjectProgress(
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner getProjectProgress error:', error);
     next(error);
   }
 };

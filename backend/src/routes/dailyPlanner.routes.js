@@ -5,6 +5,7 @@
 import express from 'express';
 import * as DailyPlannerController from '../controllers/dailyPlanner.controller.js';
 import { authenticateToken, authorize } from '../middleware/auth.middleware.js';
+import { uploadDailyPlannerDocument } from '../config/s3.js';
 
 const router = express.Router();
 
@@ -20,6 +21,7 @@ router.get('/planning/history', DailyPlannerController.getPlanningHistory);
 router.get('/planning/report', DailyPlannerController.getPlanningReport);
 router.get('/planning/team-history', DailyPlannerController.getTeamPlanningHistory);
 router.get('/planning/export', DailyPlannerController.getPlanningExportPayload);
+router.get('/project-progress', DailyPlannerController.getProjectProgress);
 
 router.get('/tasks/month', DailyPlannerController.listMyMonth);
 router.get('/tasks/day', DailyPlannerController.listDayTasks);
@@ -49,6 +51,22 @@ router.post('/tasks/:id/verify-completion', DailyPlannerController.verifyTaskCom
 router.post('/tasks/:id/review-completion', DailyPlannerController.reviewTaskCompletion);
 router.post('/tasks/:id/accept-revision', DailyPlannerController.acceptRevisionSuggestion);
 router.put('/tasks/:id/priority', DailyPlannerController.editPriority);
+router.post(
+  '/tasks/:id/document',
+  (req, res, next) => {
+    uploadDailyPlannerDocument.single('file')(req, res, (err) => {
+      if (err) {
+        err.statusCode = err.statusCode || 400;
+        return next(err);
+      }
+      next();
+    });
+  },
+  DailyPlannerController.uploadTaskDocument,
+);
+router.get('/tasks/:id/document', DailyPlannerController.getTaskDocumentUrl);
+router.post('/tasks/:id/flag', DailyPlannerController.raiseTaskFlag);
+router.post('/tasks/:id/flag/accept', DailyPlannerController.acceptTaskFlag);
 
 router.get('/projects', DailyPlannerController.listProjects);
 router.post('/projects', DailyPlannerController.upsertProject);

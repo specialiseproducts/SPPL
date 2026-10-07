@@ -45,10 +45,12 @@ import {
 } from './dailyPlannerDateRules';
 import {
   acceptDailyPlannerRevision,
+  acceptDailyPlannerTaskFlag,
   completeDailyPlannerTask,
   notCompletedDailyPlannerTask,
   submitDayCompletion,
   updateDailyPlannerTask,
+  uploadDailyPlannerTaskDocument,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import BulletPointList from './BulletPointList';
@@ -57,6 +59,8 @@ import { todayIso } from './dailyPlannerUtils';
 import { useAuth } from '../../context/AuthContext';
 import { hasEmployeeCompletionOutcome } from './todayTaskReviewWizardUtils';
 import HoursMinutesFields from './HoursMinutesFields';
+import DailyPlannerEnhancedTaskFields from './DailyPlannerEnhancedTaskFields';
+import DailyPlannerTaskDocumentsList from './DailyPlannerTaskDocumentsList';
 
 /** Display-only message for the day-tasks modal (does not change global planning rules). */
 const DAY_TASK_UPDATES_READONLY_DISPLAY_MESSAGE =
@@ -106,9 +110,14 @@ export default function DailyPlannerDayTasksModal({
 }: DailyPlannerDayTasksModalProps) {
   const { user } = useAuth();
   const employeeLocation = user?.location || 'Office';
+  const enhancedEligible = Boolean(planningConfig?.enhancedEligible);
   const visibleTasks = useMemo(
     () => sortDailyPlannerTasksByPriority(visibleEmployeePlannerTasks(tasks)),
     [tasks],
+  );
+  const raisedFlags = useMemo(
+    () => visibleTasks.filter((t) => String(t.flagStatus || '').trim() === 'Raised'),
+    [visibleTasks],
   );
   const [reasonTaskId, setReasonTaskId] = useState<string | null>(null);
   const [notCompletedAction, setNotCompletedAction] = useState<DailyPlannerNotCompletedAction>('terminate');
@@ -116,6 +125,12 @@ export default function DailyPlannerDayTasksModal({
   const [completeTaskId, setCompleteTaskId] = useState<string | null>(null);
   const [completeStartTime, setCompleteStartTime] = useState('');
   const [completeEndTime, setCompleteEndTime] = useState('');
+  const [completeNeedsDocument, setCompleteNeedsDocument] = useState<'Yes' | 'No'>('No');
+  const [completeProgressDone, setCompleteProgressDone] = useState<number | null>(null);
+  const [completeDocumentFile, setCompleteDocumentFile] = useState<File | null>(null);
+  const [notCompletedNeedsDocument, setNotCompletedNeedsDocument] = useState<'Yes' | 'No'>('No');
+  const [notCompletedProgressDone, setNotCompletedProgressDone] = useState<number | null>(null);
+  const [notCompletedDocumentFile, setNotCompletedDocumentFile] = useState<File | null>(null);
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editPriority, setEditPriority] = useState<DailyPlannerPriority>('Medium');
@@ -186,8 +201,43 @@ export default function DailyPlannerDayTasksModal({
     if (!completeTaskId) {
       setCompleteStartTime('');
       setCompleteEndTime('');
+      setCompleteNeedsDocument('No');
+      setCompleteProgressDone(null);
+      setCompleteDocumentFile(null);
+      return;
     }
-  }, [completeTaskId]);
+    const task = tasks.find((t) => t.plannerTaskId === completeTaskId);
+    if (task) {
+      setCompleteNeedsDocument(task.needsDocument ? 'Yes' : 'No');
+      setCompleteProgressDone(
+        task.isProjectBased &&
+          task.progressDone != null &&
+          Number.isFinite(Number(task.progressDone))
+          ? Number(task.progressDone)
+          : null,
+      );
+    }
+  }, [completeTaskId, tasks]);
+
+  useEffect(() => {
+    if (!reasonTaskId) {
+      setNotCompletedNeedsDocument('No');
+      setNotCompletedProgressDone(null);
+      setNotCompletedDocumentFile(null);
+      return;
+    }
+    const task = tasks.find((t) => t.plannerTaskId === reasonTaskId);
+    if (task) {
+      setNotCompletedNeedsDocument(task.needsDocument ? 'Yes' : 'No');
+      setNotCompletedProgressDone(
+        task.isProjectBased &&
+          task.progressDone != null &&
+          Number.isFinite(Number(task.progressDone))
+          ? Number(task.progressDone)
+          : null,
+      );
+    }
+  }, [reasonTaskId, tasks]);
 
   const allHaveCompletionOutcomes =
     visibleTasks.length > 0 && visibleTasks.every(hasEmployeeCompletionOutcome);
@@ -314,8 +364,27 @@ export default function DailyPlannerDayTasksModal({
         {
           startTime: completeStartTime.trim(),
           endTime: completeEndTime.trim(),
+          ...(enhancedEligible
+            ? {
+                needsDocument: completeNeedsDocument === 'Yes',
+                ...(task?.isProjectBased ? { progressDone: completeProgressDone } : {}),
+              }
+            : {}),
         },
       );
+      if (enhancedEligible && completeNeedsDocument === 'Yes' && completeDocumentFile) {
+        try {
+          await uploadDailyPlannerTaskDocument(
+            result.task.plannerTaskId,
+            completeDocumentFile,
+            'employee',
+          );
+        } catch (uploadErr) {
+          toast.error(
+            uploadErr instanceof Error ? uploadErr.message : 'Document upload failed',
+          );
+        }
+      }
       const taskDuration =
         result.completionDurationHours ?? result.task.completionDurationHours ?? duration;
       const dayTotal = result.dayCompletedHours;
@@ -342,6 +411,9 @@ export default function DailyPlannerDayTasksModal({
     setReasonTaskId(null);
     setNotCompletedAction('terminate');
     setRescheduleDate('');
+    setNotCompletedNeedsDocument('No');
+    setNotCompletedProgressDone(null);
+    setNotCompletedDocumentFile(null);
   };
 
   const submitNotCompleted = async () => {
@@ -395,9 +467,23 @@ export default function DailyPlannerDayTasksModal({
         task?.date ?? date,
         planningConfig ?? undefined,
       );
+      let updatedTask = result.task;
+      if (enhancedEligible && notCompletedNeedsDocument === 'Yes' && notCompletedDocumentFile) {
+        try {
+          updatedTask = await uploadDailyPlannerTaskDocument(
+            result.task.plannerTaskId,
+            notCompletedDocumentFile,
+            'employee',
+          );
+        } catch (uploadErr) {
+          toast.error(
+            uploadErr instanceof Error ? uploadErr.message : 'Document upload failed',
+          );
+        }
+      }
       resetNotCompletedDialog();
       onChanged({
-        upsert: [result.task, ...(result.rescheduledTask ? [result.rescheduledTask] : [])],
+        upsert: [updatedTask, ...(result.rescheduledTask ? [result.rescheduledTask] : [])],
       });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Update failed');
@@ -461,6 +547,49 @@ export default function DailyPlannerDayTasksModal({
           </DialogHeader>
 
           <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth overscroll-contain px-6 py-4">
+            {raisedFlags.length > 0 ? (
+              <div className="mb-4 space-y-2">
+                {raisedFlags.map((flagTask) => (
+                  <div
+                    key={flagTask.plannerTaskId}
+                    className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-[#212529]"
+                  >
+                    <p className="font-semibold">🚩 Flag Raised</p>
+                    <p className="mt-1">
+                      Task:{' '}
+                      {flagTask.isProjectBased && flagTask.projectName
+                        ? `${flagTask.projectName} — ${flagTask.taskName}`
+                        : flagTask.taskName}
+                    </p>
+                    <p className="mt-1 text-gray-700">
+                      Manager Instruction: {flagTask.flagInstruction || '—'}
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="mt-2"
+                      disabled={busyId === flagTask.plannerTaskId}
+                      onClick={() => {
+                        void (async () => {
+                          setBusyId(flagTask.plannerTaskId);
+                          try {
+                            const updated = await acceptDailyPlannerTaskFlag(flagTask.plannerTaskId);
+                            toast.success('Flag accepted');
+                            onChanged({ upsert: [updated] });
+                          } catch (err) {
+                            toast.error(err instanceof Error ? err.message : 'Accept failed');
+                          } finally {
+                            setBusyId(null);
+                          }
+                        })();
+                      }}
+                    >
+                      Accept
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {isPastDate ? (
               <div className="mb-4 space-y-1.5">
                 <Badge variant="secondary" className="font-normal">
@@ -555,6 +684,11 @@ export default function DailyPlannerDayTasksModal({
                             ? ` · Approved by ${task.approvedByName}`
                             : ''}
                         </p>
+                        {enhancedEligible ? (
+                          <div className="mt-2">
+                            <DailyPlannerTaskDocumentsList task={task} />
+                          </div>
+                        ) : null}
                         <div className="mt-2 flex flex-wrap gap-2">
                           {canEditThisTask ? (
                             <Button
@@ -791,6 +925,29 @@ export default function DailyPlannerDayTasksModal({
               label="Work Done"
               required
             />
+            {enhancedEligible ? (
+              <DailyPlannerEnhancedTaskFields
+                idPrefix="complete"
+                isProjectBased={Boolean(
+                  tasks.find((t) => t.plannerTaskId === completeTaskId)?.isProjectBased,
+                )}
+                values={{
+                  needsDocument: completeNeedsDocument,
+                  progressDone: completeProgressDone,
+                  documentFile: completeDocumentFile,
+                }}
+                onChange={(patch) => {
+                  if (patch.needsDocument !== undefined) setCompleteNeedsDocument(patch.needsDocument);
+                  if (patch.progressDone !== undefined) setCompleteProgressDone(patch.progressDone);
+                  if (patch.documentFile !== undefined) setCompleteDocumentFile(patch.documentFile);
+                }}
+                existingFileName={
+                  tasks.find((t) => t.plannerTaskId === completeTaskId)?.documentFileKey
+                    ? 'attached'
+                    : undefined
+                }
+              />
+            ) : null}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setCompleteTaskId(null)}>
@@ -913,6 +1070,35 @@ export default function DailyPlannerDayTasksModal({
                   required
                 />
               </div>
+            ) : null}
+            {enhancedEligible ? (
+              <DailyPlannerEnhancedTaskFields
+                idPrefix="not-completed"
+                isProjectBased={Boolean(
+                  tasks.find((t) => t.plannerTaskId === reasonTaskId)?.isProjectBased,
+                )}
+                values={{
+                  needsDocument: notCompletedNeedsDocument,
+                  progressDone: notCompletedProgressDone,
+                  documentFile: notCompletedDocumentFile,
+                }}
+                onChange={(patch) => {
+                  if (patch.needsDocument !== undefined) {
+                    setNotCompletedNeedsDocument(patch.needsDocument);
+                  }
+                  if (patch.progressDone !== undefined) {
+                    setNotCompletedProgressDone(patch.progressDone);
+                  }
+                  if (patch.documentFile !== undefined) {
+                    setNotCompletedDocumentFile(patch.documentFile);
+                  }
+                }}
+                existingFileName={
+                  tasks.find((t) => t.plannerTaskId === reasonTaskId)?.documentFileKey
+                    ? 'attached'
+                    : undefined
+                }
+              />
             ) : null}
           </div>
           <DialogFooter>

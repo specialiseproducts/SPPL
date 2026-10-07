@@ -81,6 +81,35 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     managerInstructions: String(r.managerInstructions ?? '').trim(),
     isProjectBased: Boolean(r.isProjectBased),
     projectName: String(r.projectName ?? '').trim(),
+    needsDocument:
+      r.needsDocument === undefined || r.needsDocument === null ? null : Boolean(r.needsDocument),
+    documentFileName: String(r.documentFileName ?? '').trim(),
+    documentFileKey: String(r.documentFileKey ?? '').trim(),
+    documentUploadedAt: r.documentUploadedAt ? String(r.documentUploadedAt) : null,
+    documentContentType: String(r.documentContentType ?? '').trim(),
+    managerReviewDocumentFileName: String(r.managerReviewDocumentFileName ?? '').trim(),
+    managerReviewDocumentFileKey: String(r.managerReviewDocumentFileKey ?? '').trim(),
+    managerReviewDocumentUploadedAt: r.managerReviewDocumentUploadedAt
+      ? String(r.managerReviewDocumentUploadedAt)
+      : null,
+    managerReviewDocumentContentType: String(r.managerReviewDocumentContentType ?? '').trim(),
+    managerApprovalDocumentFileName: String(r.managerApprovalDocumentFileName ?? '').trim(),
+    managerApprovalDocumentFileKey: String(r.managerApprovalDocumentFileKey ?? '').trim(),
+    managerApprovalDocumentUploadedAt: r.managerApprovalDocumentUploadedAt
+      ? String(r.managerApprovalDocumentUploadedAt)
+      : null,
+    managerApprovalDocumentContentType: String(r.managerApprovalDocumentContentType ?? '').trim(),
+    progressDone:
+      r.progressDone === undefined || r.progressDone === null || String(r.progressDone).trim() === ''
+        ? null
+        : Number(r.progressDone),
+    flagStatus: String(r.flagStatus ?? '').trim(),
+    flagInstruction: String(r.flagInstruction ?? '').trim(),
+    flagRaisedBy: String(r.flagRaisedBy ?? '').trim(),
+    flagRaisedByName: String(r.flagRaisedByName ?? '').trim(),
+    flagRaisedAt: r.flagRaisedAt ? String(r.flagRaisedAt) : null,
+    flagAcceptedAt: r.flagAcceptedAt ? String(r.flagAcceptedAt) : null,
+    flagHistory: Array.isArray(r.flagHistory) ? (r.flagHistory as DailyPlannerTask['flagHistory']) : [],
     planFinalizedAt: r.planFinalizedAt ? String(r.planFinalizedAt) : null,
     planFinalizedBy: String(r.planFinalizedBy ?? '').trim(),
     createdByRole: String(r.createdByRole ?? '').trim(),
@@ -415,7 +444,12 @@ export async function completeDailyPlannerTask(
   workDone: string,
   taskDate: string,
   planningConfig?: PlanningConfig,
-  options?: { startTime?: string; endTime?: string },
+  options?: {
+    startTime?: string;
+    endTime?: string;
+    needsDocument?: boolean;
+    progressDone?: number | null;
+  },
 ): Promise<{
   task: DailyPlannerTask;
   cancelledRescheduledTaskIds: string[];
@@ -433,6 +467,8 @@ export async function completeDailyPlannerTask(
       workDone,
       startTime: options?.startTime || undefined,
       endTime: options?.endTime || undefined,
+      ...(options?.needsDocument !== undefined ? { needsDocument: options.needsDocument } : {}),
+      ...(options?.progressDone !== undefined ? { progressDone: options.progressDone } : {}),
     }),
   })) as {
     data?: {
@@ -821,4 +857,87 @@ export async function transferTeamMapping(
   )) as { data?: { mapping?: DailyPlannerTeamMapping } };
   if (!res?.data?.mapping) throw new Error('Transfer failed');
   return res.data.mapping;
+}
+
+/** Independent document slots on a Daily Planner task. */
+export type DailyPlannerDocumentType = 'employee' | 'managerReview' | 'managerApproval';
+
+export async function uploadDailyPlannerTaskDocument(
+  taskId: string,
+  file: File,
+  documentType: DailyPlannerDocumentType = 'employee',
+): Promise<DailyPlannerTask> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('documentType', documentType);
+  const qs = `?documentType=${encodeURIComponent(documentType)}`;
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/document${qs}`,
+    {
+      method: 'POST',
+      body: form,
+    },
+  )) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Document upload failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function fetchDailyPlannerTaskDocumentUrl(
+  taskId: string,
+  documentType: DailyPlannerDocumentType = 'employee',
+): Promise<{ url: string; fileName: string; contentType: string }> {
+  const qs = `?documentType=${encodeURIComponent(documentType)}`;
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/document${qs}`,
+  )) as { data?: { url?: string; fileName?: string; contentType?: string } };
+  if (!res?.data?.url) throw new Error('Document unavailable');
+  return {
+    url: String(res.data.url),
+    fileName: String(res.data.fileName || 'document'),
+    contentType: String(res.data.contentType || ''),
+  };
+}
+
+export async function raiseDailyPlannerTaskFlag(
+  taskId: string,
+  instruction: string,
+): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/flag`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instruction }),
+  })) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Raise flag failed');
+  return normalizeTask(res.data.task);
+}
+
+export async function acceptDailyPlannerTaskFlag(taskId: string): Promise<DailyPlannerTask> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/flag/accept`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  )) as { data?: { task?: DailyPlannerTask } };
+  if (!res?.data?.task) throw new Error('Accept flag failed');
+  return normalizeTask(res.data.task);
+}
+
+export interface ProjectProgressEmployeeRow {
+  employeeCode: string;
+  employeeName: string;
+  progressPercent: number;
+  taskCountWithProgress: number;
+}
+
+export interface ProjectProgressRow {
+  projectKey: string;
+  projectName: string;
+  progressPercent: number;
+  employeeCount: number;
+  employees: ProjectProgressEmployeeRow[];
+}
+
+export async function fetchProjectProgress(): Promise<ProjectProgressRow[]> {
+  const res = (await apiFetch('/api/daily-planner/project-progress')) as {
+    data?: { projects?: ProjectProgressRow[] };
+  };
+  return res?.data?.projects ?? [];
 }

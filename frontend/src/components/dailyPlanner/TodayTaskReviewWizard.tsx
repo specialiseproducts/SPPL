@@ -15,6 +15,8 @@ import {
   updateDailyPlannerTaskForEmployee,
   reviewDailyPlannerTaskCompletion,
   submitDayCompletionReview,
+  raiseDailyPlannerTaskFlag,
+  uploadDailyPlannerTaskDocument,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import {
   getDailyTaskStatusLabel,
@@ -24,7 +26,9 @@ import {
 } from './dailyPlannerUtils';
 import BulletPointList from './BulletPointList';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
+import DailyPlannerTaskDocumentsList from './DailyPlannerTaskDocumentsList';
 import HoursMinutesFields from './HoursMinutesFields';
+import { isEnhancedDailyPlannerEligible } from '../../utils/dailyPlannerEnhancedEligibility';
 import {
   countCompletionReviewedTasks,
   countReviewedTasks,
@@ -186,6 +190,8 @@ export interface TodayReviewEmployeeInfo {
   department?: string;
   designation?: string;
   location?: string;
+  /** Server-resolved enhanced Daily Planner eligibility for this employee. */
+  enhancedEligible?: boolean;
 }
 
 interface TodayTaskReviewWizardProps {
@@ -260,11 +266,18 @@ export default function TodayTaskReviewWizard({
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleInstruction, setRescheduleInstruction] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [flagOpen, setFlagOpen] = useState(false);
+  const [flagInstruction, setFlagInstruction] = useState('');
+  const [uploadingManagerDoc, setUploadingManagerDoc] = useState(false);
+  const managerDocInputRef = useRef<HTMLInputElement>(null);
   const planningConfigQuery = usePlanningConfigQuery();
-  const minPlannedHours = getMinPlannedHours(
-    planningConfigQuery.data,
-    employee.location,
-  );
+  /** Always use the reviewed employee's location — never the manager's planning-config minimum. */
+  const minPlannedHours = getMinPlannedHours(null, employee.location);
+  /** Prefer server-enriched flag for the task owner; fall back to location+viewer role. */
+  const showEnhancedTaskUi =
+    typeof employee.enhancedEligible === 'boolean'
+      ? employee.enhancedEligible
+      : isEnhancedDailyPlannerEligible(employee.location, moduleRole);
   const minRescheduleDate = planningConfigQuery.data?.todayIst ?? todayIso();
 
   const sortedTasks = useMemo(
@@ -489,6 +502,30 @@ export default function TodayTaskReviewWizard({
     void runSaveFlow(async () => {
       return verifyDailyPlannerCompletion(taskId, comments);
     });
+  };
+
+  const handleManagerDocumentSelected = async (file: File | null) => {
+    if (!task || !file || !showEnhancedTaskUi) return;
+    const documentType = completionReviewMode ? 'managerApproval' : 'managerReview';
+    setUploadingManagerDoc(true);
+    try {
+      const updated = await uploadDailyPlannerTaskDocument(
+        task.plannerTaskId,
+        file,
+        documentType,
+      );
+      await onTasksUpdated([updated]);
+      toast.success(
+        documentType === 'managerApproval'
+          ? 'Manager Approval Document uploaded'
+          : 'Manager Review Document uploaded',
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Document upload failed');
+    } finally {
+      setUploadingManagerDoc(false);
+      if (managerDocInputRef.current) managerDocInputRef.current.value = '';
+    }
   };
 
   const handleFinishReview = async () => {
@@ -812,6 +849,7 @@ export default function TodayTaskReviewWizard({
         elevated
         forEmployeeCode={employee.employeeCode}
         skipPlanningWindowAssert
+        enhancedEligible={showEnhancedTaskUi}
         existingTasksForDate={sortedTasks.filter(
           (t) => String(t.date || '').trim().slice(0, 10) === reviewDate,
         )}
@@ -834,6 +872,7 @@ export default function TodayTaskReviewWizard({
           await onTasksUpdated(created);
           if (planFinalized || editMode) setPlanModified(true);
           setAddTaskOpen(false);
+          return created;
         }}
       />
     );
@@ -1060,6 +1099,29 @@ export default function TodayTaskReviewWizard({
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <ViewField label="Project Based" value="Yes" />
                   <ViewField label="Project Name" value={displayCell(task.projectName)} />
+                  {showEnhancedTaskUi ? (
+                    <ViewField
+                      label="Progress Done (%)"
+                      value={
+                        task.progressDone != null && Number.isFinite(Number(task.progressDone))
+                          ? `${Number(task.progressDone)}%`
+                          : '—'
+                      }
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+              {showEnhancedTaskUi ? (
+                <div className="mt-4 space-y-3">
+                  {task.needsDocument != null ? (
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <ViewField
+                        label="Document Required"
+                        value={task.needsDocument ? 'Yes' : 'No'}
+                      />
+                    </div>
+                  ) : null}
+                  <DailyPlannerTaskDocumentsList task={task} />
                 </div>
               ) : null}
               {editMode || task.managerInstructions ? (
@@ -1182,9 +1244,29 @@ export default function TodayTaskReviewWizard({
               <p className="mb-3 text-sm text-gray-600">
                 {completionReviewMode ? 'Completion Decision' : 'Manager Decision'}
               </p>
+              <input
+                ref={managerDocInputRef}
+                type="file"
+                accept=".doc,.docx,.pdf,.jpg,.jpeg,.png,.xls,.xlsx,.ppt,.pptx"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  void handleManagerDocumentSelected(f);
+                }}
+              />
               <div className="mb-4 flex flex-wrap gap-2">
                 {completionReviewMode ? (
                   <>
+                    {showEnhancedTaskUi ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy || uploadingManagerDoc}
+                        onClick={() => managerDocInputRef.current?.click()}
+                      >
+                        {uploadingManagerDoc ? 'Uploading…' : 'Upload Document'}
+                      </Button>
+                    ) : null}
                     {awaitingVerification ? (
                       <Button
                         type="button"
@@ -1261,6 +1343,29 @@ export default function TodayTaskReviewWizard({
                         onClick={() => setRevisionOpen(true)}
                       >
                         Request Revision
+                      </Button>
+                    ) : null}
+                    {showEnhancedTaskUi ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy || uploadingManagerDoc}
+                        onClick={() => managerDocInputRef.current?.click()}
+                      >
+                        {uploadingManagerDoc ? 'Uploading…' : 'Upload Document'}
+                      </Button>
+                    ) : null}
+                    {showEnhancedTaskUi ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy || String(task.flagStatus || '').trim() === 'Raised'}
+                        onClick={() => {
+                          setFlagInstruction('');
+                          setFlagOpen(true);
+                        }}
+                      >
+                        Raise Flag
                       </Button>
                     ) : null}
                     {showReopenTask ? (
@@ -1433,6 +1538,7 @@ export default function TodayTaskReviewWizard({
         elevated
         forEmployeeCode={employee.employeeCode}
         skipPlanningWindowAssert
+        enhancedEligible={showEnhancedTaskUi}
         existingTasksForDate={sortedTasks.filter(
           (t) => String(t.date || '').trim().slice(0, 10) === reviewDate,
         )}
@@ -1455,8 +1561,67 @@ export default function TodayTaskReviewWizard({
           await onTasksUpdated(created);
           if (planFinalized || editMode) setPlanModified(true);
           setAddTaskOpen(false);
+          return created;
         }}
       />
+
+      <Dialog open={flagOpen} onOpenChange={(v) => !v && setFlagOpen(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Raise Flag</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-gray-600">
+              Send an urgent instruction for this specific task. The employee will see it on My Daily
+              Planner and receive an email.
+            </p>
+            <div className="space-y-1">
+              <Label htmlFor="flag-instruction">Instruction *</Label>
+              <Textarea
+                id="flag-instruction"
+                rows={4}
+                value={flagInstruction}
+                disabled={busy}
+                onChange={(e) => setFlagInstruction(e.target.value)}
+                placeholder="Need detailed discussion on this task."
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setFlagOpen(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                if (!task) return;
+                const instruction = flagInstruction.trim();
+                if (!instruction) {
+                  toast.error('Instruction is required');
+                  return;
+                }
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    const updated = await raiseDailyPlannerTaskFlag(task.plannerTaskId, instruction);
+                    toast.success('Flag raised and employee notified');
+                    setFlagOpen(false);
+                    setFlagInstruction('');
+                    await onTasksUpdated([updated]);
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : 'Failed to raise flag');
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+            >
+              Submit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={revisionOpen} onOpenChange={(v) => !v && setRevisionOpen(false)}>
         <DialogContent className="max-w-lg">

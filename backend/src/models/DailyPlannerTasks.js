@@ -108,6 +108,33 @@ export function toDailyPlannerTaskDto(row) {
     managerInstructions: String(row.managerInstructions || '').trim(),
     isProjectBased: Boolean(row.isProjectBased),
     projectName: String(row.projectName || '').trim(),
+    needsDocument:
+      row.needsDocument === undefined || row.needsDocument === null
+        ? null
+        : Boolean(row.needsDocument),
+    documentFileName: String(row.documentFileName || '').trim(),
+    documentFileKey: String(row.documentFileKey || '').trim(),
+    documentUploadedAt: row.documentUploadedAt || null,
+    documentContentType: String(row.documentContentType || '').trim(),
+    managerReviewDocumentFileName: String(row.managerReviewDocumentFileName || '').trim(),
+    managerReviewDocumentFileKey: String(row.managerReviewDocumentFileKey || '').trim(),
+    managerReviewDocumentUploadedAt: row.managerReviewDocumentUploadedAt || null,
+    managerReviewDocumentContentType: String(row.managerReviewDocumentContentType || '').trim(),
+    managerApprovalDocumentFileName: String(row.managerApprovalDocumentFileName || '').trim(),
+    managerApprovalDocumentFileKey: String(row.managerApprovalDocumentFileKey || '').trim(),
+    managerApprovalDocumentUploadedAt: row.managerApprovalDocumentUploadedAt || null,
+    managerApprovalDocumentContentType: String(row.managerApprovalDocumentContentType || '').trim(),
+    progressDone:
+      row.progressDone === undefined || row.progressDone === null || row.progressDone === ''
+        ? null
+        : Number(row.progressDone),
+    flagStatus: String(row.flagStatus || '').trim(),
+    flagInstruction: String(row.flagInstruction || '').trim(),
+    flagRaisedBy: String(row.flagRaisedBy || '').trim(),
+    flagRaisedByName: String(row.flagRaisedByName || '').trim(),
+    flagRaisedAt: row.flagRaisedAt || null,
+    flagAcceptedAt: row.flagAcceptedAt || null,
+    flagHistory: Array.isArray(row.flagHistory) ? row.flagHistory : [],
     planFinalizedAt: row.planFinalizedAt || null,
     planFinalizedBy: String(row.planFinalizedBy || '').trim(),
     lastFinalizedSnapshot:
@@ -328,6 +355,35 @@ export async function createTask(payload) {
     managerInstructions: String(payload.managerInstructions || '').trim(),
     isProjectBased: Boolean(payload.isProjectBased),
     projectName: String(payload.projectName || '').trim(),
+    needsDocument:
+      payload.needsDocument === undefined || payload.needsDocument === null
+        ? null
+        : Boolean(payload.needsDocument),
+    documentFileName: String(payload.documentFileName || '').trim(),
+    documentFileKey: String(payload.documentFileKey || '').trim(),
+    documentUploadedAt: payload.documentUploadedAt || null,
+    documentContentType: String(payload.documentContentType || '').trim(),
+    managerReviewDocumentFileName: String(payload.managerReviewDocumentFileName || '').trim(),
+    managerReviewDocumentFileKey: String(payload.managerReviewDocumentFileKey || '').trim(),
+    managerReviewDocumentUploadedAt: payload.managerReviewDocumentUploadedAt || null,
+    managerReviewDocumentContentType: String(payload.managerReviewDocumentContentType || '').trim(),
+    managerApprovalDocumentFileName: String(payload.managerApprovalDocumentFileName || '').trim(),
+    managerApprovalDocumentFileKey: String(payload.managerApprovalDocumentFileKey || '').trim(),
+    managerApprovalDocumentUploadedAt: payload.managerApprovalDocumentUploadedAt || null,
+    managerApprovalDocumentContentType: String(payload.managerApprovalDocumentContentType || '').trim(),
+    progressDone:
+      payload.progressDone === undefined ||
+      payload.progressDone === null ||
+      payload.progressDone === ''
+        ? null
+        : Number(payload.progressDone),
+    flagStatus: String(payload.flagStatus || '').trim(),
+    flagInstruction: String(payload.flagInstruction || '').trim(),
+    flagRaisedBy: String(payload.flagRaisedBy || '').trim(),
+    flagRaisedByName: String(payload.flagRaisedByName || '').trim(),
+    flagRaisedAt: payload.flagRaisedAt || null,
+    flagAcceptedAt: payload.flagAcceptedAt || null,
+    flagHistory: Array.isArray(payload.flagHistory) ? payload.flagHistory : [],
     planFinalizedAt: payload.planFinalizedAt || null,
     planFinalizedBy: String(payload.planFinalizedBy || '').trim(),
     createdByRole: String(payload.createdByRole || '').trim(),

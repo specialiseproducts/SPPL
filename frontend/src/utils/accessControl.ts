@@ -82,6 +82,7 @@ export function canManageDailyPlannerTeam(role: string) {
 
 export type DailyPlannerTabId =
   | 'my-daily-planner'
+  | 'project-progress'
   | 'team-daily-planner'
   | 'team-performance'
   | 'reports'
@@ -90,30 +91,54 @@ export type DailyPlannerTabId =
 /**
  * Role-wise Daily Planner tab visibility based on the module access role.
  * Updates automatically when Access Management changes the Daily Planner role.
+ * @param enhancedEligible Factory OR (Office + Super Admin) — adds Project Progress tab.
  */
-export function getDailyPlannerVisibleTabs(role: string): DailyPlannerTabId[] {
+export function getDailyPlannerVisibleTabs(
+  role: string,
+  options?: { enhancedEligible?: boolean },
+): DailyPlannerTabId[] {
   const r = normalizeRole(role);
+  const enhanced = Boolean(options?.enhancedEligible);
+
+  const withProjectProgress = (tabs: DailyPlannerTabId[]): DailyPlannerTabId[] => {
+    if (!enhanced) return tabs;
+    if (tabs.includes('project-progress')) return tabs;
+    const idx = tabs.indexOf('my-daily-planner');
+    if (idx >= 0) {
+      return [...tabs.slice(0, idx + 1), 'project-progress', ...tabs.slice(idx + 1)];
+    }
+    return ['project-progress', ...tabs];
+  };
 
   if (isSuperAdmin(r)) {
-    return ['my-daily-planner', 'team-daily-planner', 'team-performance', 'team-management'];
+    return withProjectProgress([
+      'my-daily-planner',
+      'team-daily-planner',
+      'team-performance',
+      'team-management',
+    ]);
   }
 
   if (isAdmin(r)) {
-    return ['my-daily-planner', 'team-daily-planner', 'team-performance'];
+    return withProjectProgress([
+      'my-daily-planner',
+      'team-daily-planner',
+      'team-performance',
+    ]);
   }
 
   if (isDeveloper(r)) {
-    return [
+    return withProjectProgress([
       'my-daily-planner',
       'team-daily-planner',
       'team-performance',
       'reports',
       'team-management',
-    ];
+    ]);
   }
 
   // User (and any other non-elevated role)
-  return ['my-daily-planner', 'reports'];
+  return withProjectProgress(['my-daily-planner', 'reports']);
 }
 
 export function getDefaultDailyPlannerTab(role: string): DailyPlannerTabId {
