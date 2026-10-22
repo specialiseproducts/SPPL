@@ -52,23 +52,30 @@ export default function TeamCalendarTab() {
     const mappings = mappingsQuery.data ?? [];
     const employees = employeesQuery.data ?? [];
     const todayKey = todayLocalDateKey();
-    return mappings
-      .filter((m) => m.status === 'Active' && m.managerCode === managerCode)
-      .filter((m) => {
-        const code = String(m.employeeCode || '').trim();
-        const emp = employees.find((e) => {
-          const empCode = String(e.employee_code || e.employeeCode || '').trim();
-          return empCode === code;
-        });
-        // Active/current selector only — former employees (exit today or earlier) excluded.
-        if (!emp) return false;
-        return isEmployeeActiveOnDate(getEmployeeExitDate(emp), todayKey);
-      })
-      .map((m) => ({
-        value: m.employeeCode,
-        label: m.employeeName || m.employeeCode,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+    // PayrollTeamMappings are the authority for who reports to this manager on Team Calendar.
+    // /api/employees is userManagement-scoped and often 403 for Payroll Admins — do not drop
+    // mapped reports when the master list is unavailable. Apply Date of Exit when a row exists.
+    const employeesByCode = new Map<string, (typeof employees)[number]>();
+    for (const emp of employees) {
+      const code = String(emp.employee_code || emp.employeeCode || '').trim();
+      if (code) employeesByCode.set(code, emp);
+    }
+
+    const byCode = new Map<string, { value: string; label: string }>();
+    for (const m of mappings) {
+      if (String(m.status || '').trim() !== 'Active') continue;
+      if (String(m.managerCode || '').trim() !== managerCode) continue;
+      const code = String(m.employeeCode || '').trim();
+      if (!code || code === managerCode) continue;
+      const emp = employeesByCode.get(code);
+      if (emp && !isEmployeeActiveOnDate(getEmployeeExitDate(emp), todayKey)) continue;
+      const label =
+        String(m.employeeName || '').trim() ||
+        String(emp?.name || emp?.employee_name || '').trim() ||
+        code;
+      byCode.set(code, { value: code, label });
+    }
+    return [...byCode.values()].sort((a, b) => a.label.localeCompare(b.label));
   }, [mappingsQuery.data, managerCode, employeesQuery.data]);
 
   useEffect(() => {
