@@ -106,8 +106,30 @@ export function toDailyPlannerTaskDto(row) {
     reopenReason: String(row.reopenReason || '').trim(),
     managerComments: String(row.managerComments || '').trim(),
     managerInstructions: String(row.managerInstructions || '').trim(),
+    // Permanent Super Admin company-wide review comments (out-of-team); never overwrite managerComments.
+    superadminReviewComments: Array.isArray(row.superadminReviewComments)
+      ? row.superadminReviewComments
+          .map((c) => {
+            if (!c || typeof c !== 'object') return null;
+            return {
+              commentId: String(c.commentId || '').trim(),
+              submissionId: String(c.submissionId || '').trim(),
+              commentText: String(c.commentText || '').trim(),
+              reviewerCode: String(c.reviewerCode || '').trim(),
+              reviewerName: String(c.reviewerName || '').trim(),
+              employeeCode: String(c.employeeCode || '').trim(),
+              plannerTaskId: String(c.plannerTaskId || '').trim(),
+              taskDate: String(c.taskDate || '').trim(),
+              taskName: String(c.taskName || '').trim(),
+              projectName: String(c.projectName || '').trim(),
+              submittedAt: c.submittedAt || null,
+            };
+          })
+          .filter((c) => c && c.commentId && c.commentText)
+      : [],
     isProjectBased: Boolean(row.isProjectBased),
     projectName: String(row.projectName || '').trim(),
+    projectTaskId: String(row.projectTaskId || '').trim(),
     needsDocument:
       row.needsDocument === undefined || row.needsDocument === null
         ? null
@@ -142,6 +164,8 @@ export function toDailyPlannerTaskDto(row) {
         ? row.lastFinalizedSnapshot
         : null,
     createdByRole: String(row.createdByRole || '').trim(),
+    createdByEmployeeCode: String(row.createdByEmployeeCode || '').trim(),
+    createdByName: String(row.createdByName || '').trim(),
     dayCompletionSubmittedAt: row.dayCompletionSubmittedAt || null,
     dayCompletionSubmittedBy: String(row.dayCompletionSubmittedBy || '').trim(),
     completionManagerReviewedAt: row.completionManagerReviewedAt || null,
@@ -158,6 +182,17 @@ export function toDailyPlannerTaskDto(row) {
       row.completionDurationHours === ''
         ? null
         : Number(row.completionDurationHours),
+    timeSlots: Array.isArray(row.timeSlots) ? row.timeSlots : [],
+    procedureSteps: Array.isArray(row.procedureSteps) ? row.procedureSteps : [],
+    hasObservation:
+      row.hasObservation === undefined || row.hasObservation === null
+        ? null
+        : Boolean(row.hasObservation),
+    observationText: String(row.observationText || '').trim(),
+    observationId: row.observationId ? String(row.observationId).trim() : null,
+    observationSubmittedBy: String(row.observationSubmittedBy || '').trim(),
+    observationSubmittedByName: String(row.observationSubmittedByName || '').trim(),
+    observationSubmittedAt: row.observationSubmittedAt || null,
     verifiedBy: String(row.verifiedBy || '').trim(),
     verifiedByName: String(row.verifiedByName || '').trim(),
     verifiedAt: row.verifiedAt || null,
@@ -181,6 +216,9 @@ export function toDailyPlannerTaskDto(row) {
     rescheduledBy: String(row.rescheduledBy || '').trim(),
     rescheduledByName: String(row.rescheduledByName || '').trim(),
     rescheduledAt: row.rescheduledAt || null,
+    leaveAutoRescheduleLeaveRequestId: row.leaveAutoRescheduleLeaveRequestId
+      ? String(row.leaveAutoRescheduleLeaveRequestId).trim()
+      : null,
     terminatedBy: String(row.terminatedBy || '').trim(),
     terminatedByName: String(row.terminatedByName || '').trim(),
     terminatedAt: row.terminatedAt || null,
@@ -355,6 +393,7 @@ export async function createTask(payload) {
     managerInstructions: String(payload.managerInstructions || '').trim(),
     isProjectBased: Boolean(payload.isProjectBased),
     projectName: String(payload.projectName || '').trim(),
+    projectTaskId: String(payload.projectTaskId || '').trim(),
     needsDocument:
       payload.needsDocument === undefined || payload.needsDocument === null
         ? null
@@ -387,6 +426,8 @@ export async function createTask(payload) {
     planFinalizedAt: payload.planFinalizedAt || null,
     planFinalizedBy: String(payload.planFinalizedBy || '').trim(),
     createdByRole: String(payload.createdByRole || '').trim(),
+    createdByEmployeeCode: String(payload.createdByEmployeeCode || '').trim(),
+    createdByName: String(payload.createdByName || '').trim(),
     dayCompletionSubmittedAt: payload.dayCompletionSubmittedAt || null,
     dayCompletionSubmittedBy: String(payload.dayCompletionSubmittedBy || '').trim(),
     completionManagerReviewedAt: payload.completionManagerReviewedAt || null,
@@ -405,6 +446,17 @@ export async function createTask(payload) {
       payload.completionDurationHours === ''
         ? null
         : Number(payload.completionDurationHours),
+    timeSlots: Array.isArray(payload.timeSlots) ? payload.timeSlots : [],
+    procedureSteps: Array.isArray(payload.procedureSteps) ? payload.procedureSteps : [],
+    hasObservation:
+      payload.hasObservation === undefined || payload.hasObservation === null
+        ? null
+        : Boolean(payload.hasObservation),
+    observationText: String(payload.observationText || '').trim(),
+    observationId: payload.observationId ? String(payload.observationId).trim() : null,
+    observationSubmittedBy: String(payload.observationSubmittedBy || '').trim(),
+    observationSubmittedByName: String(payload.observationSubmittedByName || '').trim(),
+    observationSubmittedAt: payload.observationSubmittedAt || null,
     verifiedBy: String(payload.verifiedBy || '').trim(),
     verifiedByName: String(payload.verifiedByName || '').trim(),
     verifiedAt: payload.verifiedAt || null,
@@ -420,6 +472,9 @@ export async function createTask(payload) {
     rescheduledBy: String(payload.rescheduledBy || '').trim(),
     rescheduledByName: String(payload.rescheduledByName || '').trim(),
     rescheduledAt: payload.rescheduledAt || null,
+    leaveAutoRescheduleLeaveRequestId: payload.leaveAutoRescheduleLeaveRequestId
+      ? String(payload.leaveAutoRescheduleLeaveRequestId).trim()
+      : null,
     terminatedBy: String(payload.terminatedBy || '').trim(),
     terminatedByName: String(payload.terminatedByName || '').trim(),
     terminatedAt: payload.terminatedAt || null,

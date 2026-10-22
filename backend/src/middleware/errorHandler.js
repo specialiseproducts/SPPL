@@ -21,6 +21,7 @@ export const errorHandler = (err, req, res, next) => {
     message,
     error: message,
     code: err.code || undefined,
+    ...(err.data != null ? { data: err.data } : {}),
   });
 };
 

@@ -3,11 +3,17 @@
  * Must stay aligned with backend/src/utils/dailyPlannerEnhancedEligibility.js
  *
  * Factory → eligible (any access role).
- * Office + Super Admin → eligible.
- * Office + User/Admin → NOT eligible.
+ * Office → eligible (any access role).
+ *
+ * Documents, Progress Done fields (where shown), Project Progress, and Raise Flag
+ * follow this gate. Location-specific min hours / holidays stay separate.
  */
 
-import { normalizeEmployeeLocation } from './companyWorkingDays';
+import {
+  EMPLOYEE_LOCATION_FACTORY,
+  EMPLOYEE_LOCATION_OFFICE,
+  normalizeEmployeeLocation,
+} from './companyWorkingDays';
 import { isSuperAdmin } from './accessControl';
 
 export function isEnhancedDailyPlannerEligible(
@@ -15,6 +21,6 @@ export function isEnhancedDailyPlannerEligible(
   accessRole?: string | null,
 ): boolean {
   const loc = normalizeEmployeeLocation(location);
-  if (loc === 'Factory') return true;
+  if (loc === EMPLOYEE_LOCATION_FACTORY || loc === EMPLOYEE_LOCATION_OFFICE) return true;
   return isSuperAdmin(String(accessRole || ''));
 }

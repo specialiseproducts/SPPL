@@ -179,15 +179,30 @@ export function normalizeEmployeeLocationLabel(location) {
   return value === 'Factory' ? 'Factory' : 'Office';
 }
 
-/** Location-based daily minimum planned hours (Office 7.5, Factory 7). */
-export function getMinPlannedHoursForLocation(location) {
+/**
+ * Location-based daily minimum planned hours (Office 7.5, Factory 7).
+ * Optional leaveKind: 'full' → 0; 'half' → Office 3.75 / Factory 3.5 (exact minutes/60).
+ */
+export function getMinPlannedHoursForLocation(location, leaveKind = 'none') {
+  const kind = String(leaveKind || 'none').trim();
+  if (kind === 'full') return 0;
+  if (kind === 'half') {
+    return normalizeEmployeeLocationLabel(location) === 'Factory' ? 3.5 : 3.75;
+  }
   return normalizeEmployeeLocationLabel(location) === 'Factory'
     ? MIN_PLANNED_HOURS_FACTORY
     : MIN_PLANNED_HOURS_OFFICE;
 }
 
-export function buildMinimumHoursRequirementMessage(location) {
-  const min = getMinPlannedHoursForLocation(location);
+export function buildMinimumHoursRequirementMessage(location, leaveKind = 'none') {
+  const kind = String(leaveKind || 'none').trim();
+  if (kind === 'full') {
+    return 'This employee is on approved full-day leave for this date. Daily Planner tasks are not required and cannot be created.';
+  }
+  const min = getMinPlannedHoursForLocation(location, kind);
+  if (kind === 'half') {
+    return `Your minimum total hours planning is not completed. Please plan ${formatDurationLabel(min)}.`;
+  }
   if (min === MIN_PLANNED_HOURS_OFFICE) {
     return 'Your minimum total hours planning is not completed. Please plan 7 Hours 30 Minutes.';
   }
@@ -283,11 +298,13 @@ export function assertEmployeeNextDayRegularAllowed(taskDateIso, reference = new
   return mins < morningEnd ? PLANNING_WINDOW_MORNING : PLANNING_WINDOW_EVENING;
 }
 
-export function assertExactSevenPlannedHours(totalHours, location) {
+export function assertExactSevenPlannedHours(totalHours, location, leaveKind = 'none') {
+  const kind = String(leaveKind || 'none').trim();
   const hours = Math.round((Number(totalHours) || 0) * 100) / 100;
-  const minRequired = getMinPlannedHoursForLocation(location);
+  const minRequired = getMinPlannedHoursForLocation(location, kind);
+  if (minRequired <= 0) return;
   if (hours < minRequired) {
-    const err = new Error(buildMinimumHoursRequirementMessage(location));
+    const err = new Error(buildMinimumHoursRequirementMessage(location, kind));
     err.statusCode = 400;
     throw err;
   }

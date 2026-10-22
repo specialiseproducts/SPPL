@@ -87,6 +87,15 @@ export function canAccessAllRecords(role) {
   return isDeveloper(r) || isAdmin(r) || isSuperAdmin(r);
 }
 
+/**
+ * Payroll Team (management) tab / mapping mutations.
+ * Super Admin and Developer only — Admin may use Team Calendar but not manage mappings.
+ */
+export function canManagePayrollTeamMappings(role) {
+  const r = normalizeRole(role);
+  return isSuperAdmin(r) || isDeveloper(r);
+}
+
 export function buildOwnershipFilter(user, role) {
   if (canAccessAllRecords(role)) {
     return null;

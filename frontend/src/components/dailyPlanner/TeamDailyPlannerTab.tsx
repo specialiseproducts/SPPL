@@ -1,11 +1,21 @@
 import type { DailyPlannerTask } from '../../types/dailyPlanner';
 import {
+  useApprovedLeaveForPlannerQuery,
   useInvalidateDailyPlannerQueries,
   usePlanningConfigQuery,
   useTeamDailyPlannerMonthQuery,
   useTeamDailyPlannerQuery,
   useTeamMappingsQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
+import DailyPlannerLeaveChip from './DailyPlannerLeaveChip';
+import { isExcludedFromSuperadminTeamPlannerDropdown } from './superadminTeamPlannerExclusions';
+import {
+  FULL_DAY_LEAVE_NO_PLANNING_MESSAGE,
+  classifyApprovedLeaveForDate,
+  partitionLeavesForPlannerCell,
+} from '../../utils/dailyPlannerLeaveRules';
+import { groupLeaveRequestsByDate } from '../../utils/payrollLeaveDates';
+import type { PayrollLeaveRequest } from '../../types/payroll';
 import { upsertPlannerTasksInCache, replacePlannerDayTasksInCache, removePlannerTasksFromCache } from '../../hooks/dailyPlanner/dailyPlannerCache';
 import { dailyPlannerQueryKeys } from '../../hooks/dailyPlanner/dailyPlannerQueryKeys';
 import { useAuth } from '../../context/AuthContext';
@@ -25,6 +35,7 @@ import {
 import TodayTaskReviewWizard from './TodayTaskReviewWizard';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerCompletionApprovalsPanel from './DailyPlannerCompletionApprovalsPanel';
+import ProjectManagementDialog from './ProjectManagementDialog';
 import { countReviewedTasks, isTaskManagerReviewed } from './todayTaskReviewWizardUtils';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
@@ -35,11 +46,12 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { getNextWorkingDayDateKey } from '../../utils/companyWorkingDays';
 import { createDailyPlannerTaskForEmployee, finalizeEmployeeDailyPlan } from '../../hooks/dailyPlanner/dailyPlannerApi';
+import { isFactoryDailyPlannerEligible } from '../../utils/dailyPlannerFactoryEligibility';
 import { isSuperAdmin } from '../../utils/accessControl';
 import {
   getEmployeeExitDate,
-  isEmployeeActiveDuringMonth,
   isEmployeeActiveOnDate,
+  todayLocalDateKey,
 } from '../../utils/employeeActiveStatus';
 import { toast } from 'sonner';
 
@@ -102,6 +114,8 @@ function TeamPlannerDayCell({
   onSelectDate,
   onCreateForDate,
   showEmployeeName,
+  leaves = [],
+  allowCreate = true,
 }: {
   cell: DailyCalendarDayCell;
   cellIndex: number;
@@ -111,10 +125,38 @@ function TeamPlannerDayCell({
   onSelectDate?: (iso: string) => void;
   onCreateForDate: (iso: string) => void;
   showEmployeeName: boolean;
+  leaves?: PayrollLeaveRequest[];
+  allowCreate?: boolean;
 }) {
   const weekRow = Math.floor(cellIndex / 7);
-  const visibleTasks = expanded ? cell.tasks : cell.tasks.slice(0, MAX_VISIBLE_EVENTS);
-  const hiddenCount = expanded ? 0 : Math.max(0, cell.tasks.length - MAX_VISIBLE_EVENTS);
+  const { fullDay, firstHalf, secondHalf } = partitionLeavesForPlannerCell(leaves);
+  const leaveSlots = [...fullDay, ...firstHalf, ...secondHalf];
+  const totalItems = cell.tasks.length + leaveSlots.length;
+  const leaveBudget = Math.min(leaveSlots.length, MAX_VISIBLE_EVENTS);
+  const visibleTasks = expanded
+    ? cell.tasks
+    : cell.tasks.slice(0, Math.max(0, MAX_VISIBLE_EVENTS - leaveBudget));
+  const visibleLeaveSlots = expanded ? leaveSlots : leaveSlots.slice(0, leaveBudget);
+  const visibleFullDay = visibleLeaveSlots.filter((r) => fullDay.includes(r));
+  const visibleFirstHalf = visibleLeaveSlots.filter((r) => firstHalf.includes(r));
+  const visibleSecondHalf = visibleLeaveSlots.filter((r) => secondHalf.includes(r));
+  const shownCount =
+    (expanded ? cell.tasks.length : visibleTasks.length) + visibleLeaveSlots.length;
+  const hiddenCount = expanded ? 0 : Math.max(0, totalItems - shownCount);
+  const hasTasksRegion =
+    visibleTasks.length > 0 || hiddenCount > 0 || (expanded && totalItems > MAX_VISIBLE_EVENTS);
+  const onlyFullDayLeave =
+    visibleFullDay.length > 0 &&
+    visibleFirstHalf.length === 0 &&
+    visibleSecondHalf.length === 0 &&
+    !hasTasksRegion;
+
+  const renderLeaveChip = (request: PayrollLeaveRequest) => (
+    <DailyPlannerLeaveChip
+      key={`${request.leaveRequestId}-${cell.iso}`}
+      request={request}
+    />
+  );
 
   return (
     <div
@@ -132,7 +174,7 @@ function TeamPlannerDayCell({
         onSelectDate(cell.iso);
       }}
       onDoubleClick={() => {
-        if (!cell.inMonth) return;
+        if (!cell.inMonth || !allowCreate) return;
         onCreateForDate(cell.iso);
       }}
     >
@@ -143,39 +185,86 @@ function TeamPlannerDayCell({
         holidayName={cell.holidayName}
       />
 
+      {/* Full-day leave fills cell (Payroll pattern). Half-day uses upper/lower half zones. */}
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden">
-        {visibleTasks.map((task) => (
-          <TeamDailyPlannerTaskChip
-            key={task.plannerTaskId}
-            task={task}
-            onSelect={onSelectTask}
-            showEmployeeName={showEmployeeName}
-          />
-        ))}
-        {hiddenCount > 0 ? (
-          <button
-            type="button"
-            className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] font-medium text-[#007BFF] hover:bg-blue-50 hover:underline"
-            style={{ color: '#007BFF', fontSize: 11 }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleExpand();
-            }}
+        {onlyFullDayLeave ? (
+          <div
+            className="flex min-h-0 w-full min-w-0 flex-col items-stretch gap-1"
+            style={{ flex: '1 1 0', height: '100%', minHeight: 0 }}
+            onClick={(e) => e.stopPropagation()}
           >
-            +{hiddenCount} more
-          </button>
-        ) : expanded && cell.tasks.length > MAX_VISIBLE_EVENTS ? (
-          <button
-            type="button"
-            className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] text-muted-foreground hover:underline"
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleExpand();
-            }}
-          >
-            Show less
-          </button>
-        ) : null}
+            {visibleFullDay.map(renderLeaveChip)}
+          </div>
+        ) : (
+          <>
+            <div
+              className="flex min-h-0 w-full min-w-0 flex-1 flex-col items-stretch gap-1 overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {visibleFullDay.length > 0 ? (
+                <div
+                  className="flex min-h-0 w-full flex-col items-stretch gap-1"
+                  style={{ flex: '1 1 0', minHeight: 0 }}
+                >
+                  {visibleFullDay.map(renderLeaveChip)}
+                </div>
+              ) : null}
+              {visibleFirstHalf.length > 0 ? (
+                <div
+                  className="flex min-h-0 w-full flex-col items-stretch gap-1"
+                  style={{ flex: '1 1 0', minHeight: 0, maxHeight: '50%' }}
+                >
+                  {visibleFirstHalf.map(renderLeaveChip)}
+                </div>
+              ) : null}
+            </div>
+            {hasTasksRegion ? (
+              <div className="flex shrink-0 flex-col gap-1">
+                {visibleTasks.map((task) => (
+                  <TeamDailyPlannerTaskChip
+                    key={task.plannerTaskId}
+                    task={task}
+                    onSelect={onSelectTask}
+                    showEmployeeName={showEmployeeName}
+                  />
+                ))}
+                {hiddenCount > 0 ? (
+                  <button
+                    type="button"
+                    className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] font-medium text-[#007BFF] hover:bg-blue-50 hover:underline"
+                    style={{ color: '#007BFF', fontSize: 11 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleExpand();
+                    }}
+                  >
+                    +{hiddenCount} more
+                  </button>
+                ) : expanded && totalItems > MAX_VISIBLE_EVENTS ? (
+                  <button
+                    type="button"
+                    className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] text-muted-foreground hover:underline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleExpand();
+                    }}
+                  >
+                    Show less
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {visibleSecondHalf.length > 0 ? (
+              <div
+                className="mt-auto flex min-h-0 w-full min-w-0 flex-1 flex-col items-stretch justify-end gap-1 overflow-hidden"
+                style={{ maxHeight: '50%' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {visibleSecondHalf.map(renderLeaveChip)}
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );
@@ -187,16 +276,18 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
   const queryClient = useQueryClient();
   const managerCode = String(user?.employeeCode || user?.id || '').trim();
   const canReviewAnyDate = isSuperAdmin(String(moduleRole || ''));
+  const isSuperAdminViewer = canReviewAnyDate;
   const now = new Date();
   const [view, setView] = useState({ year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 });
   const { year, month } = view;
   const [selectedEmployeeCode, setSelectedEmployeeCode] = useState('');
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
+  const [projectsOpen, setProjectsOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardTaskIndex, setWizardTaskIndex] = useState(0);
   const [wizardDismissedForEmployee, setWizardDismissedForEmployee] = useState('');
   const [createDate, setCreateDate] = useState<string | null>(null);
-  /** Super Admin only: selected calendar date for Team review (past / today / future). */
+  /** Selected calendar date for Team review (past dates for all managers; any date for Super Admin). */
   const [reviewDateOverride, setReviewDateOverride] = useState<string | null>(null);
   const [pendingOpen, setPendingOpen] = useState<{ date: string; taskId: string | null } | null>(
     null,
@@ -207,27 +298,82 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
 
   const mappingsQuery = useTeamMappingsQuery();
   const employeesQuery = useEmployeesListQuery();
+  const ownTeamCodes = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of mappingsQuery.data ?? []) {
+      if (
+        String(m.status || '').trim() === 'Active' &&
+        String(m.managerCode || '').trim() === managerCode
+      ) {
+        const code = String(m.employeeCode || '').trim();
+        if (code) set.add(code);
+      }
+    }
+    return set;
+  }, [mappingsQuery.data, managerCode]);
+
   const employeeOptions = useMemo(() => {
     const mappings = mappingsQuery.data ?? [];
     const employees = employeesQuery.data ?? [];
-    return mappings
-      .filter((m) => m.status === 'Active' && m.managerCode === managerCode)
-      .filter((m) => {
-        const code = String(m.employeeCode || '').trim();
-        const emp = employees.find((e) => {
-          const empCode = String(e.employee_code || e.employeeCode || '').trim();
-          return empCode === code;
-        });
-        // Keep employees who were active during the viewed month (historical visible);
-        // fully exited before the month starts are omitted from current selectors.
-        return isEmployeeActiveDuringMonth(getEmployeeExitDate(emp), year, month);
-      })
-      .map((m) => ({
-        value: m.employeeCode,
-        label: m.employeeName || m.employeeCode,
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [mappingsQuery.data, managerCode, employeesQuery.data, year, month]);
+    // Active/current selector: Date of Exit empty or still in the future (today-aware).
+    // Former employees (exit today or earlier) are excluded; historical records stay intact.
+    const todayKey = todayLocalDateKey();
+    const employeesByCode = new Map<string, (typeof employees)[number]>();
+    for (const emp of employees) {
+      const code = String(emp.employee_code || emp.employeeCode || '').trim();
+      if (code) employeesByCode.set(code, emp);
+    }
+
+    /**
+     * Team mappings are the authority for who reports to the logged-in manager.
+     * EmployeeMaster (/api/employees) is userManagement-scoped and may be unavailable
+     * (403 / empty) for Daily Planner Admins — do not drop mapped reports in that case.
+     * When a master row is present, apply Date of Exit.
+     */
+    const isEligibleByExit = (employeeCode: string) => {
+      const emp = employeesByCode.get(employeeCode);
+      if (!emp) return true;
+      return isEmployeeActiveOnDate(getEmployeeExitDate(emp), todayKey);
+    };
+
+    const byCode = new Map<string, { value: string; label: string }>();
+
+    // Always include Active Daily Planner team mappings for this reporting person.
+    for (const m of mappings) {
+      if (String(m.status || '').trim() !== 'Active') continue;
+      if (String(m.managerCode || '').trim() !== managerCode) continue;
+      const code = String(m.employeeCode || '').trim();
+      if (!code || code === managerCode) continue;
+      if (!isEligibleByExit(code)) continue;
+      const label =
+        String(m.employeeName || '').trim() ||
+        String(employeesByCode.get(code)?.name || employeesByCode.get(code)?.employee_name || '').trim() ||
+        code;
+      byCode.set(code, { value: code, label });
+    }
+
+    // Super Admin: also include company-wide currently active employees (exclusions apply
+    // only to this expansion — never remove the manager's own mapped reports above).
+    if (isSuperAdminViewer) {
+      for (const emp of employees) {
+        const code = String(emp.employee_code || emp.employeeCode || '').trim();
+        if (!code || code === managerCode) continue;
+        if (byCode.has(code)) continue;
+        if (isExcludedFromSuperadminTeamPlannerDropdown(code)) continue;
+        if (!isEmployeeActiveOnDate(getEmployeeExitDate(emp), todayKey)) continue;
+        const name = String(emp.name || emp.employee_name || '').trim() || code;
+        byCode.set(code, { value: code, label: name });
+      }
+    }
+
+    return [...byCode.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [mappingsQuery.data, managerCode, employeesQuery.data, isSuperAdminViewer]);
+
+  const selectedOnOwnTeam = Boolean(
+    selectedEmployeeCode && ownTeamCodes.has(String(selectedEmployeeCode).trim()),
+  );
+  /** Super Admin viewing an employee outside their own team: view + review comment only. */
+  const outOfTeamReviewOnly = isSuperAdminViewer && Boolean(selectedEmployeeCode) && !selectedOnOwnTeam;
 
   useEffect(() => {
     if (employeeOptions.length === 0) return;
@@ -249,18 +395,33 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
     if (!code) return undefined;
     // Prefer team-mapping location (dailyPlanner-authorized) over /api/employees
     // (userManagement-scoped; missing location previously defaulted to Office Saturdays).
-    const mapping = (mappingsQuery.data ?? []).find(
+    const ownMapping = (mappingsQuery.data ?? []).find(
       (m) =>
         String(m.employeeCode || '').trim() === code &&
         String(m.managerCode || '').trim() === managerCode,
     );
-    if (mapping?.location) return mapping.location;
+    if (ownMapping?.location) return ownMapping.location;
+    const anyMapping = (mappingsQuery.data ?? []).find(
+      (m) => String(m.employeeCode || '').trim() === code && m.location,
+    );
+    if (anyMapping?.location) return anyMapping.location;
     const emp = (employeesQuery.data ?? []).find((e) => {
       const empCode = String(e.employee_code || e.employeeCode || '').trim();
       return empCode === code;
     });
     return emp?.location || undefined;
   }, [selectedEmployeeCode, mappingsQuery.data, employeesQuery.data, managerCode]);
+
+  const leaveQuery = useApprovedLeaveForPlannerQuery(
+    selectedEmployeeCode,
+    year,
+    month,
+    !!selectedEmployeeCode,
+  );
+  const leavesByDate = useMemo(
+    () => groupLeaveRequestsByDate(leaveQuery.data ?? [], { approvedOnly: true }),
+    [leaveQuery.data],
+  );
 
   const defaultReviewDate = useMemo(
     () =>
@@ -279,8 +440,12 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
     ],
   );
 
-  const reviewDate =
-    canReviewAnyDate && reviewDateOverride ? reviewDateOverride : defaultReviewDate;
+  const todayKey = String(planningConfigQuery.data?.todayIst || today).slice(0, 10);
+  const reviewDate = reviewDateOverride || defaultReviewDate;
+  /** Past dates are view-only for non–Super Admin; Super Admin retains full review for any date. */
+  const historicalReadOnly =
+    !canReviewAnyDate && Boolean(reviewDate) && reviewDate < todayKey;
+  const wizardReadOnly = historicalReadOnly || outOfTeamReviewOnly;
 
   const todayTasksQuery = useTeamDailyPlannerQuery(
     { employeeCode: selectedEmployeeCode, date: reviewDate },
@@ -294,9 +459,11 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
       const empCode = String(e.employee_code || e.employeeCode || '').trim();
       return empCode === code;
     });
-    const mapping = (mappingsQuery.data ?? []).find(
-      (m) => m.employeeCode === code && m.managerCode === managerCode,
-    );
+    const mapping =
+      (mappingsQuery.data ?? []).find(
+        (m) => m.employeeCode === code && m.managerCode === managerCode,
+      ) ||
+      (mappingsQuery.data ?? []).find((m) => m.employeeCode === code);
     return {
       employeeCode: code,
       employeeName: mapping?.employeeName || emp?.name || emp?.employee_name || code,
@@ -307,8 +474,9 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
       enhancedEligible:
         typeof mapping?.enhancedEligible === 'boolean'
           ? mapping.enhancedEligible
-          : String(mapping?.location || emp?.location || selectedEmployeeLocation || '').trim() ===
-            'Factory',
+          : isFactoryDailyPlannerEligible(
+              mapping?.location || emp?.location || selectedEmployeeLocation || '',
+            ),
     };
   }, [
     selectedEmployeeCode,
@@ -363,6 +531,11 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
     if (!dayTasksAlignedWithReviewDate || todayTasksQuery.isFetching) return;
     if (todayTasks.length === 0) {
       setPendingOpen(null);
+      // Historical date with no tasks — clear override so the plan-review date stays primary.
+      if (pendingOpen.date < todayKey) {
+        setReviewDateOverride(null);
+        toast.error('No tasks for this date.');
+      }
       return;
     }
     const index = pendingOpen.taskId
@@ -471,8 +644,8 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
     const taskDate = String(task.date || '').trim().slice(0, 10);
     if (!taskDate) return;
 
-    // Super Admin: open existing Team review flow for any calendar date.
-    if (canReviewAnyDate) {
+    // Super Admin: any date. Other managers: plan-review date or past dates (read-only wizard).
+    if (canReviewAnyDate || taskDate < todayKey) {
       openReviewForDate(taskDate, task.plannerTaskId || null);
       return;
     }
@@ -487,14 +660,21 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
   };
 
   const handleSelectDate = (iso: string) => {
-    if (!canReviewAnyDate) return;
-    openReviewForDate(iso, null);
+    const dateKey = String(iso || '').trim().slice(0, 10);
+    if (!dateKey) return;
+    if (canReviewAnyDate || dateKey < todayKey) {
+      openReviewForDate(dateKey, null);
+    }
   };
 
   const handleCreateForDate = (iso: string) => {
     const dateKey = String(iso || '').trim().slice(0, 10);
     if (!selectedEmployeeCode) {
       toast.error('Select an employee before creating a task.');
+      return;
+    }
+    if (outOfTeamReviewOnly) {
+      toast.error('You can only leave review comments for employees outside your team.');
       return;
     }
     if (!dateKey) return;
@@ -511,6 +691,11 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
       toast.error(
         'This employee is no longer active (Date of Exit reached) and cannot receive new tasks on the selected date.',
       );
+      return;
+    }
+    const dayLeaves = leavesByDate.get(dateKey) ?? [];
+    if (classifyApprovedLeaveForDate(dayLeaves, dateKey).kind === 'full') {
+      toast.error(FULL_DAY_LEAVE_NO_PLANNING_MESSAGE);
       return;
     }
     setCreateDate(dateKey);
@@ -656,6 +841,15 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
                 marginLeft: 'auto',
               }}
             >
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9"
+                onClick={() => setProjectsOpen(true)}
+              >
+                Projects
+              </Button>
               <select
                 className="border-input bg-background h-9 min-w-[10rem] rounded-md border px-2 text-sm"
                 value={selectedEmployeeCode}
@@ -766,9 +960,11 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
                   expanded={expandedCells.has(cell.iso)}
                   onToggleExpand={() => toggleCellExpand(cell.iso)}
                   onSelectTask={handleSelectTask}
-                  onSelectDate={canReviewAnyDate ? handleSelectDate : undefined}
+                  onSelectDate={handleSelectDate}
                   onCreateForDate={handleCreateForDate}
                   showEmployeeName={false}
+                  leaves={leavesByDate.get(cell.iso) ?? []}
+                  allowCreate={!outOfTeamReviewOnly}
                 />
               ))}
             </div>
@@ -799,20 +995,28 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
           reviewDate={reviewDate}
           initialTaskIndex={wizardTaskIndex}
           completionReviewMode={false}
+          readOnly={wizardReadOnly}
+          outOfTeamReviewOnly={outOfTeamReviewOnly}
           moduleRole={moduleRole}
+          leaveKind={classifyApprovedLeaveForDate(
+            leavesByDate.get(reviewDate) ?? [],
+            reviewDate,
+          ).kind}
           onClose={() => {
             setWizardOpen(false);
             setWizardDismissedForEmployee(selectedEmployeeCode);
+            if (historicalReadOnly) setReviewDateOverride(null);
           }}
           onFinish={() => {
             setWizardOpen(false);
             setWizardDismissedForEmployee(selectedEmployeeCode);
+            if (historicalReadOnly) setReviewDateOverride(null);
           }}
           onTasksUpdated={refreshTasks}
         />
       ) : null}
 
-      {selectedEmployeeCode && createDate ? (
+      {selectedEmployeeCode && createDate && !outOfTeamReviewOnly ? (
         <DailyPlannerCreateTaskModal
           open={Boolean(createDate)}
           date={createDate}
@@ -821,9 +1025,14 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
           forEmployeeCode={selectedEmployeeCode}
           skipPlanningWindowAssert
           enhancedEligible={Boolean(selectedEmployeeProfile?.enhancedEligible)}
+          factoryEligible={isFactoryDailyPlannerEligible(selectedEmployeeProfile?.location)}
           existingTasksForDate={tasks.filter(
             (task) => String(task.date || '').trim().slice(0, 10) === createDate,
           )}
+          leaveKind={classifyApprovedLeaveForDate(
+            leavesByDate.get(createDate) ?? [],
+            createDate,
+          ).kind}
           onClose={() => setCreateDate(null)}
           onSave={async (drafts) => {
             const created: DailyPlannerTask[] = [];
@@ -861,6 +1070,16 @@ export default function TeamDailyPlannerTab({ moduleRole }: { moduleRole?: strin
           }}
         />
       ) : null}
+
+      <ProjectManagementDialog
+        open={projectsOpen}
+        onOpenChange={setProjectsOpen}
+        onChanged={() => {
+          void queryClient.invalidateQueries({
+            queryKey: [...dailyPlannerQueryKeys.all, 'projectProgress'],
+          });
+        }}
+      />
     </TooltipPrimitive.Provider>
   );
 }

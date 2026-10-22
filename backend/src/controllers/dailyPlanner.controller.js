@@ -78,6 +78,20 @@ export const listProjects = async (req, res, next) => {
   }
 };
 
+export const listProjectObservations = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.listProjectObservations(
+      req.query || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listProjectObservations error:', error);
+    next(error);
+  }
+};
+
 export const upsertProject = async (req, res, next) => {
   try {
     const data = await DailyPlannerService.upsertProject(req.body || {}, req.user);
@@ -178,10 +192,29 @@ export const updateTaskForEmployee = async (req, res, next) => {
 
 export const completeTask = async (req, res, next) => {
   try {
-    const data = await DailyPlannerService.markTaskCompleted(req.params.id, req.body || {}, req.user);
+    const data = await DailyPlannerService.markTaskCompleted(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Daily planner completeTask error:', error);
+    next(error);
+  }
+};
+
+export const batchCompleteTasks = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.batchCompleteTasks(
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner batchCompleteTasks error:', error);
     next(error);
   }
 };
@@ -192,6 +225,20 @@ export const notCompletedTask = async (req, res, next) => {
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Daily planner notCompletedTask error:', error);
+    next(error);
+  }
+};
+
+export const rescheduleTaskSteps = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.rescheduleIncompleteSteps(
+      req.params.id,
+      req.body || {},
+      req.user,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner rescheduleTaskSteps error:', error);
     next(error);
   }
 };
@@ -222,6 +269,36 @@ export const listTeamTasks = async (req, res, next) => {
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Daily planner listTeamTasks error:', error);
+    next(error);
+  }
+};
+
+export const listApprovedLeaveForPlanner = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.listApprovedLeaveForPlanner(
+      req.query.employeeCode || req.params.employeeCode,
+      req.user,
+      req.effectiveRole,
+      req.query,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listApprovedLeaveForPlanner error:', error);
+    next(error);
+  }
+};
+
+export const submitSuperadminReviewComment = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.submitSuperadminReviewComment(
+      req.params.id,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner submitSuperadminReviewComment error:', error);
     next(error);
   }
 };
@@ -431,12 +508,28 @@ export const uploadTaskDocument = async (req, res, next) => {
   try {
     const documentType =
       req.body?.documentType || req.query?.documentType || 'employee';
+    // Accept `file` (single) or `files` (multiple). multer .fields() yields an object;
+    // .single()/.array() styles are tolerated too.
+    const fromFields = (name) =>
+      req.files && !Array.isArray(req.files) && Array.isArray(req.files[name])
+        ? req.files[name]
+        : [];
+    const uploadedFiles = [
+      ...(Array.isArray(req.files) ? req.files : []),
+      ...fromFields('file'),
+      ...fromFields('files'),
+      ...(req.file ? [req.file] : []),
+    ];
+    const combine = ['true', '1', 'yes'].includes(
+      String(req.body?.combine ?? req.query?.combine ?? '').trim().toLowerCase(),
+    );
     const data = await DailyPlannerEnhancedService.uploadTaskDocument(
       req.params.id,
-      req.file,
+      uploadedFiles.length > 1 ? uploadedFiles : uploadedFiles[0],
       req.user,
       req.effectiveRole,
       documentType,
+      { combine },
     );
     res.status(200).json({ success: true, data });
   } catch (error) {
@@ -492,13 +585,163 @@ export const acceptTaskFlag = async (req, res, next) => {
 
 export const getProjectProgress = async (req, res, next) => {
   try {
-    const data = await DailyPlannerEnhancedService.getProjectProgress(
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.getConnectedProjectProgress(
       req.user,
       req.effectiveRole,
     );
     res.status(200).json({ success: true, data });
   } catch (error) {
     log.error('Daily planner getProjectProgress error:', error);
+    next(error);
+  }
+};
+
+export const listManagedProjects = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.listManagedProjects(
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listManagedProjects error:', error);
+    next(error);
+  }
+};
+
+export const getManagedProject = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.getManagedProject(
+      req.params.projectKey,
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner getManagedProject error:', error);
+    next(error);
+  }
+};
+
+export const createManagedProject = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.createManagedProject(
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner createManagedProject error:', error);
+    next(error);
+  }
+};
+
+export const updateManagedProject = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.updateManagedProject(
+      req.params.projectKey,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner updateManagedProject error:', error);
+    next(error);
+  }
+};
+
+export const deactivateManagedProject = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.deactivateManagedProject(
+      req.params.projectKey,
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner deactivateManagedProject error:', error);
+    next(error);
+  }
+};
+
+export const listAssignableProjectEmployees = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.listAssignableEmployees(
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listAssignableProjectEmployees error:', error);
+    next(error);
+  }
+};
+
+export const listProjectFormOptions = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.listProjectOptionsForEmployee(
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listProjectFormOptions error:', error);
+    next(error);
+  }
+};
+
+export const listProjectCompletedTasks = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.listProjectCompletedTasks(
+      req.params.projectKey,
+      req.query || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner listProjectCompletedTasks error:', error);
+    next(error);
+  }
+};
+
+export const getProjectDetails = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.getProjectDetails(
+      req.params.projectKey,
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner getProjectDetails error:', error);
+    next(error);
+  }
+};
+
+export const addProjectObservation = async (req, res, next) => {
+  try {
+    const ProjectManagementService = await import('../services/projectManagement.service.js');
+    const data = await ProjectManagementService.addProjectObservation(
+      req.params.projectKey,
+      req.body || {},
+      req.user,
+      req.effectiveRole,
+    );
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner addProjectObservation error:', error);
     next(error);
   }
 };

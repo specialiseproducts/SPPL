@@ -30,12 +30,14 @@ import {
 import {
   fetchNextAuditFilteredPage,
   useAuditApprovedTotalQuery,
+  useAuditExpenseDecisionInvalidation,
   useAuditExpenseEmployeesQuery,
   useAuditExpensesFilteredQuery,
-  useInvalidateExpensesList,
 } from '../../hooks/expenses/useExpensesQueries';
 import { expensesQueryKeys } from '../../hooks/expenses/expensesQueryKeys';
 import { isQueryColdLoading } from '../../utils/queryLoading';
+import { sortAuditExpensesPendingFirst } from '../../utils/auditExpenseCache';
+import { applyRecentAuditDecisions } from '../../utils/auditExpenseRecentDecisions';
 import ExpenseEditRequestsPanel from './ExpenseEditRequestsPanel';
 
 const MONTH_FILTER_OPTIONS = [
@@ -95,7 +97,7 @@ const rejectedActionBadgeStyle = {
 export default function AuditExpensesTab() {
   const queryClient = useQueryClient();
   const employeesQuery = useAuditExpenseEmployeesQuery();
-  const invalidateExpenses = useInvalidateExpensesList();
+  const applyAuditDecision = useAuditExpenseDecisionInvalidation();
 
   const [selectedEmployee, setSelectedEmployee] = useState('all');
   const [selectedMonth, setSelectedMonth] = useState('all');
@@ -120,7 +122,13 @@ export default function AuditExpensesTab() {
   const auditQuery = useAuditExpensesFilteredQuery(activeFilters, filtersApplied);
   const approvedTotalQuery = useAuditApprovedTotalQuery(activeFilters, filtersApplied);
 
-  const expenses = auditQuery.data?.pages ?? [];
+  const expenses = useMemo(
+    () =>
+      sortAuditExpensesPendingFirst(
+        applyRecentAuditDecisions(auditQuery.data?.pages ?? []),
+      ),
+    [auditQuery.data?.pages],
+  );
   const nextCursor = auditQuery.data?.nextCursor ?? null;
   const approvedTotal = approvedTotalQuery.data ?? 0;
 
@@ -180,8 +188,8 @@ export default function AuditExpensesTab() {
 
   const approveMutation = useMutation({
     mutationFn: (expenseId: string) => approveExpenseAudit(expenseId),
-    onSuccess: () => {
-      invalidateExpenses();
+    onSuccess: (_updated, expenseId) => {
+      applyAuditDecision(expenseId, 'Approved');
       toast.success('Expense approved');
     },
     onError: (error) => {
@@ -193,8 +201,8 @@ export default function AuditExpensesTab() {
   const rejectMutation = useMutation({
     mutationFn: ({ expenseId, reason }: { expenseId: string; reason: string }) =>
       rejectExpenseAudit(expenseId, reason),
-    onSuccess: () => {
-      invalidateExpenses();
+    onSuccess: (_updated, variables) => {
+      applyAuditDecision(variables.expenseId, 'Rejected');
       setRejectTarget(null);
       setRejectReason('');
       toast.success('Expense rejected');

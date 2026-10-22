@@ -13,6 +13,7 @@ const DAILY_PLANNER_DEFS = [
   TABLE_GSI_DEFINITIONS.DailyPlannerTeamMappings,
   TABLE_GSI_DEFINITIONS.DailyPlannerPlanning,
   TABLE_GSI_DEFINITIONS.DailyPlannerProjects,
+  TABLE_GSI_DEFINITIONS.DailyPlannerProjectObservations,
 ];
 
 function createDynamoClient() {
@@ -100,9 +101,13 @@ async function createTableIfMissing(dynamodb, def, info) {
         AttributeName: def.attributeDefinitions[0].AttributeName,
         KeyType: 'HASH',
       },
+      ...(def.rangeKeyAttribute
+        ? [{ AttributeName: def.rangeKeyAttribute, KeyType: 'RANGE' }]
+        : []),
     ],
     AttributeDefinitions: def.attributeDefinitions.filter((a) => {
       const pk = def.attributeDefinitions[0].AttributeName;
+      if (def.rangeKeyAttribute && a.AttributeName === def.rangeKeyAttribute) return true;
       const gsiAttrs = new Set(
         (def.globalSecondaryIndexes || []).flatMap((g) =>
           (g.KeySchema || []).map((k) => k.AttributeName),

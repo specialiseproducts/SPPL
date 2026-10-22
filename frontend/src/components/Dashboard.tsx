@@ -17,6 +17,7 @@ const Expenses = lazy(() => import('./Expenses'));
 const SalesForecasting = lazy(() => import('./SalesForecasting'));
 const Purchases = lazy(() => import('./Purchases'));
 const DailyPlanner = lazy(() => import('./DailyPlanner'));
+const Payroll = lazy(() => import('./Payroll'));
 const OrderProcessing = lazy(() => import('./OrderProcessing'));
 const PerformanceDashboard = lazy(() => import('./admin/PerformanceDashboard'));
 
@@ -60,6 +61,8 @@ function isImplementedModule(name: ModuleName, moduleAccess: Record<string, bool
       return !!moduleAccess.purchases;
     case 'Daily Planner':
       return !!moduleAccess.dailyPlanner;
+    case 'Payroll':
+      return !!moduleAccess.payroll;
     case 'Order Processing':
       return !!moduleAccess.orderProcessing;
     case 'System Metrics':
@@ -164,6 +167,12 @@ export default function Dashboard({
         return wrapModule(
           'Daily Planner',
           <DailyPlanner user={user} moduleRole={(moduleRoles.dailyPlanner || user.role) as UserRole} />,
+        );
+      case 'payroll':
+        if (!moduleAccess.payroll) return null;
+        return wrapModule(
+          'Payroll',
+          <Payroll user={user} moduleRole={(moduleRoles.payroll || user.role) as UserRole} />,
         );
       case 'order-processing':
         if (!moduleAccess.orderProcessing) return null;

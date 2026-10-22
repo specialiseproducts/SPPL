@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
+import { Textarea } from '../ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
 import type {
@@ -27,6 +28,8 @@ import {
   partsToDecimalHours,
   TASK_UPDATES_READONLY_MESSAGE,
 } from '../../utils/planningRecognition';
+import { classifyApprovedLeaveForDate } from '../../utils/dailyPlannerLeaveRules';
+import type { PayrollLeaveRequest } from '../../types/payroll';
 import { cn } from '../ui/utils';
 import {
   getDailyTaskChipStyle,
@@ -46,8 +49,12 @@ import {
 import {
   acceptDailyPlannerRevision,
   acceptDailyPlannerTaskFlag,
+  batchCompleteDailyPlannerTasks,
   completeDailyPlannerTask,
+  fetchDailyPlannerProjects,
+  fetchProjectFormOptions,
   notCompletedDailyPlannerTask,
+  rescheduleDailyPlannerTaskSteps,
   submitDayCompletion,
   updateDailyPlannerTask,
   uploadDailyPlannerTaskDocument,
@@ -59,8 +66,57 @@ import { todayIso } from './dailyPlannerUtils';
 import { useAuth } from '../../context/AuthContext';
 import { hasEmployeeCompletionOutcome } from './todayTaskReviewWizardUtils';
 import HoursMinutesFields from './HoursMinutesFields';
-import DailyPlannerEnhancedTaskFields from './DailyPlannerEnhancedTaskFields';
+import DailyPlannerEnhancedTaskFields, {
+  resolveDocumentFiles,
+  resolveDocumentUploadPayload,
+} from './DailyPlannerEnhancedTaskFields';
+import TwelveHourTimeInput, { hhMmTo12hParts } from './TwelveHourTimeInput';
+import { isFactoryDailyPlannerEligible } from '../../utils/dailyPlannerFactoryEligibility';
+import {
+  completionTimingMessage,
+  createEmptyTimeSlot,
+  MAX_COMPLETION_TIME_SLOTS,
+  minutesToDecimalHours,
+  parseHhMmToMinutes,
+  slotDurationMinutes,
+  totalSlotsDecimalHours,
+  totalSlotsDurationMinutes,
+  validateCompletionTimeSlots,
+  type CompletionTimeSlot,
+} from '../../utils/dailyPlannerTimeSlots';
 import DailyPlannerTaskDocumentsList from './DailyPlannerTaskDocumentsList';
+import {
+  formatMinutesLabel,
+  minutesBetweenHhMm,
+  progressFromProcedureSteps,
+  resolveProcedureSteps,
+  sumActualMinutes,
+  sumPlannedMinutes,
+  workDoneFromProcedureSteps,
+  type DailyPlannerProcedureStep,
+} from '../../utils/dailyPlannerProcedureSteps';
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '../ui/alert-dialog';
+
+const MISSING_STEP_TIMES_PROMPT =
+  'Some steps do not have complete time entries. Would you like to enter the missing times now?';
+
+/** Step-based Mark Completed: per-step Start/End (HH:mm) + Work Done text. */
+type StepTimeEntry = { startTime: string; endTime: string; workDone: string };
+
+/** Minutes reported by completed steps on a server task (rescheduled steps excluded). */
+function serverStepReportedMinutes(task: DailyPlannerTask): number {
+  const steps = Array.isArray(task.procedureSteps) ? task.procedureSteps : [];
+  return sumActualMinutes(steps.filter((s) => s.status !== 'rescheduled'));
+}
 
 /** Display-only message for the day-tasks modal (does not change global planning rules). */
 const DAY_TASK_UPDATES_READONLY_DISPLAY_MESSAGE =
@@ -80,11 +136,82 @@ function calcDurationFromTimes(startTime: string, endTime: string): number | nul
   return partsToDecimalHours(Math.floor(diff / 60), diff % 60);
 }
 
+/** Factory: locally saved Mark Completed / Not Completed result, submitted in one batch. */
+type CompletionDraft = {
+  outcome: 'completed' | 'not_completed';
+  workDone?: string;
+  timeSlots?: CompletionTimeSlot[];
+  startTime?: string;
+  endTime?: string;
+  needsDocument?: boolean;
+  progressDone?: number | null;
+  documentFiles?: File[];
+  hasObservation?: boolean;
+  observationText?: string;
+  observationId?: string | null;
+  notCompletedAction?: DailyPlannerNotCompletedAction;
+  rescheduleDate?: string;
+  reason?: string;
+  /** Step-based completion (preferred over timeSlots when present). */
+  procedureSteps?: DailyPlannerProcedureStep[];
+};
+
+const EMPTY_DRAFTS: Record<string, CompletionDraft> = {};
+
+const SERVER_DONE_STATUSES = new Set(['Completed', 'Awaiting Verification', 'Verified Complete']);
+
+function formatHhMm12(hhmm: string | null | undefined): string {
+  const parts = hhMmTo12hParts(String(hhmm || ''));
+  if (!parts.hour12) return String(hhmm || '—');
+  return `${parts.hour12}:${parts.minute} ${parts.period}`;
+}
+
+function draftReportedMinutes(draft: CompletionDraft): number | null {
+  if (draft.outcome !== 'completed') return null;
+  if (draft.procedureSteps?.length) return sumActualMinutes(draft.procedureSteps);
+  return totalSlotsDurationMinutes(draft.timeSlots ?? []);
+}
+
+/** Minutes reported on a server task (steps, then timeSlots, then legacy start/end, then stored hours). */
+function serverTaskReportedMinutes(task: DailyPlannerTask): number {
+  const stepMinutes = serverStepReportedMinutes(task);
+  if (stepMinutes > 0) return stepMinutes;
+  if (task.timeSlots?.length) {
+    let total = 0;
+    let ok = true;
+    for (const slot of task.timeSlots) {
+      const stored = Number(slot.durationMinutes);
+      const mins = Number.isFinite(stored) && stored > 0 ? stored : slotDurationMinutes(slot);
+      if (mins == null) {
+        ok = false;
+        break;
+      }
+      total += mins;
+    }
+    if (ok) return total;
+  }
+  const start = parseHhMmToMinutes(String(task.completionStartTime || ''));
+  const end = parseHhMmToMinutes(String(task.completionEndTime || ''));
+  if (start != null && end != null && end >= start) return end - start;
+  const stored = Number(task.completionDurationHours);
+  if (Number.isFinite(stored) && stored >= 0) return Math.round(stored * 60);
+  return 0;
+}
+
+function plannerTaskLabel(task: DailyPlannerTask | undefined, fallbackId: string): string {
+  if (!task) return fallbackId;
+  return task.isProjectBased && task.projectName
+    ? `${task.projectName} — ${task.taskName}`
+    : task.taskName || fallbackId;
+}
+
 interface DailyPlannerDayTasksModalProps {
   open: boolean;
   date: string;
   tasks: DailyPlannerTask[];
   planningConfig?: PlanningConfig | null;
+  /** Approved Payroll leave covering this date (for hours + half-day reporting). */
+  approvedLeavesForDate?: PayrollLeaveRequest[];
   onClose: () => void;
   onChanged: (patch?: {
     upsert?: DailyPlannerTask[];
@@ -102,6 +229,7 @@ export default function DailyPlannerDayTasksModal({
   date,
   tasks,
   planningConfig,
+  approvedLeavesForDate = [],
   onClose,
   onChanged,
   onAddTask,
@@ -111,6 +239,10 @@ export default function DailyPlannerDayTasksModal({
   const { user } = useAuth();
   const employeeLocation = user?.location || 'Office';
   const enhancedEligible = Boolean(planningConfig?.enhancedEligible);
+  const factoryMode =
+    typeof planningConfig?.factoryEligible === 'boolean'
+      ? planningConfig.factoryEligible
+      : isFactoryDailyPlannerEligible(employeeLocation);
   const visibleTasks = useMemo(
     () => sortDailyPlannerTasksByPriority(visibleEmployeePlannerTasks(tasks)),
     [tasks],
@@ -128,18 +260,60 @@ export default function DailyPlannerDayTasksModal({
   const [completeNeedsDocument, setCompleteNeedsDocument] = useState<'Yes' | 'No'>('No');
   const [completeProgressDone, setCompleteProgressDone] = useState<number | null>(null);
   const [completeDocumentFile, setCompleteDocumentFile] = useState<File | null>(null);
+  const [completeDocumentFiles, setCompleteDocumentFiles] = useState<File[]>([]);
+  const [completeSlots, setCompleteSlots] = useState<CompletionTimeSlot[]>(() => [
+    createEmptyTimeSlot(),
+  ]);
+  const [completeHasObservation, setCompleteHasObservation] = useState<'Yes' | 'No'>('No');
+  /** Step-based Mark Completed: Start/End by stepId (HH:mm). */
+  const [completeStepTimes, setCompleteStepTimes] = useState<Record<string, StepTimeEntry>>({});
+  const [highlightStepIds, setHighlightStepIds] = useState<string[]>([]);
+  const [missingTimesPromptOpen, setMissingTimesPromptOpen] = useState(false);
+  const [rescheduleStepsOpen, setRescheduleStepsOpen] = useState(false);
+  const [rescheduleStepsDate, setRescheduleStepsDate] = useState('');
+  const [draftsByDate, setDraftsByDate] = useState<Record<string, Record<string, CompletionDraft>>>(
+    {},
+  );
   const [notCompletedNeedsDocument, setNotCompletedNeedsDocument] = useState<'Yes' | 'No'>('No');
   const [notCompletedProgressDone, setNotCompletedProgressDone] = useState<number | null>(null);
   const [notCompletedDocumentFile, setNotCompletedDocumentFile] = useState<File | null>(null);
+  const [notCompletedDocumentFiles, setNotCompletedDocumentFiles] = useState<File[]>([]);
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
+  const [editProjectName, setEditProjectName] = useState('');
+  const [editProjectTaskId, setEditProjectTaskId] = useState('');
   const [editName, setEditName] = useState('');
   const [editPriority, setEditPriority] = useState<DailyPlannerPriority>('Medium');
   const [editHours, setEditHours] = useState<number | null>(null);
+  const [editProjectOptions, setEditProjectOptions] = useState<string[]>([]);
+  const [editManagedTasks, setEditManagedTasks] = useState<
+    Array<{ projectTaskId: string; taskName: string }>
+  >([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [submittingDay, setSubmittingDay] = useState(false);
   const workDoneEditorRef = useRef<BulletPointEditorHandle>(null);
+  const observationEditorRef = useRef<BulletPointEditorHandle>(null);
   const reasonEditorRef = useRef<BulletPointEditorHandle>(null);
   const editDescriptionRef = useRef<BulletPointEditorHandle>(null);
+
+  const completionDrafts = draftsByDate[date] ?? EMPTY_DRAFTS;
+  const draftsRef = useRef<Record<string, CompletionDraft>>(EMPTY_DRAFTS);
+  draftsRef.current = completionDrafts;
+
+  const saveDraft = (taskId: string, draft: CompletionDraft) => {
+    setDraftsByDate((prev) => ({
+      ...prev,
+      [date]: { ...(prev[date] ?? {}), [taskId]: draft },
+    }));
+  };
+
+  const clearDrafts = (taskIds: string[]) => {
+    if (taskIds.length === 0) return;
+    setDraftsByDate((prev) => {
+      const current = { ...(prev[date] ?? {}) };
+      for (const id of taskIds) delete current[id];
+      return { ...prev, [date]: current };
+    });
+  };
 
   const dateMode = useMemo(() => getDailyPlannerDateMode(date), [date]);
   const isPastDate = dateMode === 'past';
@@ -151,15 +325,25 @@ export default function DailyPlannerDayTasksModal({
       ),
     [visibleTasks],
   );
+  const leaveClassification = useMemo(
+    () => classifyApprovedLeaveForDate(approvedLeavesForDate, date),
+    [approvedLeavesForDate, date],
+  );
+  const halfDayLeave = leaveClassification.kind === 'half';
+  const fullDayLeave = leaveClassification.kind === 'full';
   const canCompleteByDate = canCompleteTasksOnDate(date);
   const canModifyTasks = useMemo(
-    () => canCompleteByDate && canUpdateTasksOnDate(date, planningConfig),
-    [canCompleteByDate, date, planningConfig],
+    () =>
+      canCompleteByDate &&
+      canUpdateTasksOnDate(date, planningConfig, { halfDayLeave }),
+    [canCompleteByDate, date, planningConfig, halfDayLeave],
   );
   const isReadOnlyWindow = canCompleteByDate && !canModifyTasks;
-  const canEditPlanTasks = !isPastDate && !dayPlanFinalized;
+  const canEditPlanTasks = !isPastDate && !dayPlanFinalized && !fullDayLeave;
   /** Extra Task uses the same 5:30 PM → 11:00 AM employee planning window as other today updates. */
-  const canCreateExtraTask = Boolean(canCompleteByDate && onExtraTask && canModifyTasks);
+  const canCreateExtraTask = Boolean(
+    canCompleteByDate && onExtraTask && canModifyTasks && !fullDayLeave,
+  );
 
   const completeDurationPreview = useMemo(
     () => calcDurationFromTimes(completeStartTime, completeEndTime),
@@ -167,20 +351,134 @@ export default function DailyPlannerDayTasksModal({
   );
 
   const minRequiredHours = useMemo(
-    () => getMinPlannedHours(undefined, employeeLocation),
-    [employeeLocation],
+    () => getMinPlannedHours(undefined, employeeLocation, leaveClassification.kind),
+    [employeeLocation, leaveClassification.kind],
   );
 
+  const completeSlotsValidation = useMemo(
+    () => validateCompletionTimeSlots(completeSlots),
+    [completeSlots],
+  );
+  const completeTaskForDialog = completeTaskId
+    ? tasks.find((t) => t.plannerTaskId === completeTaskId)
+    : undefined;
+
+  /**
+   * Step-based reporting when the task has procedure steps or a legacy description/hours
+   * that resolveProcedureSteps can expand. Empty tasks keep the old Start/End / slot UI.
+   * Steps already rescheduled to another date are excluded.
+   */
+  const completeBaseSteps = useMemo<DailyPlannerProcedureStep[]>(() => {
+    const t = completeTaskForDialog;
+    if (!t) return [];
+    return resolveProcedureSteps(t).filter((s) => s.status !== 'rescheduled');
+  }, [completeTaskForDialog]);
+  const stepMode = completeBaseSteps.length > 0;
+
+  const completeStepRows = useMemo(
+    () =>
+      completeBaseSteps.map((step) => {
+        const times = completeStepTimes[step.stepId] ?? {
+          startTime: '',
+          endTime: '',
+          workDone: '',
+        };
+        const startTime = times.startTime || '';
+        const endTime = times.endTime || '';
+        const workDone = times.workDone || '';
+        const hasBoth = Boolean(startTime && endTime);
+        const actual = hasBoth ? minutesBetweenHhMm(startTime, endTime) : null;
+        // Allow cross-midnight (minutesBetweenHhMm adds 24h); reject only empty/zero/invalid ranges.
+        const invalid = hasBoth && (actual == null || actual <= 0);
+        const complete = hasBoth && !invalid;
+        return {
+          ...step,
+          startTime,
+          endTime,
+          workDone,
+          invalid,
+          complete,
+          actualMinutes: complete ? actual : null,
+        };
+      }),
+    [completeBaseSteps, completeStepTimes],
+  );
+  const stepTotalPlannedMinutes = useMemo(
+    () => sumPlannedMinutes(completeBaseSteps),
+    [completeBaseSteps],
+  );
+  const stepTotalActualMinutes = useMemo(
+    () =>
+      completeStepRows.reduce(
+        (sum, row) => sum + (row.complete && row.actualMinutes != null ? row.actualMinutes : 0),
+        0,
+      ),
+    [completeStepRows],
+  );
+  const stepsAllComplete = completeStepRows.length > 0 && completeStepRows.every((r) => r.complete);
+  /** Duration-weighted live progress (all steps complete → 100%). */
+  const stepProgressPercent = useMemo(
+    () =>
+      progressFromProcedureSteps(
+        completeStepRows.map((r) => ({
+          stepId: r.stepId,
+          description: r.description,
+          plannedMinutes: r.plannedMinutes,
+          completed: r.complete,
+          status: r.complete ? ('completed' as const) : ('pending' as const),
+        })),
+      ),
+    [completeStepRows],
+  );
+
+  /** Factory: reported minutes from drafts + submitted server tasks without a draft override. */
+  const factoryReportedMinutes = useMemo(() => {
+    if (!factoryMode) return 0;
+    let total = 0;
+    for (const task of visibleTasks) {
+      const id = task.plannerTaskId;
+      if (completeTaskId === id) {
+        if (stepMode) total += stepTotalActualMinutes;
+        else if (completeSlotsValidation.ok) total += completeSlotsValidation.totalMinutes;
+        continue;
+      }
+      const draft = completionDrafts[id];
+      if (draft) {
+        // Terminated / rescheduled (not_completed) drafts never count toward the current day.
+        const mins = draftReportedMinutes(draft);
+        if (mins != null) total += mins;
+        continue;
+      }
+      if (!SERVER_DONE_STATUSES.has(String(task.status || '').trim())) continue;
+      total += serverTaskReportedMinutes(task);
+    }
+    return total;
+  }, [
+    factoryMode,
+    visibleTasks,
+    completeTaskId,
+    completeSlotsValidation,
+    completionDrafts,
+    stepMode,
+    stepTotalActualMinutes,
+  ]);
+
   /** Live reported hours from Start/End (completed tasks + open Mark Completed preview). */
-  const liveReportedHours = useMemo(() => {
-    const done = new Set(['Completed', 'Awaiting Verification', 'Verified Complete']);
+  const officeReportedHours = useMemo(() => {
+    const done = SERVER_DONE_STATUSES;
     let total = 0;
     for (const task of visibleTasks) {
       if (completeTaskId && task.plannerTaskId === completeTaskId) {
-        if (completeDurationPreview != null) total += completeDurationPreview;
+        if (stepMode) total += stepTotalActualMinutes / 60;
+        else if (completeDurationPreview != null) total += completeDurationPreview;
         continue;
       }
       if (!done.has(String(task.status || '').trim())) continue;
+      const stepMinutes = serverStepReportedMinutes(task);
+      if (stepMinutes > 0) {
+        total += stepMinutes / 60;
+        continue;
+      }
       const fromTimes = calcDurationFromTimes(
         String(task.completionStartTime || ''),
         String(task.completionEndTime || ''),
@@ -193,7 +491,11 @@ export default function DailyPlannerDayTasksModal({
       if (Number.isFinite(stored) && stored >= 0) total += stored;
     }
     return Math.round(total * 100) / 100;
-  }, [visibleTasks, completeTaskId, completeDurationPreview]);
+  }, [visibleTasks, completeTaskId, completeDurationPreview, stepMode, stepTotalActualMinutes]);
+
+  const liveReportedHours = factoryMode
+    ? minutesToDecimalHours(factoryReportedMinutes)
+    : officeReportedHours;
 
   const meetsMinReportedHours = liveReportedHours >= minRequiredHours;
 
@@ -204,26 +506,96 @@ export default function DailyPlannerDayTasksModal({
       setCompleteNeedsDocument('No');
       setCompleteProgressDone(null);
       setCompleteDocumentFile(null);
+      setCompleteDocumentFiles([]);
       return;
     }
     const task = tasks.find((t) => t.plannerTaskId === completeTaskId);
     if (task) {
       setCompleteNeedsDocument(task.needsDocument ? 'Yes' : 'No');
       setCompleteProgressDone(
-        task.isProjectBased &&
+        (factoryMode || task.isProjectBased) &&
           task.progressDone != null &&
           Number.isFinite(Number(task.progressDone))
           ? Number(task.progressDone)
           : null,
       );
     }
-  }, [completeTaskId, tasks]);
+  }, [completeTaskId, tasks, factoryMode]);
+
+  /** Factory: time slots / observation / draft prefill when the Mark Completed dialog opens. */
+  useEffect(() => {
+    if (!factoryMode) return;
+    if (!completeTaskId) {
+      setCompleteSlots([createEmptyTimeSlot()]);
+      setCompleteHasObservation('No');
+      return;
+    }
+    const draft = draftsRef.current[completeTaskId];
+    if (draft?.outcome === 'completed') {
+      setCompleteSlots(
+        draft.timeSlots?.length
+          ? draft.timeSlots.map((slot) => ({ ...slot }))
+          : [createEmptyTimeSlot()],
+      );
+      setCompleteHasObservation(draft.hasObservation ? 'Yes' : 'No');
+      setCompleteNeedsDocument(draft.needsDocument ? 'Yes' : 'No');
+      setCompleteProgressDone(draft.progressDone ?? null);
+      setCompleteDocumentFiles(draft.documentFiles ?? []);
+      setCompleteDocumentFile(draft.documentFiles?.[0] ?? null);
+    } else {
+      setCompleteSlots([createEmptyTimeSlot()]);
+      setCompleteHasObservation('No');
+    }
+  }, [completeTaskId, factoryMode]);
+
+  /** Step-based Mark Completed: seed Start/End per step when the dialog opens (keeps drafts / saved times). */
+  useEffect(() => {
+    setHighlightStepIds([]);
+    setMissingTimesPromptOpen(false);
+    setRescheduleStepsOpen(false);
+    setRescheduleStepsDate('');
+    if (!completeTaskId) {
+      setCompleteStepTimes({});
+      return;
+    }
+    const task = tasks.find((t) => t.plannerTaskId === completeTaskId);
+    const base = task
+      ? resolveProcedureSteps(task).filter((s) => s.status !== 'rescheduled')
+      : [];
+    const draftSteps = factoryMode ? draftsRef.current[completeTaskId]?.procedureSteps : undefined;
+    const next: Record<string, StepTimeEntry> = {};
+    for (const step of base) {
+      const fromDraft = draftSteps?.find((d) => d.stepId === step.stepId);
+      next[step.stepId] = {
+        startTime: fromDraft?.startTime ?? step.startTime ?? '',
+        endTime: fromDraft?.endTime ?? step.endTime ?? '',
+        workDone: fromDraft?.workDone ?? step.workDone ?? '',
+      };
+    }
+    setCompleteStepTimes(next);
+    // Seed only when the dialog opens/closes — later task refreshes must not clobber typed times.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completeTaskId]);
+
+  /** Factory: restore not-completed draft when the dialog opens. */
+  useEffect(() => {
+    if (!factoryMode || !reasonTaskId) return;
+    const draft = draftsRef.current[reasonTaskId];
+    if (draft?.outcome === 'not_completed') {
+      setNotCompletedAction(draft.notCompletedAction ?? 'terminate');
+      setRescheduleDate(draft.rescheduleDate ?? '');
+      setNotCompletedNeedsDocument(draft.needsDocument ? 'Yes' : 'No');
+      setNotCompletedDocumentFiles(draft.documentFiles ?? []);
+      setNotCompletedDocumentFile(draft.documentFiles?.[0] ?? null);
+    }
+  }, [reasonTaskId, factoryMode]);
 
   useEffect(() => {
     if (!reasonTaskId) {
       setNotCompletedNeedsDocument('No');
       setNotCompletedProgressDone(null);
       setNotCompletedDocumentFile(null);
+      setNotCompletedDocumentFiles([]);
       return;
     }
     const task = tasks.find((t) => t.plannerTaskId === reasonTaskId);
@@ -239,18 +611,41 @@ export default function DailyPlannerDayTasksModal({
     }
   }, [reasonTaskId, tasks]);
 
-  const allHaveCompletionOutcomes =
-    visibleTasks.length > 0 && visibleTasks.every(hasEmployeeCompletionOutcome);
+  /** Factory: tasks with a local draft that still lack a server-side employee outcome. */
+  const pendingDraftTasks = useMemo(
+    () =>
+      factoryMode
+        ? visibleTasks.filter(
+            (t) =>
+              Boolean(completionDrafts[t.plannerTaskId]) &&
+              !isPermanentlyClosedTask(t) &&
+              !hasEmployeeCompletionOutcome(t),
+          )
+        : [],
+    [factoryMode, visibleTasks, completionDrafts],
+  );
+  const allHaveCompletionOutcomes = factoryMode
+    ? visibleTasks.length > 0 &&
+      visibleTasks.every(
+        (t) =>
+          isPermanentlyClosedTask(t) ||
+          Boolean(completionDrafts[t.plannerTaskId]) ||
+          hasEmployeeCompletionOutcome(t),
+      )
+    : visibleTasks.length > 0 && visibleTasks.every(hasEmployeeCompletionOutcome);
   const completionAlreadySubmitted = visibleTasks.some((t) => Boolean(t.dayCompletionSubmittedAt));
   const canSubmitDayCompletion =
     canCompleteByDate &&
     allHaveCompletionOutcomes &&
     !completionAlreadySubmitted &&
     !submittingDay &&
-    meetsMinReportedHours;
+    meetsMinReportedHours &&
+    (pendingDraftTasks.length === 0 || canModifyTasks);
 
   const openEdit = (task: DailyPlannerTask) => {
     setEditTaskId(task.plannerTaskId);
+    setEditProjectName(String(task.projectName || '').trim());
+    setEditProjectTaskId(String(task.projectTaskId || '').trim());
     setEditName(task.taskName || '');
     setEditPriority((task.currentPriority || task.priority || 'Medium') as DailyPlannerPriority);
     setEditHours(
@@ -258,17 +653,44 @@ export default function DailyPlannerDayTasksModal({
         ? Number(task.hoursRequired)
         : null,
     );
+    void fetchProjectFormOptions()
+      .then((opts) => {
+        const names = [
+          ...(opts.projects || []).map((p) => p.projectName),
+          ...(opts.legacyProjectNames || []),
+        ];
+        setEditProjectOptions([...new Set(names.filter(Boolean))]);
+        const match = (opts.projects || []).find(
+          (p) => p.projectName === String(task.projectName || '').trim(),
+        );
+        setEditManagedTasks(match?.tasks || []);
+      })
+      .catch(() => {
+        void fetchDailyPlannerProjects()
+          .then((projects) =>
+            setEditProjectOptions(projects.map((p) => p.projectName).filter(Boolean)),
+          )
+          .catch(() => setEditProjectOptions([]));
+        setEditManagedTasks([]);
+      });
   };
 
   const closeEdit = () => {
     setEditTaskId(null);
+    setEditProjectName('');
+    setEditProjectTaskId('');
     setEditName('');
     setEditPriority('Medium');
     setEditHours(null);
+    setEditManagedTasks([]);
   };
 
   const submitEdit = async () => {
     if (!editTaskId) return;
+    if (factoryMode && !editProjectName.trim()) {
+      toast.error('Project Name is required');
+      return;
+    }
     if (!editName.trim()) {
       toast.error('Task name is required');
       return;
@@ -279,6 +701,7 @@ export default function DailyPlannerDayTasksModal({
       return;
     }
     const description = editDescriptionRef.current?.getFormattedValue() ?? '';
+    const projectName = editProjectName.trim();
     setBusyId(editTaskId);
     try {
       const updated = await updateDailyPlannerTask(editTaskId, {
@@ -286,6 +709,13 @@ export default function DailyPlannerDayTasksModal({
         description,
         priority: editPriority,
         hoursRequired: Math.round(hoursValue * 100) / 100,
+        ...(factoryMode || projectName
+          ? {
+              isProjectBased: factoryMode || Boolean(projectName),
+              projectName: factoryMode || projectName ? projectName : '',
+              projectTaskId: editProjectTaskId.trim() || '',
+            }
+          : {}),
       });
       toast.success('Task updated');
       closeEdit();
@@ -297,6 +727,139 @@ export default function DailyPlannerDayTasksModal({
     }
   };
 
+  /** Factory: batch-submit all drafts, upload documents, then submit the day if everything succeeded. */
+  const submitFactoryDrafts = async () => {
+    const pending = pendingDraftTasks.map((task) => ({
+      task,
+      draft: completionDrafts[task.plannerTaskId]!,
+    }));
+    const completions: NonNullable<Parameters<typeof batchCompleteDailyPlannerTasks>[0]['completions']> = [];
+    const notCompleted: NonNullable<Parameters<typeof batchCompleteDailyPlannerTasks>[0]['notCompleted']> = [];
+    for (const { task, draft } of pending) {
+      const taskId = task.plannerTaskId;
+      if (draft.outcome === 'completed') {
+        completions.push({
+          taskId,
+          workDone: draft.workDone ?? '',
+          ...(draft.procedureSteps?.length
+            ? { procedureSteps: draft.procedureSteps }
+            : {
+                timeSlots: (draft.timeSlots ?? []).map((s) => ({
+                  startTime: s.startTime,
+                  endTime: s.endTime,
+                })),
+              }),
+          ...(enhancedEligible
+            ? {
+                needsDocument: Boolean(draft.needsDocument),
+                // Step-based tasks: progress is derived server-side from the steps.
+                ...(draft.procedureSteps?.length ? {} : { progressDone: draft.progressDone ?? null }),
+              }
+            : {}),
+          hasObservation: Boolean(draft.hasObservation),
+          ...(draft.hasObservation
+            ? {
+                observationText: draft.observationText ?? '',
+                observationId: draft.observationId ?? task.observationId ?? null,
+              }
+            : {}),
+        });
+      } else {
+        const action = draft.notCompletedAction ?? 'terminate';
+        notCompleted.push({
+          taskId,
+          reason: draft.reason ?? '',
+          action,
+          newDate: action === 'next_date' ? draft.rescheduleDate : undefined,
+        });
+      }
+    }
+
+    setSubmittingDay(true);
+    try {
+      const batch = await batchCompleteDailyPlannerTasks({ date, completions, notCompleted });
+      const succeededIds = batch.succeeded.map((row) => row.taskId);
+      const upserts = new Map<string, DailyPlannerTask>();
+      const removeIds: string[] = [];
+      for (const row of batch.succeeded) {
+        if (row.task) upserts.set(row.task.plannerTaskId, row.task);
+        if (row.rescheduledTask) upserts.set(row.rescheduledTask.plannerTaskId, row.rescheduledTask);
+        for (const cancelled of row.cancelledRescheduledTasks || []) {
+          const id = String(
+            (cancelled as DailyPlannerTask)?.plannerTaskId ||
+              (cancelled as { plannerTaskId?: string })?.plannerTaskId ||
+              '',
+          ).trim();
+          if (id) removeIds.push(id);
+        }
+      }
+
+      for (const row of batch.succeeded) {
+        const draft = completionDrafts[row.taskId];
+        if (!draft?.needsDocument || !draft.documentFiles?.length || !enhancedEligible) continue;
+        try {
+          const updated = await uploadDailyPlannerTaskDocument(
+            row.taskId,
+            draft.documentFiles.length === 1 ? draft.documentFiles[0] : draft.documentFiles,
+            'employee',
+          );
+          upserts.set(updated.plannerTaskId, updated);
+        } catch (uploadErr) {
+          toast.error(
+            `Document upload failed for ${plannerTaskLabel(
+              pending.find((p) => p.task.plannerTaskId === row.taskId)?.task,
+              row.taskId,
+            )}: ${uploadErr instanceof Error ? uploadErr.message : 'Upload failed'}`,
+          );
+        }
+      }
+
+      clearDrafts(succeededIds);
+      if (upserts.size > 0 || removeIds.length > 0) {
+        onChanged({
+          upsert: Array.from(upserts.values()),
+          removeIds: removeIds.length ? removeIds : undefined,
+        });
+      }
+
+      if (batch.failed.length > 0) {
+        const lines = batch.failed.map(
+          (f) =>
+            `${plannerTaskLabel(
+              pending.find((p) => p.task.plannerTaskId === f.taskId)?.task,
+              f.taskId,
+            )}: ${f.message}`,
+        );
+        toast.error(
+          `${batch.failed.length} task${batch.failed.length === 1 ? '' : 's'} could not be saved. Fix and submit again. ${lines.join(' | ')}`,
+          { duration: 10000 },
+        );
+        return;
+      }
+
+      const succeededSet = new Set(succeededIds);
+      const allOutcomesPresent = visibleTasks.every(
+        (t) =>
+          isPermanentlyClosedTask(t) ||
+          succeededSet.has(t.plannerTaskId) ||
+          hasEmployeeCompletionOutcome(t),
+      );
+      if (!allOutcomesPresent) {
+        toast.error('Some tasks still need a Completed / Not Completed outcome before submitting.');
+        return;
+      }
+
+      const submitted = await submitDayCompletion(date);
+      toast.success('Completion submitted for manager review');
+      onChanged({ upsert: submitted });
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Submit failed');
+    } finally {
+      setSubmittingDay(false);
+    }
+  };
+
   const handleSubmitDayCompletion = async () => {
     if (!allHaveCompletionOutcomes) {
       toast.error(
@@ -305,10 +868,20 @@ export default function DailyPlannerDayTasksModal({
       return;
     }
     if (!meetsMinReportedHours) {
-      toast.error(buildMinimumHoursRequirementMessage(undefined, employeeLocation));
+      toast.error(
+        buildMinimumHoursRequirementMessage(
+          undefined,
+          employeeLocation,
+          leaveClassification.kind,
+        ),
+      );
       return;
     }
     if (!canSubmitDayCompletion) return;
+    if (factoryMode && pendingDraftTasks.length > 0) {
+      await submitFactoryDrafts();
+      return;
+    }
     setSubmittingDay(true);
     try {
       const updated = await submitDayCompletion(date);
@@ -320,6 +893,282 @@ export default function DailyPlannerDayTasksModal({
     } finally {
       setSubmittingDay(false);
     }
+  };
+
+  /** Factory: validate and store the Mark Completed dialog as a local draft (no API call). */
+  const saveFactoryCompletedDraft = () => {
+    if (!completeTaskId) return;
+    if (!completeSlotsValidation.ok) {
+      toast.error(completeSlotsValidation.message);
+      return;
+    }
+    const editor = workDoneEditorRef.current;
+    if (!editor?.hasContent()) {
+      toast.error('Work done is required');
+      return;
+    }
+    const hasObservation = completeHasObservation === 'Yes';
+    let observationText = '';
+    if (hasObservation) {
+      const obsEditor = observationEditorRef.current;
+      if (!obsEditor?.hasContent()) {
+        toast.error('Observation is required when you select Yes');
+        return;
+      }
+      observationText = obsEditor.getFormattedValue();
+    }
+    const task = tasks.find((t) => t.plannerTaskId === completeTaskId);
+    const sortedStarts = completeSlots.map((s) => s.startTime).sort();
+    const sortedEnds = completeSlots.map((s) => s.endTime).sort();
+    saveDraft(completeTaskId, {
+      outcome: 'completed',
+      workDone: editor.getFormattedValue(),
+      timeSlots: completeSlots.map((s) => ({ ...s })),
+      startTime: sortedStarts[0],
+      endTime: sortedEnds[sortedEnds.length - 1],
+      needsDocument: completeNeedsDocument === 'Yes',
+      progressDone: completeProgressDone,
+      documentFiles:
+        completeNeedsDocument === 'Yes'
+          ? resolveDocumentFiles({
+              documentFile: completeDocumentFile,
+              documentFiles: completeDocumentFiles,
+            })
+          : [],
+      hasObservation,
+      observationText,
+      observationId:
+        draftsRef.current[completeTaskId]?.observationId ?? task?.observationId ?? null,
+    });
+    toast.success('Saved to draft — submit when ready');
+    setCompleteTaskId(null);
+  };
+
+  // ---- Step-based Mark Completed (Factory + Office) ----
+
+  const setStepTime = (stepId: string, field: keyof StepTimeEntry, value: string) => {
+    setCompleteStepTimes((prev) => ({
+      ...prev,
+      [stepId]: {
+        ...(prev[stepId] ?? { startTime: '', endTime: '', workDone: '' }),
+        [field]: value,
+      },
+    }));
+  };
+
+  /** Steps as persisted: timed steps are completed (with actualMinutes), the rest stay pending. */
+  const buildEvaluatedSteps = (): DailyPlannerProcedureStep[] =>
+    completeStepRows.map((row) => ({
+      stepId: row.stepId,
+      description: row.description,
+      plannedMinutes: row.plannedMinutes,
+      startTime: row.startTime || null,
+      endTime: row.endTime || null,
+      actualMinutes: row.complete ? row.actualMinutes : null,
+      workDone: String(row.workDone || '').trim(),
+      completed: row.complete,
+      status: row.complete ? 'completed' : 'pending',
+    }));
+
+  /** Factory observation validation (unchanged rules); returns null after toasting on failure. */
+  const readFactoryObservation = (): { hasObservation: boolean; observationText: string } | null => {
+    const hasObservation = factoryMode && completeHasObservation === 'Yes';
+    if (!hasObservation) return { hasObservation: false, observationText: '' };
+    const obsEditor = observationEditorRef.current;
+    if (!obsEditor?.hasContent()) {
+      toast.error('Observation is required when you select Yes');
+      return null;
+    }
+    return { hasObservation: true, observationText: obsEditor.getFormattedValue() };
+  };
+
+  const showStepTimingToast = (plannedMinutes: number, actualMinutes: number) => {
+    const message = completionTimingMessage(plannedMinutes / 60, actualMinutes);
+    if (!message) return;
+    if (actualMinutes > plannedMinutes) toast.error(message);
+    else toast.success(message);
+  };
+
+  /**
+   * Persist a step-based completion. `steps` are the steps being reported as done
+   * (already-rescheduled steps are not part of this dialog).
+   * Factory saves a local draft (batch-submitted later); Office calls the complete API,
+   * which still lands in Awaiting Verification.
+   */
+  const finalizeStepCompletion = async (
+    steps: DailyPlannerProcedureStep[],
+    options: { showTiming: boolean },
+  ) => {
+    if (!completeTaskId) return;
+    const task = tasks.find((t) => t.plannerTaskId === completeTaskId);
+    const observation = readFactoryObservation();
+    if (!observation) return;
+    const workDone = workDoneFromProcedureSteps(steps);
+    const plannedMinutes = sumPlannedMinutes(steps);
+    const actualMinutes = sumActualMinutes(steps);
+    const progressDone = progressFromProcedureSteps(steps);
+
+    if (factoryMode) {
+      const starts = steps.map((s) => s.startTime || '').filter(Boolean).sort();
+      const ends = steps.map((s) => s.endTime || '').filter(Boolean).sort();
+      saveDraft(completeTaskId, {
+        outcome: 'completed',
+        workDone,
+        procedureSteps: steps,
+        timeSlots: [],
+        startTime: starts[0],
+        endTime: ends[ends.length - 1],
+        needsDocument: completeNeedsDocument === 'Yes',
+        progressDone,
+        documentFiles:
+          completeNeedsDocument === 'Yes'
+            ? resolveDocumentFiles({
+                documentFile: completeDocumentFile,
+                documentFiles: completeDocumentFiles,
+              })
+            : [],
+        hasObservation: observation.hasObservation,
+        observationText: observation.observationText,
+        observationId:
+          draftsRef.current[completeTaskId]?.observationId ?? task?.observationId ?? null,
+      });
+      toast.success('Saved to draft — submit when ready');
+      if (options.showTiming) showStepTimingToast(plannedMinutes, actualMinutes);
+      setCompleteTaskId(null);
+      return;
+    }
+
+    setBusyId(completeTaskId);
+    try {
+      const result = await completeDailyPlannerTask(
+        completeTaskId,
+        workDone,
+        task?.date ?? date,
+        planningConfig ?? undefined,
+        {
+          procedureSteps: steps,
+          halfDayLeave,
+          ...(enhancedEligible ? { needsDocument: completeNeedsDocument === 'Yes' } : {}),
+        },
+      );
+      const completeUploadPayload = resolveDocumentUploadPayload({
+        documentFile: completeDocumentFile,
+        documentFiles: completeDocumentFiles,
+      });
+      if (enhancedEligible && completeNeedsDocument === 'Yes' && completeUploadPayload) {
+        try {
+          await uploadDailyPlannerTaskDocument(
+            result.task.plannerTaskId,
+            completeUploadPayload,
+            'employee',
+          );
+        } catch (uploadErr) {
+          toast.error(uploadErr instanceof Error ? uploadErr.message : 'Document upload failed');
+        }
+      }
+      const taskDuration =
+        result.completionDurationHours ??
+        result.task.completionDurationHours ??
+        Math.round((actualMinutes / 60) * 100) / 100;
+      const dayTotal = result.dayCompletedHours;
+      toast.success(
+        dayTotal != null
+          ? `Task duration ${formatDurationLabel(taskDuration)}. Day total ${formatDurationLabel(dayTotal)}.`
+          : `Task duration ${formatDurationLabel(taskDuration)}.`,
+      );
+      if (options.showTiming) showStepTimingToast(plannedMinutes, actualMinutes);
+      setCompleteTaskId(null);
+      onChanged({
+        upsert: [result.task],
+        removeIds: result.cancelledRescheduledTaskIds,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Update failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /** Submit from the step-based dialog: Case A (all timed) vs Case B (missing times). */
+  const submitStepCompleted = async () => {
+    const observation = readFactoryObservation();
+    if (!observation) return;
+
+    const invalidIds = completeStepRows.filter((r) => r.invalid).map((r) => r.stepId);
+    if (invalidIds.length > 0) {
+      setHighlightStepIds(invalidIds);
+      toast.error('End Time must be after Start Time for the highlighted steps.');
+      return;
+    }
+    const incompleteIds = completeStepRows.filter((r) => !r.complete).map((r) => r.stepId);
+    if (incompleteIds.length > 0) {
+      // Case B: keep entered data, highlight the incomplete steps, and ask.
+      setHighlightStepIds(incompleteIds);
+      setMissingTimesPromptOpen(true);
+      return;
+    }
+    // Case A: every step has Start + End.
+    setHighlightStepIds([]);
+    await finalizeStepCompletion(buildEvaluatedSteps(), { showTiming: true });
+  };
+
+  /** Case B → "No": reschedule ONLY the incomplete steps, then complete the timed ones. */
+  const confirmRescheduleIncompleteSteps = async () => {
+    if (!completeTaskId) return;
+    const task = tasks.find((t) => t.plannerTaskId === completeTaskId);
+    const newDate = rescheduleStepsDate.trim();
+    if (!newDate) {
+      toast.error('New date is required');
+      return;
+    }
+    if (newDate < minRescheduleDate) {
+      toast.error('Past dates are not allowed');
+      return;
+    }
+    if (newDate === (task?.date ?? date)) {
+      toast.error('New date must be different from the current task date');
+      return;
+    }
+    const evaluated = buildEvaluatedSteps();
+    const completedSteps = evaluated.filter((s) => s.completed);
+    const unfinishedCount = evaluated.length - completedSteps.length;
+    if (completedSteps.length === 0) {
+      toast.error(
+        'Enter Start and End Time for at least one step, or use Not Completed → Next Date to reschedule the whole task.',
+      );
+      return;
+    }
+    if (unfinishedCount === 0) {
+      setRescheduleStepsOpen(false);
+      await finalizeStepCompletion(completedSteps, { showTiming: true });
+      return;
+    }
+    if (!readFactoryObservation()) return;
+
+    setBusyId(completeTaskId);
+    try {
+      const result = await rescheduleDailyPlannerTaskSteps(
+        completeTaskId,
+        { newDate, procedureSteps: evaluated },
+        task?.date ?? date,
+        planningConfig ?? undefined,
+        { halfDayLeave },
+      );
+      onChanged({ upsert: [result.task, result.rescheduledTask] });
+      toast.success(
+        `${unfinishedCount} incomplete step${unfinishedCount === 1 ? '' : 's'} rescheduled to ${newDate}`,
+      );
+      setRescheduleStepsOpen(false);
+      setRescheduleStepsDate('');
+      setHighlightStepIds([]);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Reschedule failed');
+      setBusyId(null);
+      return;
+    }
+    setBusyId(null);
+    // The original task now holds only the timed steps — complete it through the normal flow.
+    await finalizeStepCompletion(completedSteps, { showTiming: false });
   };
 
   const submitCompleted = async () => {
@@ -337,6 +1186,14 @@ export default function DailyPlannerDayTasksModal({
     if (task && isRescheduledTask(task)) {
       toast.error('This task has been rescheduled and cannot be marked complete or incomplete.');
       setCompleteTaskId(null);
+      return;
+    }
+    if (stepMode) {
+      await submitStepCompleted();
+      return;
+    }
+    if (factoryMode) {
+      saveFactoryCompletedDraft();
       return;
     }
     if (!completeStartTime.trim() || !completeEndTime.trim()) {
@@ -364,6 +1221,7 @@ export default function DailyPlannerDayTasksModal({
         {
           startTime: completeStartTime.trim(),
           endTime: completeEndTime.trim(),
+          halfDayLeave,
           ...(enhancedEligible
             ? {
                 needsDocument: completeNeedsDocument === 'Yes',
@@ -372,11 +1230,15 @@ export default function DailyPlannerDayTasksModal({
             : {}),
         },
       );
-      if (enhancedEligible && completeNeedsDocument === 'Yes' && completeDocumentFile) {
+      const completeUploadPayload = resolveDocumentUploadPayload({
+        documentFile: completeDocumentFile,
+        documentFiles: completeDocumentFiles,
+      });
+      if (enhancedEligible && completeNeedsDocument === 'Yes' && completeUploadPayload) {
         try {
           await uploadDailyPlannerTaskDocument(
             result.task.plannerTaskId,
-            completeDocumentFile,
+            completeUploadPayload,
             'employee',
           );
         } catch (uploadErr) {
@@ -414,6 +1276,7 @@ export default function DailyPlannerDayTasksModal({
     setNotCompletedNeedsDocument('No');
     setNotCompletedProgressDone(null);
     setNotCompletedDocumentFile(null);
+    setNotCompletedDocumentFiles([]);
   };
 
   const submitNotCompleted = async () => {
@@ -455,6 +1318,25 @@ export default function DailyPlannerDayTasksModal({
     }
 
     const reason = editor.getFormattedValue();
+    if (factoryMode) {
+      saveDraft(reasonTaskId, {
+        outcome: 'not_completed',
+        reason,
+        notCompletedAction,
+        rescheduleDate: notCompletedAction === 'next_date' ? rescheduleDate.trim() : undefined,
+        needsDocument: notCompletedNeedsDocument === 'Yes',
+        documentFiles:
+          notCompletedNeedsDocument === 'Yes'
+            ? resolveDocumentFiles({
+                documentFile: notCompletedDocumentFile,
+                documentFiles: notCompletedDocumentFiles,
+              })
+            : [],
+      });
+      toast.success('Saved to draft — submit when ready');
+      resetNotCompletedDialog();
+      return;
+    }
     setBusyId(reasonTaskId);
     try {
       const result = await notCompletedDailyPlannerTask(
@@ -466,13 +1348,18 @@ export default function DailyPlannerDayTasksModal({
         },
         task?.date ?? date,
         planningConfig ?? undefined,
+        { halfDayLeave },
       );
       let updatedTask = result.task;
-      if (enhancedEligible && notCompletedNeedsDocument === 'Yes' && notCompletedDocumentFile) {
+      const notCompletedUploadPayload = resolveDocumentUploadPayload({
+        documentFile: notCompletedDocumentFile,
+        documentFiles: notCompletedDocumentFiles,
+      });
+      if (enhancedEligible && notCompletedNeedsDocument === 'Yes' && notCompletedUploadPayload) {
         try {
           updatedTask = await uploadDailyPlannerTaskDocument(
             result.task.plannerTaskId,
-            notCompletedDocumentFile,
+            notCompletedUploadPayload,
             'employee',
           );
         } catch (uploadErr) {
@@ -614,6 +1501,14 @@ export default function DailyPlannerDayTasksModal({
                 visibleTasks.map((task) => {
                   const isClosed = isPermanentlyClosedTask(task);
                   const showCompletionCheckbox = !isRescheduledTask(task);
+                  const taskDraft = factoryMode ? completionDrafts[task.plannerTaskId] : undefined;
+                  const hasActiveDraft =
+                    Boolean(taskDraft) && !isClosed && !hasEmployeeCompletionOutcome(task);
+                  const draftCompleted = hasActiveDraft && taskDraft?.outcome === 'completed';
+                  const progressDoneValue =
+                    typeof task.progressDone === 'number' && Number.isFinite(task.progressDone)
+                      ? task.progressDone
+                      : null;
                   const canEditThisTask =
                     canEditPlanTasks &&
                     !isClosed &&
@@ -630,6 +1525,7 @@ export default function DailyPlannerDayTasksModal({
                       {showCompletionCheckbox ? (
                       <Checkbox
                         checked={
+                          draftCompleted ||
                           task.status === 'Awaiting Verification' ||
                           task.status === 'Completed' ||
                           task.status === 'Verified Complete'
@@ -656,6 +1552,10 @@ export default function DailyPlannerDayTasksModal({
                             task.status !== 'Verified Complete'
                           ) {
                             setCompleteTaskId(task.plannerTaskId);
+                            return;
+                          }
+                          if (v === false && draftCompleted) {
+                            clearDrafts([task.plannerTaskId]);
                           }
                         }}
                       />
@@ -675,7 +1575,8 @@ export default function DailyPlannerDayTasksModal({
                           <p className="text-xs text-gray-600">—</p>
                         )}
                         <p className="mt-1 text-xs text-gray-500">
-                          {task.taskType} · {task.currentPriority || task.priority}
+                          {String(task.projectName || '').trim() || task.taskType} ·{' '}
+                          {task.currentPriority || task.priority}
                           {task.hoursRequired != null
                             ? ` · ${formatDurationLabel(task.hoursRequired)}`
                             : ''}{' '}
@@ -684,6 +1585,41 @@ export default function DailyPlannerDayTasksModal({
                             ? ` · Approved by ${task.approvedByName}`
                             : ''}
                         </p>
+                        {task.createdByReportingPerson ? (
+                          <p className="mt-1 text-xs font-medium text-slate-600">
+                            {String(task.createdByName || '').trim()
+                              ? `Created by ${String(task.createdByName).trim()}`
+                              : 'Created by Reporting Person'}
+                          </p>
+                        ) : null}
+                        {progressDoneValue != null ? (
+                          <p className="mt-1 text-xs text-gray-600">
+                            Progress Done: {progressDoneValue}%
+                          </p>
+                        ) : null}
+                        {hasActiveDraft && taskDraft ? (
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                            <Badge
+                              variant="outline"
+                              className="border-amber-300 bg-amber-50 font-normal text-amber-800"
+                            >
+                              Draft — not submitted
+                            </Badge>
+                            <span className="text-gray-600">
+                              {taskDraft.outcome === 'completed'
+                                ? `Completed${
+                                    totalSlotsDecimalHours(taskDraft.timeSlots ?? []) != null
+                                      ? ` · ${formatDurationLabel(
+                                          totalSlotsDecimalHours(taskDraft.timeSlots ?? []) as number,
+                                        )}`
+                                      : ''
+                                  }`
+                                : taskDraft.notCompletedAction === 'next_date'
+                                  ? `Not Completed · Reschedule to ${taskDraft.rescheduleDate || '—'}`
+                                  : 'Not Completed · Terminate'}
+                            </span>
+                          </div>
+                        ) : null}
                         {enhancedEligible ? (
                           <div className="mt-2">
                             <DailyPlannerTaskDocumentsList task={task} />
@@ -701,7 +1637,34 @@ export default function DailyPlannerDayTasksModal({
                               Edit Task
                             </Button>
                           ) : null}
+                          {hasActiveDraft && canModifyTasks && !completionAlreadySubmitted ? (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={submittingDay}
+                                onClick={() =>
+                                  taskDraft?.outcome === 'completed'
+                                    ? setCompleteTaskId(task.plannerTaskId)
+                                    : setReasonTaskId(task.plannerTaskId)
+                                }
+                              >
+                                Edit Draft
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                disabled={submittingDay}
+                                onClick={() => clearDrafts([task.plannerTaskId])}
+                              >
+                                Discard Draft
+                              </Button>
+                            </>
+                          ) : null}
                           {canModifyTasks &&
+                          !draftCompleted &&
                           task.status !== 'Awaiting Verification' &&
                           task.status !== 'Completed' &&
                           task.status !== 'Verified Complete' &&
@@ -731,13 +1694,31 @@ export default function DailyPlannerDayTasksModal({
                                 : 'Work Done'}
                             </p>
                             <BulletPointList text={task.reason} />
-                            {task.completionStartTime && task.completionEndTime ? (
+                            {task.timeSlots && task.timeSlots.length > 0 ? (
+                              <div className="mt-1 space-y-0.5 text-gray-600">
+                                {task.timeSlots.map((slot, idx) => (
+                                  <p key={`${slot.startTime}-${slot.endTime}-${idx}`}>
+                                    Slot {idx + 1}: {formatHhMm12(slot.startTime)} –{' '}
+                                    {formatHhMm12(slot.endTime)}
+                                  </p>
+                                ))}
+                                {task.completionDurationHours != null ? (
+                                  <p>Total: {formatDurationLabel(task.completionDurationHours)}</p>
+                                ) : null}
+                              </div>
+                            ) : task.completionStartTime && task.completionEndTime ? (
                               <p className="mt-1 text-gray-600">
                                 {task.completionStartTime} – {task.completionEndTime}
                                 {task.completionDurationHours != null
                                   ? ` · ${formatDurationLabel(task.completionDurationHours)}`
                                   : ''}
                               </p>
+                            ) : null}
+                            {task.hasObservation && task.observationText ? (
+                              <div className="mt-2">
+                                <p className="font-medium text-gray-700">Observation</p>
+                                <BulletPointList text={task.observationText} />
+                              </div>
                             ) : null}
                           </div>
                         ) : null}
@@ -861,6 +1842,11 @@ export default function DailyPlannerDayTasksModal({
             <div className="flex flex-wrap items-center justify-end gap-2">
               {completionAlreadySubmitted ? (
                 <p className="text-xs text-green-700 sm:mr-2">Completion submitted.</p>
+              ) : factoryMode && pendingDraftTasks.length > 0 ? (
+                <p className="text-xs text-amber-700 sm:mr-2">
+                  {pendingDraftTasks.length} draft{pendingDraftTasks.length === 1 ? '' : 's'} saved
+                  locally — click Submit to send.
+                </p>
               ) : null}
               <Button type="button" variant="outline" onClick={onClose} disabled={submittingDay}>
                 Close
@@ -886,12 +1872,331 @@ export default function DailyPlannerDayTasksModal({
           if (!v) setCompleteTaskId(null);
         }}
       >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
+        <DialogContent
+          className={cn(
+            stepMode
+              ? // Match Create Task exactly: override DialogContent defaults (incl. sm:max-w-lg)
+                // with utilities + inline styles so width cannot collapse to max-w-md/lg.
+                '!flex !h-[92vh] !max-h-[92vh] !w-[min(96vw,1200px)] !max-w-[1200px] !flex-col !gap-0 overflow-hidden !p-0 sm:!max-w-[1200px]'
+              : // Legacy (no steps) — Factory: slightly wider for Start|End; Office stays max-w-md.
+                factoryMode
+                ? 'max-w-lg max-h-[90vh] overflow-y-auto'
+                : 'max-w-md',
+          )}
+          style={
+            stepMode
+              ? {
+                  width: 'min(96vw, 1200px)',
+                  maxWidth: '1200px',
+                  height: '92vh',
+                  maxHeight: '92vh',
+                }
+              : undefined
+          }
+        >
+          <DialogHeader
+            className={cn(
+              stepMode && 'shrink-0 border-b border-gray-200 px-6 py-3 pr-12 text-left',
+            )}
+          >
             <DialogTitle>Mark Completed</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+          <div
+            className={cn(
+              'min-w-0 space-y-4',
+              stepMode && 'min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-4',
+            )}
+          >
+            {stepMode ? (
+              <div className="min-w-0 space-y-3">
+                {/*
+                  ONE parent 2-column grid. Left/right cells are siblings (via Fragment),
+                  so Step N always sits beside Work Done N — not stacked in one column.
+                  Inline gridTemplateColumns forces 2 cols (modal is 1200px). Narrow viewports
+                  fall back to a single column via max-sm override.
+                */}
+                <div
+                  className="grid gap-x-4 gap-y-3 max-sm:[grid-template-columns:minmax(0,1fr)!important]"
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+                    columnGap: '1rem',
+                    rowGap: '0.75rem',
+                  }}
+                >
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-semibold text-gray-800">
+                    Step By Step Procedure
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-semibold text-gray-800">
+                    Work Done
+                  </div>
+
+                  {completeStepRows.map((row, idx) => {
+                    const highlighted =
+                      row.invalid || (highlightStepIds.includes(row.stepId) && !row.complete);
+                    const startId = `complete-step-${row.stepId}-startTime`;
+                    const endId = `complete-step-${row.stepId}-endTime`;
+                    const workDoneId = `complete-step-${row.stepId}-workDone`;
+                    return (
+                      <Fragment key={row.stepId}>
+                        {/* Left column cell — planned step */}
+                        <div
+                          className={cn(
+                            'min-w-0 rounded-lg border border-gray-200 bg-white p-3',
+                            highlighted && 'border-red-200 bg-red-50/40',
+                          )}
+                        >
+                          <p className="break-words text-sm font-medium text-gray-900">
+                            <span className="mr-1.5 text-gray-500">{idx + 1}.</span>
+                            {row.description}
+                          </p>
+                          <p className="mt-1.5 text-xs text-gray-500">
+                            Planned: {formatMinutesLabel(row.plannedMinutes)}
+                          </p>
+                        </div>
+
+                        {/* Right column cell — Work Done + times */}
+                        <div
+                          className={cn(
+                            'min-w-0 rounded-lg border border-gray-200 bg-white p-3',
+                            highlighted && 'border-red-200 bg-red-50/40',
+                          )}
+                        >
+                          <div className="space-y-2">
+                            <Label htmlFor={workDoneId} className="text-xs text-gray-600">
+                              Work Done
+                            </Label>
+                            <Textarea
+                              id={workDoneId}
+                              rows={2}
+                              placeholder="Enter what was done..."
+                              value={row.workDone}
+                              className="min-h-[2.75rem] w-full max-w-full resize-y text-sm"
+                              onChange={(e) =>
+                                setStepTime(row.stepId, 'workDone', e.target.value)
+                              }
+                            />
+                          </div>
+                          <div className="mt-3 flex min-w-0 flex-wrap items-end gap-x-3 gap-y-2">
+                            {factoryMode ? (
+                              <>
+                                <TwelveHourTimeInput
+                                  id={startId}
+                                  label="Start Time"
+                                  required
+                                  className="shrink-0"
+                                  value={row.startTime}
+                                  error={highlighted && !row.startTime}
+                                  onChange={(v) => setStepTime(row.stepId, 'startTime', v)}
+                                />
+                                <TwelveHourTimeInput
+                                  id={endId}
+                                  label="End Time"
+                                  required
+                                  className="shrink-0"
+                                  value={row.endTime}
+                                  error={highlighted && (!row.endTime || row.invalid)}
+                                  onChange={(v) => setStepTime(row.stepId, 'endTime', v)}
+                                />
+                              </>
+                            ) : (
+                              <>
+                                <div className="w-[8.5rem] shrink-0 space-y-1.5">
+                                  <Label htmlFor={startId} className="text-xs">
+                                    Start Time *
+                                  </Label>
+                                  <Input
+                                    id={startId}
+                                    type="time"
+                                    value={row.startTime}
+                                    className={cn(
+                                      'h-9',
+                                      highlighted && !row.startTime && 'border-red-500',
+                                    )}
+                                    aria-invalid={highlighted && !row.startTime}
+                                    onChange={(e) =>
+                                      setStepTime(row.stepId, 'startTime', e.target.value)
+                                    }
+                                  />
+                                </div>
+                                <div className="w-[8.5rem] shrink-0 space-y-1.5">
+                                  <Label htmlFor={endId} className="text-xs">
+                                    End Time *
+                                  </Label>
+                                  <Input
+                                    id={endId}
+                                    type="time"
+                                    value={row.endTime}
+                                    className={cn(
+                                      'h-9',
+                                      highlighted &&
+                                        (!row.endTime || row.invalid) &&
+                                        'border-red-500',
+                                    )}
+                                    aria-invalid={highlighted && (!row.endTime || row.invalid)}
+                                    onChange={(e) =>
+                                      setStepTime(row.stepId, 'endTime', e.target.value)
+                                    }
+                                  />
+                                </div>
+                              </>
+                            )}
+                            <div className="min-w-[6.5rem] shrink-0 space-y-1.5">
+                              <p className="text-xs font-medium leading-none text-gray-700">
+                                Actual Time
+                              </p>
+                              <p className="flex h-9 items-center text-sm font-medium text-gray-800">
+                                {row.actualMinutes != null
+                                  ? formatMinutesLabel(row.actualMinutes)
+                                  : '—'}
+                              </p>
+                            </div>
+                          </div>
+                          {highlighted ? (
+                            <p className="mt-2 text-xs text-red-600">
+                              {row.invalid
+                                ? 'End Time must be after Start Time.'
+                                : 'Start Time and End Time are required for this step.'}
+                            </p>
+                          ) : null}
+                        </div>
+                      </Fragment>
+                    );
+                  })}
+
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-semibold text-gray-800">
+                    Total Planned Time: {formatMinutesLabel(stepTotalPlannedMinutes)}
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-semibold text-gray-800">
+                    Total Actual Time: {formatMinutesLabel(stepTotalActualMinutes)}
+                  </div>
+                </div>
+                {stepsAllComplete
+                  ? (() => {
+                      const timing = completionTimingMessage(
+                        stepTotalPlannedMinutes / 60,
+                        stepTotalActualMinutes,
+                      );
+                      if (!timing) return null;
+                      return (
+                        <p
+                          className={cn(
+                            'text-sm font-medium',
+                            timing.startsWith('Failed') ? 'text-red-600' : 'text-green-600',
+                          )}
+                        >
+                          {timing}
+                        </p>
+                      );
+                    })()
+                  : null}
+              </div>
+            ) : null}
+            {factoryMode && !stepMode ? (
+              <div className="min-w-0 space-y-3">
+                {completeSlots.map((slot, idx) => (
+                  <div
+                    key={slot.id}
+                    className="min-w-0 space-y-2 rounded-md border border-gray-200 p-3"
+                  >
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <p className="min-w-0 truncate text-xs font-medium text-gray-600">
+                        Time Slot {idx + 1}
+                      </p>
+                      {completeSlots.length > 1 ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 shrink-0 px-2 text-xs text-gray-500 hover:text-red-600"
+                          onClick={() =>
+                            setCompleteSlots((prev) => prev.filter((s) => s.id !== slot.id))
+                          }
+                        >
+                          Remove
+                        </Button>
+                      ) : null}
+                    </div>
+                    {/*
+                      Start | End side-by-side at natural control widths (~50+50+68px each).
+                      Wrap only on genuinely narrow viewports.
+                    */}
+                    <div className="flex min-w-0 flex-wrap items-start gap-x-4 gap-y-2">
+                      <TwelveHourTimeInput
+                        id={`complete-slot-${slot.id}-start`}
+                        label="Start Time"
+                        required
+                        className="shrink-0"
+                        value={slot.startTime}
+                        onChange={(v) =>
+                          setCompleteSlots((prev) =>
+                            prev.map((s) => (s.id === slot.id ? { ...s, startTime: v } : s)),
+                          )
+                        }
+                      />
+                      <TwelveHourTimeInput
+                        id={`complete-slot-${slot.id}-end`}
+                        label="End Time"
+                        required
+                        className="shrink-0"
+                        value={slot.endTime}
+                        onChange={(v) =>
+                          setCompleteSlots((prev) =>
+                            prev.map((s) => (s.id === slot.id ? { ...s, endTime: v } : s)),
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={completeSlots.length >= MAX_COMPLETION_TIME_SLOTS}
+                  onClick={() =>
+                    setCompleteSlots((prev) =>
+                      prev.length >= MAX_COMPLETION_TIME_SLOTS
+                        ? prev
+                        : [...prev, createEmptyTimeSlot()],
+                    )
+                  }
+                >
+                  + Add Time Slot
+                </Button>
+                {completeSlotsValidation.ok ? (
+                  <>
+                    <p className="text-sm text-gray-600">
+                      Duration:{' '}
+                      {formatDurationLabel(
+                        totalSlotsDecimalHours(completeSlots) ??
+                          minutesToDecimalHours(completeSlotsValidation.totalMinutes),
+                      )}
+                    </p>
+                    {(() => {
+                      const timing = completionTimingMessage(
+                        completeTaskForDialog?.hoursRequired,
+                        completeSlotsValidation.totalMinutes,
+                      );
+                      if (!timing) return null;
+                      return (
+                        <p
+                          className={cn(
+                            'text-sm font-medium',
+                            timing.startsWith('Failed') ? 'text-red-600' : 'text-green-600',
+                          )}
+                        >
+                          {timing}
+                        </p>
+                      );
+                    })()}
+                  </>
+                ) : completeSlotsValidation.issue !== 'incomplete' ? (
+                  <p className="text-sm text-red-600">{completeSlotsValidation.message}</p>
+                ) : null}
+              </div>
+            ) : null}
+            <div className={cn('grid grid-cols-2 gap-3', (factoryMode || stepMode) && 'hidden')}>
               <div className="space-y-2">
                 <Label htmlFor="complete-start-time">Start Time *</Label>
                 <Input
@@ -911,35 +2216,80 @@ export default function DailyPlannerDayTasksModal({
                 />
               </div>
             </div>
-            {completeDurationPreview != null ? (
+            {factoryMode || stepMode ? null : completeDurationPreview != null ? (
               <p className="text-sm text-gray-600">
                 Duration: {formatDurationLabel(completeDurationPreview)}
               </p>
             ) : completeStartTime && completeEndTime ? (
               <p className="text-sm text-red-600">End Time must be on or after Start Time.</p>
             ) : null}
-            <BulletPointEditor
-              key={completeTaskId ?? 'complete-closed'}
-              ref={workDoneEditorRef}
-              id="work-done"
-              label="Work Done"
-              required
-            />
+            {stepMode ? null : (
+              <BulletPointEditor
+                key={completeTaskId ?? 'complete-closed'}
+                ref={workDoneEditorRef}
+                id="work-done"
+                label="Work Done"
+                required
+                defaultValue={
+                  factoryMode && completeTaskId
+                    ? completionDrafts[completeTaskId]?.workDone ?? ''
+                    : ''
+                }
+              />
+            )}
+            {factoryMode ? (
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="complete-has-observation">
+                    Do you have any observation regarding this project/task?
+                  </Label>
+                  <Select
+                    value={completeHasObservation}
+                    onValueChange={(v) => setCompleteHasObservation(v as 'Yes' | 'No')}
+                  >
+                    <SelectTrigger id="complete-has-observation">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="No">No</SelectItem>
+                      <SelectItem value="Yes">Yes</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {completeHasObservation === 'Yes' ? (
+                  <BulletPointEditor
+                    key={`observation-${completeTaskId ?? 'closed'}`}
+                    ref={observationEditorRef}
+                    id="complete-observation"
+                    label="Observation"
+                    required
+                    defaultValue={
+                      completeTaskId ? completionDrafts[completeTaskId]?.observationText ?? '' : ''
+                    }
+                  />
+                ) : null}
+              </div>
+            ) : null}
             {enhancedEligible ? (
               <DailyPlannerEnhancedTaskFields
                 idPrefix="complete"
                 isProjectBased={Boolean(
                   tasks.find((t) => t.plannerTaskId === completeTaskId)?.isProjectBased,
                 )}
+                alwaysShowProgressDone={factoryMode}
+                progressReadOnly={stepMode}
                 values={{
                   needsDocument: completeNeedsDocument,
-                  progressDone: completeProgressDone,
+                  // Step-based: duration-weighted progress derived from completed steps.
+                  progressDone: stepMode ? stepProgressPercent : completeProgressDone,
                   documentFile: completeDocumentFile,
+                  documentFiles: completeDocumentFiles,
                 }}
                 onChange={(patch) => {
                   if (patch.needsDocument !== undefined) setCompleteNeedsDocument(patch.needsDocument);
                   if (patch.progressDone !== undefined) setCompleteProgressDone(patch.progressDone);
                   if (patch.documentFile !== undefined) setCompleteDocumentFile(patch.documentFile);
+                  if (patch.documentFiles !== undefined) setCompleteDocumentFiles(patch.documentFiles);
                 }}
                 existingFileName={
                   tasks.find((t) => t.plannerTaskId === completeTaskId)?.documentFileKey
@@ -949,12 +2299,100 @@ export default function DailyPlannerDayTasksModal({
               />
             ) : null}
           </div>
-          <DialogFooter>
+          <DialogFooter
+            className={cn(stepMode && 'shrink-0 border-t border-gray-200 px-6 py-3')}
+          >
             <Button type="button" variant="outline" onClick={() => setCompleteTaskId(null)}>
               Cancel
             </Button>
             <Button type="button" onClick={() => void submitCompleted()} disabled={!!busyId}>
-              Submit
+              {factoryMode ? 'Save' : 'Submit'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Case B: some steps lack Start/End — offer to enter them now, or reschedule only those steps. */}
+      <AlertDialog
+        open={missingTimesPromptOpen && !!completeTaskId}
+        onOpenChange={(v) => {
+          if (!v) setMissingTimesPromptOpen(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Missing step times</AlertDialogTitle>
+            <AlertDialogDescription>{MISSING_STEP_TIMES_PROMPT}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => {
+                // "No": ask for a date and reschedule only the incomplete steps.
+                setMissingTimesPromptOpen(false);
+                setRescheduleStepsDate('');
+                setRescheduleStepsOpen(true);
+              }}
+            >
+              No
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                // "Yes": stay on the form with incomplete steps highlighted; entered data is preserved.
+                setMissingTimesPromptOpen(false);
+              }}
+            >
+              Yes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog
+        open={rescheduleStepsOpen && !!completeTaskId}
+        onOpenChange={(v) => {
+          if (!v) setRescheduleStepsOpen(false);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reschedule incomplete steps</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-gray-600">
+              Only the steps without complete times will move to the new date. Steps with Start and
+              End Time stay on this task and are submitted as completed.
+            </p>
+            <ul className="list-inside list-disc space-y-0.5 text-sm text-gray-800">
+              {completeStepRows
+                .filter((r) => !r.complete)
+                .map((r) => (
+                  <li key={r.stepId} className="break-words">
+                    {r.description}
+                  </li>
+                ))}
+            </ul>
+            <div className="space-y-2">
+              <Label htmlFor="reschedule-steps-new-date">New Date</Label>
+              <Input
+                id="reschedule-steps-new-date"
+                type="date"
+                min={minRescheduleDate}
+                value={rescheduleStepsDate}
+                onChange={(event) => setRescheduleStepsDate(event.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setRescheduleStepsOpen(false)}>
+              Back
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void confirmRescheduleIncompleteSteps()}
+              disabled={!!busyId}
+            >
+              Reschedule &amp; Submit
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -972,12 +2410,53 @@ export default function DailyPlannerDayTasksModal({
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-task-name">Task Name *</Label>
+              <Label htmlFor="edit-project-name">
+                Project Name{factoryMode ? ' *' : ''}
+              </Label>
               <Input
-                id="edit-task-name"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
+                id="edit-project-name"
+                list="edit-project-options"
+                value={editProjectName}
+                onChange={(e) => setEditProjectName(e.target.value)}
+                placeholder="Select or type a project name"
               />
+              <datalist id="edit-project-options">
+                {editProjectOptions.map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-task-name">Task Name *</Label>
+              {editManagedTasks.length > 0 ? (
+                <select
+                  id="edit-task-name"
+                  className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
+                  value={editProjectTaskId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    const match = editManagedTasks.find((t) => t.projectTaskId === id);
+                    setEditProjectTaskId(id);
+                    setEditName(match?.taskName || '');
+                  }}
+                >
+                  <option value="">Select task</option>
+                  {editManagedTasks.map((t) => (
+                    <option key={t.projectTaskId} value={t.projectTaskId}>
+                      {t.taskName}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <Input
+                  id="edit-task-name"
+                  value={editName}
+                  onChange={(e) => {
+                    setEditName(e.target.value);
+                    setEditProjectTaskId('');
+                  }}
+                />
+              )}
             </div>
             <BulletPointEditor
               key={editTaskId ?? 'edit-closed'}
@@ -1040,6 +2519,9 @@ export default function DailyPlannerDayTasksModal({
               id="not-completed-reason"
               label="Reason"
               required
+              defaultValue={
+                factoryMode && reasonTaskId ? completionDrafts[reasonTaskId]?.reason ?? '' : ''
+              }
             />
             <div className="space-y-2">
               <Label htmlFor="not-completed-action">Action</Label>
@@ -1081,6 +2563,7 @@ export default function DailyPlannerDayTasksModal({
                   needsDocument: notCompletedNeedsDocument,
                   progressDone: notCompletedProgressDone,
                   documentFile: notCompletedDocumentFile,
+                  documentFiles: notCompletedDocumentFiles,
                 }}
                 onChange={(patch) => {
                   if (patch.needsDocument !== undefined) {
@@ -1091,6 +2574,9 @@ export default function DailyPlannerDayTasksModal({
                   }
                   if (patch.documentFile !== undefined) {
                     setNotCompletedDocumentFile(patch.documentFile);
+                  }
+                  if (patch.documentFiles !== undefined) {
+                    setNotCompletedDocumentFiles(patch.documentFiles);
                   }
                 }}
                 existingFileName={
@@ -1106,7 +2592,7 @@ export default function DailyPlannerDayTasksModal({
               Cancel
             </Button>
             <Button type="button" onClick={() => void submitNotCompleted()} disabled={!!busyId}>
-              Submit
+              {factoryMode ? 'Save' : 'Submit'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '../ui/button';
 import { Card } from '../ui/card';
@@ -16,9 +16,18 @@ import {
 } from '../ui/dialog';
 import { apiFetch } from '../../services/api';
 import { normalizeExpenseRow } from '../../utils/expenseRowNormalize';
-import { navigateBackToAuditExpenses } from '../../utils/auditExpenseNavigation';
-import { approveExpenseAudit, rejectExpenseAudit } from '../../hooks/expenses/expensesApi';
-import { useInvalidateExpensesList } from '../../hooks/expenses/useExpensesQueries';
+import {
+  navigateBackToAuditExpenses,
+  navigateToAuditExpenseDetail,
+  peekAuditExpenseViewState,
+} from '../../utils/auditExpenseNavigation';
+import {
+  approveExpenseAudit,
+  rejectExpenseAudit,
+  type AuditExpenseFilters,
+} from '../../hooks/expenses/expensesApi';
+import { useAuditExpenseDecisionInvalidation } from '../../hooks/expenses/useExpensesQueries';
+import { findNextPendingAuditExpenseId } from '../../utils/auditExpensePendingQueue';
 import type { ExpenseAuditDecision, ExpenseDocument, ExpenseRecord } from '../../types/expenses';
 
 type PreviewPhase = 'idle' | 'loading' | 'ready' | 'no_attachment' | 'preview_failed';
@@ -104,7 +113,8 @@ const rejectedActionBadgeStyle = {
 } as const;
 
 export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetailPageProps) {
-  const invalidateExpenses = useInvalidateExpensesList();
+  const queryClient = useQueryClient();
+  const applyAuditDecision = useAuditExpenseDecisionInvalidation();
   const [detailExpense, setDetailExpense] = useState<ExpenseRecord | null>(null);
   const [auditStatus, setAuditStatus] = useState<ExpenseAuditDecision>('Pending');
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
@@ -112,6 +122,9 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFileName, setPreviewFileName] = useState('');
   const [previewPhase, setPreviewPhase] = useState<PreviewPhase>('idle');
+  const [decisionCompleted, setDecisionCompleted] = useState(false);
+  const [noMorePending, setNoMorePending] = useState(false);
+  const [nextLoading, setNextLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +134,9 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
       setPreviewUrl(null);
       setPreviewFileName('');
       setPreviewPhase('loading');
+      setDecisionCompleted(false);
+      setNoMorePending(false);
+      setNextLoading(false);
 
       try {
         const { expense, documents } = await fetchExpenseFullDetails(expenseId);
@@ -157,6 +173,15 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
     };
   }, [expenseId]);
 
+  const resolveAuditFilters = (): AuditExpenseFilters => {
+    const saved = peekAuditExpenseViewState();
+    return {
+      employeeId: saved?.employee ?? 'all',
+      month: saved?.month ?? 'all',
+      year: saved?.year ?? 'all',
+    };
+  };
+
   const approveMutation = useMutation({
     mutationFn: () => approveExpenseAudit(expenseId),
     onSuccess: (updated) => {
@@ -164,7 +189,9 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
       setDetailExpense((prev) =>
         prev ? { ...prev, ...updated, auditStatus: 'Approved' } : updated,
       );
-      void invalidateExpenses();
+      setDecisionCompleted(true);
+      setNoMorePending(false);
+      applyAuditDecision(expenseId, 'Approved');
       toast.success('Expense approved');
     },
     onError: (error) => {
@@ -182,7 +209,9 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
       );
       setRejectDialogOpen(false);
       setRejectReason('');
-      void invalidateExpenses();
+      setDecisionCompleted(true);
+      setNoMorePending(false);
+      applyAuditDecision(expenseId, 'Rejected');
       toast.success('Expense rejected');
     },
     onError: (error) => {
@@ -191,7 +220,34 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
     },
   });
 
+  const handleNextPending = async () => {
+    if (nextLoading) return;
+    setNextLoading(true);
+    try {
+      const filters = resolveAuditFilters();
+      const { nextId, exhausted } = await findNextPendingAuditExpenseId(
+        queryClient,
+        filters,
+        expenseId,
+      );
+      if (nextId) {
+        navigateToAuditExpenseDetail(nextId);
+        return;
+      }
+      setNoMorePending(true);
+      if (exhausted) {
+        toast.message('No more pending expenses.');
+      }
+    } catch (err) {
+      console.error('Next pending expense failed:', err);
+      toast.error('Could not load the next pending expense');
+    } finally {
+      setNextLoading(false);
+    }
+  };
+
   const isPending = auditStatus === 'Pending';
+  const showNextControls = decisionCompleted && !isPending;
 
   const renderAuditActions = () => {
     if (isPending) {
@@ -222,13 +278,26 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
         </div>
       );
     }
-    if (auditStatus === 'Approved') {
-      return <span style={approvedActionBadgeStyle}>Approved</span>;
-    }
-    if (auditStatus === 'Rejected') {
-      return <span style={rejectedActionBadgeStyle}>Rejected</span>;
-    }
-    return null;
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {auditStatus === 'Approved' ? (
+          <span style={approvedActionBadgeStyle}>Approved</span>
+        ) : auditStatus === 'Rejected' ? (
+          <span style={rejectedActionBadgeStyle}>Rejected</span>
+        ) : null}
+        {showNextControls && !noMorePending ? (
+          <Button
+            type="button"
+            size="sm"
+            className="bg-[#007BFF] hover:bg-[#0056b3]"
+            disabled={nextLoading}
+            onClick={() => void handleNextPending()}
+          >
+            {nextLoading ? 'Loading…' : 'Next'}
+          </Button>
+        ) : null}
+      </div>
+    );
   };
 
   const isPdf = isPdfFile(previewFileName, previewUrl ?? undefined);
@@ -332,6 +401,12 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
         </Button>
         {renderAuditActions()}
       </div>
+
+      {showNextControls && noMorePending ? (
+        <p className="mb-3 text-sm text-gray-600" style={{ flexShrink: 0 }}>
+          No more pending expenses.
+        </p>
+      ) : null}
 
       <h1 className="text-[#212529] text-lg font-semibold" style={{ flexShrink: 0 }}>
         Expense Details

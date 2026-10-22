@@ -59,11 +59,11 @@ export default function DailyPlannerCompletionApprovalsPanel({
       department: emp?.department || '',
       designation: emp?.designation || '',
       location,
-      // Server-resolved for task owner (Factory OR Office+SuperAdmin).
+      // Server-resolved for task owner (Factory OR Office). Fallback matches shared eligibility.
       enhancedEligible:
         typeof mapping?.enhancedEligible === 'boolean'
           ? mapping.enhancedEligible
-          : location === 'Factory',
+          : Boolean(String(location || '').trim()),
     };
   }, [activeRow, employeesQuery.data, mappingsQuery.data]);
 

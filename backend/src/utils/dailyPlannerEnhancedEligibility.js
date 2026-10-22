@@ -2,13 +2,16 @@
  * Enhanced Daily Planner features eligibility.
  *
  * Factory → eligible (any access role).
- * Office + Super Admin → eligible.
- * Office + User/Admin → NOT eligible (existing behavior only).
+ * Office → eligible (any access role).
+ *
+ * Documents, Progress Done fields (where shown), Project Progress, and Raise Flag
+ * follow this gate. Location-specific min hours / holidays stay separate.
  */
 
 import * as UserAccessControlModel from '../models/UserAccessControl.js';
 import {
   EMPLOYEE_LOCATION_FACTORY,
+  EMPLOYEE_LOCATION_OFFICE,
   normalizeEmployeeLocation,
 } from './companyWorkingDays.js';
 import { getEffectiveRole, isSuperAdmin } from './accessControl.js';
@@ -21,7 +24,7 @@ import { getEmployeeLocation } from './employeeLocation.js';
  */
 export function isEnhancedDailyPlannerEligible(location, accessRole) {
   const loc = normalizeEmployeeLocation(location);
-  if (loc === EMPLOYEE_LOCATION_FACTORY) return true;
+  if (loc === EMPLOYEE_LOCATION_FACTORY || loc === EMPLOYEE_LOCATION_OFFICE) return true;
   return isSuperAdmin(accessRole);
 }
 

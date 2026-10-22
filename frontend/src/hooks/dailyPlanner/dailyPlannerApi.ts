@@ -3,8 +3,11 @@ import type {
   DailyPlannerTaskDraft,
   DailyPlannerTeamMapping,
   DailyPlannerNotCompletedAction,
+  DailyPlannerProjectObservation,
   PendingCompletionApproval,
 } from '../../types/dailyPlanner';
+import type { PayrollLeaveRequest } from '../../types/payroll';
+import type { DailyPlannerProcedureStep } from '../../utils/dailyPlannerProcedureSteps';
 import { apiFetch } from '../../services/api';
 import {
   assertCanCompleteTasks,
@@ -81,6 +84,7 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     managerInstructions: String(r.managerInstructions ?? '').trim(),
     isProjectBased: Boolean(r.isProjectBased),
     projectName: String(r.projectName ?? '').trim(),
+    projectTaskId: String(r.projectTaskId ?? '').trim(),
     needsDocument:
       r.needsDocument === undefined || r.needsDocument === null ? null : Boolean(r.needsDocument),
     documentFileName: String(r.documentFileName ?? '').trim(),
@@ -113,6 +117,9 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     planFinalizedAt: r.planFinalizedAt ? String(r.planFinalizedAt) : null,
     planFinalizedBy: String(r.planFinalizedBy ?? '').trim(),
     createdByRole: String(r.createdByRole ?? '').trim(),
+    createdByEmployeeCode: String(r.createdByEmployeeCode ?? '').trim(),
+    createdByName: String(r.createdByName ?? '').trim(),
+    createdByReportingPerson: Boolean(r.createdByReportingPerson),
     dayCompletionSubmittedAt: r.dayCompletionSubmittedAt
       ? String(r.dayCompletionSubmittedAt)
       : null,
@@ -179,6 +186,20 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
       String(r.completionDurationHours).trim() === ''
         ? null
         : Number(r.completionDurationHours),
+    timeSlots: Array.isArray(r.timeSlots)
+      ? (r.timeSlots as DailyPlannerTask['timeSlots'])
+      : [],
+    hasObservation:
+      r.hasObservation === undefined || r.hasObservation === null
+        ? null
+        : Boolean(r.hasObservation),
+    observationText: String(r.observationText ?? '').trim(),
+    observationId: r.observationId ? String(r.observationId).trim() : null,
+    observationSubmittedBy: String(r.observationSubmittedBy ?? '').trim(),
+    observationSubmittedByName: String(r.observationSubmittedByName ?? '').trim(),
+    observationSubmittedAt: r.observationSubmittedAt
+      ? String(r.observationSubmittedAt)
+      : null,
     createdAt: r.createdAt ? String(r.createdAt) : undefined,
     updatedAt: r.updatedAt ? String(r.updatedAt) : undefined,
   };
@@ -447,8 +468,16 @@ export async function completeDailyPlannerTask(
   options?: {
     startTime?: string;
     endTime?: string;
+    timeSlots?: Array<{ startTime: string; endTime: string }>;
     needsDocument?: boolean;
     progressDone?: number | null;
+    hasObservation?: boolean;
+    observationText?: string;
+    observationId?: string | null;
+    /** Step-based reporting: per-step Start/End (HH:mm). */
+    procedureSteps?: DailyPlannerProcedureStep[];
+    /** Approved half-day leave: allow Mark Completed outside normal windows. */
+    halfDayLeave?: boolean;
   },
 ): Promise<{
   task: DailyPlannerTask;
@@ -458,7 +487,9 @@ export async function completeDailyPlannerTask(
 }> {
   assertCanCompleteTasks(taskDate);
   if (planningConfig) {
-    assertCanUpdateTasksOnDate(taskDate, planningConfig);
+    assertCanUpdateTasksOnDate(taskDate, planningConfig, {
+      halfDayLeave: Boolean(options?.halfDayLeave),
+    });
   }
   const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}/complete`, {
     method: 'POST',
@@ -467,8 +498,15 @@ export async function completeDailyPlannerTask(
       workDone,
       startTime: options?.startTime || undefined,
       endTime: options?.endTime || undefined,
+      ...(options?.timeSlots?.length ? { timeSlots: options.timeSlots } : {}),
       ...(options?.needsDocument !== undefined ? { needsDocument: options.needsDocument } : {}),
       ...(options?.progressDone !== undefined ? { progressDone: options.progressDone } : {}),
+      ...(options?.hasObservation !== undefined ? { hasObservation: options.hasObservation } : {}),
+      ...(options?.observationText !== undefined
+        ? { observationText: options.observationText }
+        : {}),
+      ...(options?.observationId ? { observationId: options.observationId } : {}),
+      ...(options?.procedureSteps?.length ? { procedureSteps: options.procedureSteps } : {}),
     }),
   })) as {
     data?: {
@@ -504,6 +542,10 @@ export async function updateDailyPlannerTaskForEmployee(
     hoursRequired?: number;
     managerInstructions?: string;
     managerComments?: string;
+    /** When set, backend syncs description + hoursRequired from the steps. */
+    procedureSteps?: DailyPlannerProcedureStep[];
+    /** Skip the implicit Pending → Approved transition (e.g. comment-only saves). */
+    preserveStatus?: boolean;
     allowFinalizedEdit?: boolean;
     skipRevisedEmail?: boolean;
   },
@@ -524,6 +566,10 @@ export async function updateDailyPlannerTask(
     description?: string;
     priority?: string;
     hoursRequired?: number;
+    isProjectBased?: boolean;
+    projectName?: string;
+    projectTaskId?: string;
+    needsDocument?: boolean;
   },
 ): Promise<DailyPlannerTask> {
   const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}`, {
@@ -551,10 +597,13 @@ export async function notCompletedDailyPlannerTask(
   payload: DailyPlannerNotCompletedPayload,
   taskDate: string,
   planningConfig?: PlanningConfig,
+  options?: { halfDayLeave?: boolean },
 ): Promise<DailyPlannerNotCompletedResult> {
   assertCanMarkNotCompleted(taskDate);
   if (planningConfig) {
-    assertCanUpdateTasksOnDate(taskDate, planningConfig);
+    assertCanUpdateTasksOnDate(taskDate, planningConfig, {
+      halfDayLeave: Boolean(options?.halfDayLeave),
+    });
   }
   const res = (await apiFetch(
     `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/not-completed`,
@@ -570,6 +619,55 @@ export async function notCompletedDailyPlannerTask(
     rescheduledTask: res.data.rescheduledTask
       ? normalizeTask(res.data.rescheduledTask)
       : undefined,
+  };
+}
+
+/** Team Task Review → Past Data: completed tasks for one project in a date range. */
+export async function fetchProjectCompletedTasks(
+  projectKey: string,
+  range: { from: string; to: string; employeeCode?: string },
+): Promise<DailyPlannerTask[]> {
+  const params = new URLSearchParams({ from: range.from, to: range.to });
+  if (range.employeeCode) params.set('employeeCode', range.employeeCode);
+  const res = (await apiFetch(
+    `/api/daily-planner/projects/${encodeURIComponent(projectKey)}/completed-tasks?${params}`,
+  )) as { data?: { tasks?: DailyPlannerTask[] } };
+  return (res?.data?.tasks ?? []).map(normalizeTask);
+}
+
+export interface DailyPlannerRescheduleStepsPayload {
+  newDate: string;
+  /** Steps with the Start/End entered so far; steps lacking either time are rescheduled. */
+  procedureSteps: DailyPlannerProcedureStep[];
+  reason?: string;
+}
+
+/** Reschedule ONLY the incomplete steps of a task to a new date (creates a new task). */
+export async function rescheduleDailyPlannerTaskSteps(
+  taskId: string,
+  payload: DailyPlannerRescheduleStepsPayload,
+  taskDate: string,
+  planningConfig?: PlanningConfig,
+  options?: { halfDayLeave?: boolean },
+): Promise<{ task: DailyPlannerTask; rescheduledTask: DailyPlannerTask }> {
+  assertCanMarkNotCompleted(taskDate);
+  if (planningConfig) {
+    assertCanUpdateTasksOnDate(taskDate, planningConfig, {
+      halfDayLeave: Boolean(options?.halfDayLeave),
+    });
+  }
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/reschedule-steps`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )) as { data?: { task?: DailyPlannerTask; rescheduledTask?: DailyPlannerTask } };
+  if (!res?.data?.task || !res.data.rescheduledTask) throw new Error('Reschedule failed');
+  return {
+    task: normalizeTask(res.data.task),
+    rescheduledTask: normalizeTask(res.data.rescheduledTask),
   };
 }
 
@@ -671,6 +769,78 @@ export async function saveDailyPlannerManagerComments(
   })) as { data?: { task?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Failed to save manager comments');
   return normalizeTask(res.data.task);
+}
+
+/** Approved Payroll leave for Daily Planner calendars (PayrollLeaveRequests source of truth). */
+export async function fetchApprovedLeaveForPlanner(params: {
+  employeeCode: string;
+  year: number;
+  month: number;
+}): Promise<PayrollLeaveRequest[]> {
+  const code = String(params.employeeCode || '').trim();
+  if (!code) return [];
+  const qs = new URLSearchParams({
+    employeeCode: code,
+    year: String(params.year),
+    month: String(params.month),
+  });
+  const res = (await apiFetch(`/api/daily-planner/leave/approved?${qs.toString()}`)) as {
+    data?: { leaveRequests?: PayrollLeaveRequest[] };
+  };
+  return res?.data?.leaveRequests ?? [];
+}
+
+export async function submitSuperadminReviewComment(
+  taskId: string,
+  body: { comment: string; submissionId: string },
+): Promise<{
+  task: DailyPlannerTask;
+  comment: NonNullable<DailyPlannerTask['superadminReviewComments']>[number];
+  duplicate?: boolean;
+  email: {
+    employee: { ok?: boolean; skipped?: boolean; reason?: string; error?: string };
+    reportingPersons: Array<{
+      managerCode: string;
+      ok?: boolean;
+      skipped?: boolean;
+      reason?: string;
+      error?: string;
+    }>;
+  };
+}> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/superadmin-review-comment`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )) as {
+    data?: {
+      task?: DailyPlannerTask;
+      comment?: NonNullable<DailyPlannerTask['superadminReviewComments']>[number];
+      duplicate?: boolean;
+      email?: {
+        employee: { ok?: boolean; skipped?: boolean; reason?: string; error?: string };
+        reportingPersons: Array<{
+          managerCode: string;
+          ok?: boolean;
+          skipped?: boolean;
+          reason?: string;
+          error?: string;
+        }>;
+      };
+    };
+  };
+  if (!res?.data?.task || !res?.data?.comment) {
+    throw new Error('Failed to save review comment');
+  }
+  return {
+    task: normalizeTask(res.data.task),
+    comment: res.data.comment,
+    duplicate: Boolean(res.data.duplicate),
+    email: res.data.email || { employee: { ok: false }, reportingPersons: [] },
+  };
 }
 
 export async function rejectDailyPlannerTask(
@@ -864,11 +1034,18 @@ export type DailyPlannerDocumentType = 'employee' | 'managerReview' | 'managerAp
 
 export async function uploadDailyPlannerTaskDocument(
   taskId: string,
-  file: File,
+  file: File | File[],
   documentType: DailyPlannerDocumentType = 'employee',
 ): Promise<DailyPlannerTask> {
   const form = new FormData();
-  form.append('file', file);
+  const files = Array.isArray(file) ? file : [file];
+  if (files.length === 0) throw new Error('No file selected');
+  if (files.length === 1) {
+    form.append('file', files[0]);
+  } else {
+    for (const f of files) form.append('files', f);
+    form.append('combine', 'true');
+  }
   form.append('documentType', documentType);
   const qs = `?documentType=${encodeURIComponent(documentType)}`;
   const res = (await apiFetch(
@@ -880,6 +1057,78 @@ export async function uploadDailyPlannerTaskDocument(
   )) as { data?: { task?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Document upload failed');
   return normalizeTask(res.data.task);
+}
+
+export async function fetchDailyPlannerProjectObservations(
+  projectName: string,
+): Promise<DailyPlannerProjectObservation[]> {
+  const name = String(projectName || '').trim();
+  if (!name) return [];
+  const params = new URLSearchParams({ projectName: name });
+  const res = (await apiFetch(`/api/daily-planner/projects/observations?${params}`)) as {
+    data?: { observations?: DailyPlannerProjectObservation[] };
+  };
+  return Array.isArray(res?.data?.observations) ? res.data.observations : [];
+}
+
+export async function batchCompleteDailyPlannerTasks(payload: {
+  date: string;
+  completions?: Array<{
+    taskId: string;
+    workDone: string;
+    startTime?: string;
+    endTime?: string;
+    timeSlots?: Array<{ startTime: string; endTime: string }>;
+    needsDocument?: boolean;
+    progressDone?: number | null;
+    hasObservation?: boolean;
+    observationText?: string;
+    observationId?: string | null;
+    procedureSteps?: DailyPlannerProcedureStep[];
+  }>;
+  notCompleted?: Array<{
+    taskId: string;
+    reason: string;
+    action: DailyPlannerNotCompletedAction;
+    newDate?: string;
+  }>;
+}): Promise<{
+  succeeded: Array<{
+    taskId: string;
+    kind?: string;
+    type?: string;
+    cancelledRescheduledTasks?: Array<{ plannerTaskId?: string } | DailyPlannerTask>;
+    task?: DailyPlannerTask;
+    rescheduledTask?: DailyPlannerTask;
+  }>;
+  failed: Array<{ taskId: string; kind?: string; message: string; statusCode?: number }>;
+}> {
+  const res = (await apiFetch('/api/daily-planner/tasks/batch-complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })) as {
+    data?: {
+      succeeded?: Array<{
+        taskId: string;
+        kind?: string;
+        type?: string;
+        task?: DailyPlannerTask;
+        rescheduledTask?: DailyPlannerTask | null;
+        cancelledRescheduledTasks?: Array<{ plannerTaskId?: string } | DailyPlannerTask>;
+      }>;
+      failed?: Array<{ taskId: string; kind?: string; message: string; statusCode?: number }>;
+    };
+  };
+  return {
+    succeeded: (res?.data?.succeeded || []).map((row) => ({
+      ...row,
+      task: row.task ? normalizeTask(row.task) : undefined,
+      rescheduledTask: row.rescheduledTask ? normalizeTask(row.rescheduledTask) : undefined,
+      cancelledRescheduledTasks: row.cancelledRescheduledTasks || [],
+    })),
+    failed: res?.data?.failed || [],
+  };
 }
 
 export async function fetchDailyPlannerTaskDocumentUrl(
@@ -924,15 +1173,77 @@ export interface ProjectProgressEmployeeRow {
   employeeCode: string;
   employeeName: string;
   progressPercent: number;
-  taskCountWithProgress: number;
+  taskCountWithProgress?: number;
+}
+
+export interface ProjectProgressTaskRow {
+  projectTaskId: string;
+  taskName: string;
+  contributionPercent: number;
+  taskProgressPercent: number;
+  weightedContribution?: number;
+  assignedEmployeeCodes?: string[];
 }
 
 export interface ProjectProgressRow {
   projectKey: string;
   projectName: string;
-  progressPercent: number;
+  progressPercent: number | null;
   employeeCount: number;
   employees: ProjectProgressEmployeeRow[];
+  managed?: boolean;
+  allocationValid?: boolean | null;
+  contributionTotal?: number | null;
+  tasks?: ProjectProgressTaskRow[];
+}
+
+export interface ManagedProjectTaskDraft {
+  projectTaskId?: string;
+  taskName: string;
+  contributionPercent: number;
+  assignedEmployeeCodes: string[];
+  status?: 'Active' | 'Inactive';
+  assignedEmployees?: Array<{ employeeCode: string; employeeName: string }>;
+}
+
+export type ProjectVisibility = 'Everyone' | 'ProjectTeamOnly' | 'OnlyMe';
+
+export interface ManagedProject {
+  projectKey: string;
+  projectName: string;
+  managed?: boolean;
+  status?: string;
+  visibility?: ProjectVisibility;
+  /** When false, project is omitted from Project Progress for ordinary users. */
+  showInProjectProgress?: boolean;
+  allocationValid?: boolean;
+  contributionTotal?: number;
+  projectTasks: ManagedProjectTaskDraft[];
+  createdBy?: string;
+  createdByName?: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ProjectFormOption {
+  projectKey: string;
+  projectName: string;
+  tasks: Array<{
+    projectTaskId: string;
+    taskName: string;
+    contributionPercent: number;
+  }>;
+}
+
+export interface ProjectObservationRow {
+  observationId: string;
+  projectName: string;
+  taskName?: string;
+  observationText: string;
+  employeeCode: string;
+  employeeName: string;
+  submittedAt: string | null;
+  projectTaskId?: string | null;
 }
 
 export async function fetchProjectProgress(): Promise<ProjectProgressRow[]> {
@@ -940,4 +1251,119 @@ export async function fetchProjectProgress(): Promise<ProjectProgressRow[]> {
     data?: { projects?: ProjectProgressRow[] };
   };
   return res?.data?.projects ?? [];
+}
+
+export async function fetchManagedProjects(): Promise<ManagedProject[]> {
+  const res = (await apiFetch('/api/daily-planner/managed-projects')) as {
+    data?: { projects?: ManagedProject[] };
+  };
+  return res?.data?.projects ?? [];
+}
+
+export async function fetchAssignableProjectEmployees(): Promise<
+  Array<{ employeeCode: string; employeeName: string }>
+> {
+  const res = (await apiFetch('/api/daily-planner/managed-projects/assignees')) as {
+    data?: { employees?: Array<{ employeeCode?: string; employeeName?: string }> };
+  };
+  return (res?.data?.employees || [])
+    .map((e) => ({
+      employeeCode: String(e.employeeCode || '').trim(),
+      employeeName: String(e.employeeName || '').trim(),
+    }))
+    .filter((e) => e.employeeCode);
+}
+
+export async function fetchProjectFormOptions(): Promise<{
+  projects: ProjectFormOption[];
+  legacyProjectNames: string[];
+}> {
+  const res = (await apiFetch('/api/daily-planner/managed-projects/form-options')) as {
+    data?: { projects?: ProjectFormOption[]; legacyProjectNames?: string[] };
+  };
+  return {
+    projects: res?.data?.projects ?? [],
+    legacyProjectNames: res?.data?.legacyProjectNames ?? [],
+  };
+}
+
+export async function createManagedProject(payload: {
+  projectName: string;
+  projectTasks: ManagedProjectTaskDraft[];
+  visibility?: ProjectVisibility;
+  /** Independent of Visibility — controls Project Progress tab listing. Defaults to false. */
+  showInProjectProgress?: boolean;
+  /** When false, project may be created with zero predefined task names. */
+  hasPredefinedTasks?: boolean;
+}): Promise<ManagedProject> {
+  const res = (await apiFetch('/api/daily-planner/managed-projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })) as { data?: { project?: ManagedProject } };
+  if (!res?.data?.project) throw new Error('Create project failed');
+  return res.data.project;
+}
+
+export async function updateManagedProject(
+  projectKey: string,
+  payload: {
+    projectName: string;
+    projectTasks: ManagedProjectTaskDraft[];
+    visibility?: ProjectVisibility;
+    showInProjectProgress?: boolean;
+    hasPredefinedTasks?: boolean;
+  },
+): Promise<ManagedProject> {
+  const res = (await apiFetch(
+    `/api/daily-planner/managed-projects/${encodeURIComponent(projectKey)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )) as { data?: { project?: ManagedProject } };
+  if (!res?.data?.project) throw new Error('Update project failed');
+  return res.data.project;
+}
+
+export async function deactivateManagedProject(projectKey: string): Promise<void> {
+  await apiFetch(`/api/daily-planner/managed-projects/${encodeURIComponent(projectKey)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function fetchProjectDetails(projectKey: string): Promise<{
+  project: ProjectProgressRow & { projectTasks?: ManagedProjectTaskDraft[] };
+  observations: ProjectObservationRow[];
+}> {
+  const res = (await apiFetch(
+    `/api/daily-planner/project-progress/${encodeURIComponent(projectKey)}`,
+  )) as {
+    data?: {
+      project?: ProjectProgressRow & { projectTasks?: ManagedProjectTaskDraft[] };
+      observations?: ProjectObservationRow[];
+    };
+  };
+  if (!res?.data?.project) throw new Error('Project details not found');
+  return {
+    project: res.data.project,
+    observations: res.data.observations ?? [],
+  };
+}
+
+export async function addProjectObservation(
+  projectKey: string,
+  payload: { observationText: string; projectTaskId?: string },
+): Promise<ProjectObservationRow> {
+  const res = (await apiFetch(
+    `/api/daily-planner/project-progress/${encodeURIComponent(projectKey)}/observations`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )) as { data?: { observation?: ProjectObservationRow } };
+  if (!res?.data?.observation) throw new Error('Failed to add observation');
+  return res.data.observation;
 }

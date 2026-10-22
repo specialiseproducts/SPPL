@@ -5,6 +5,7 @@ import type { ExpenseDocument, ExpenseEditRequest, ExpenseRecord } from '../../t
 import type { UserMaster } from '../../types/userMaster';
 import { mapApiEmployee } from '../../utils/mapApiEmployee';
 import { normalizeExpenseRow } from '../../utils/expenseRowNormalize';
+import { applyRecentAuditDecisions } from '../../utils/auditExpenseRecentDecisions';
 import type { ExpenseTravelRateSettings } from '../../components/ExpenseRateSettingsModal';
 import { parseTravelRatesApiData } from '../../utils/expenseTravelRatesFromApi';
 import { isTravelCarOrBike, isTravelTicketTransport } from '../../utils/expenseAmountCalculation';
@@ -172,7 +173,7 @@ export async function fetchAuditExpensesFiltered(
   }
   const data = Array.isArray(payload.data) ? (payload.data as Record<string, unknown>[]) : [];
   return {
-    data: data.map((row) => normalizeExpenseRow(row)),
+    data: applyRecentAuditDecisions(data.map((row) => normalizeExpenseRow(row))),
     nextCursor: (payload.nextCursor as string | null | undefined) ?? null,
   };
 }

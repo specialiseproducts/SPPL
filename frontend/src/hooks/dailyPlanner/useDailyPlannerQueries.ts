@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { dailyPlannerQueryKeys } from './dailyPlannerQueryKeys';
 import { queryDefaults } from '../queryDefaults';
 import {
+  fetchApprovedLeaveForPlanner,
   fetchDailyPlannerDay,
   fetchDailyPlannerMonth,
   fetchTeamDailyPlannerMonth,
@@ -178,6 +179,22 @@ export function useTeamPlanningHistoryQuery(enabled = true) {
     queryFn: () => fetchTeamPlanningHistory(),
     enabled,
     ...queryDefaults.list,
+  });
+}
+
+export function useApprovedLeaveForPlannerQuery(
+  employeeCode: string,
+  year: number,
+  month: number,
+  enabled = true,
+) {
+  const code = String(employeeCode || '').trim();
+  return useQuery({
+    queryKey: dailyPlannerQueryKeys.approvedLeave(code, year, month),
+    queryFn: () => fetchApprovedLeaveForPlanner({ employeeCode: code, year, month }),
+    enabled: enabled && Boolean(code) && year > 0 && month >= 1 && month <= 12,
+    ...queryDefaults.list,
+    refetchOnMount: 'always',
   });
 }
 

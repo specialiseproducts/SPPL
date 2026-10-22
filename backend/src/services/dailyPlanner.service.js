@@ -2,6 +2,7 @@
  * Daily Planner — tasks, sales sync, team management, approvals.
  */
 
+import { v4 as uuidv4 } from 'uuid';
 import * as DailyPlannerTasksModel from '../models/DailyPlannerTasks.js';
 import * as DailyPlannerTeamMappingsModel from '../models/DailyPlannerTeamMappings.js';
 import * as SalesPlannerEventsModel from '../models/SalesPlannerEvents.js';
@@ -25,13 +26,60 @@ import * as NotificationService from './notification.service.js';
 import { NOTIFICATION_MODULES } from '../constants/notifications.js';
 import * as DailyPlannerProjectsModel from '../models/DailyPlannerProjects.js';
 import * as EmployeeMasterModel from '../models/EmployeeMaster.js';
+import * as PayrollLeaveRequestsModel from '../models/PayrollLeaveRequests.js';
+import { rangesOverlapMonth } from '../utils/payrollLeaveDates.js';
+import {
+  FULL_DAY_LEAVE_TASK_BLOCKED_MESSAGE,
+  classifyApprovedLeaveForDate,
+  getNextEligiblePlannerWorkingDayAfter,
+  isFullDayLeaveType,
+  isOpenPlannerTaskForLeaveReschedule,
+} from '../utils/dailyPlannerLeaveRules.js';
 import { sendEmail } from './emailService.js';
 import { buildFinalPlanEmail, buildRevisedPlanEmail } from './dailyPlannerFinalPlanEmail.js';
+import { buildSuperadminReviewEmail } from './dailyPlannerSuperadminReviewEmail.js';
 import {
   resolveEnhancedEligibilityForAuthUser,
   resolveEnhancedEligibilityForEmployeeCode,
 } from '../utils/dailyPlannerEnhancedEligibility.js';
 import * as DailyPlannerEnhancedService from './dailyPlannerEnhanced.service.js';
+import * as DailyPlannerProjectObservationsModel from '../models/DailyPlannerProjectObservations.js';
+import {
+  assertFactoryDailyPlannerEligible,
+  resolveFactoryEligibilityForAuthUser,
+  resolveFactoryEligibilityForEmployeeCode,
+} from '../utils/dailyPlannerFactoryEligibility.js';
+import {
+  normalizeCompletionTimeSlots,
+  reportedMinutesFromTask,
+} from '../utils/dailyPlannerTimeSlots.js';
+import {
+  assertAndNormalizeProcedurePayload,
+  decimalHoursFromMinutes,
+  descriptionFromSteps,
+  evaluateStepTimings,
+  mergeStepsForCompletion,
+  progressFromProcedureSteps,
+  stepTimeBounds,
+  sumActualMinutes,
+  sumPlannedMinutes,
+  workDoneFromSteps,
+} from '../utils/dailyPlannerProcedureSteps.js';
+
+/** When procedureSteps are present, sync description + hoursRequired from the steps. */
+function applyProcedurePayload(body) {
+  const procedure = assertAndNormalizeProcedurePayload(body);
+  if (!procedure) return { body, procedure: null };
+  return {
+    body: {
+      ...body,
+      procedureSteps: procedure.procedureSteps,
+      description: procedure.description,
+      hoursRequired: procedure.hoursRequired,
+    },
+    procedure,
+  };
+}
 
 const PRIORITY_ORDER = PRIORITY_SORT_ORDER;
 
@@ -101,6 +149,207 @@ function assertTaskNotAlreadyRescheduled(task) {
   }
 }
 
+async function listApprovedLeaveForEmployee(employeeCode) {
+  const code = String(employeeCode || '').trim();
+  if (!code) return [];
+  const all = await PayrollLeaveRequestsModel.listLeaveRequestsForEmployee(code);
+  return (all || []).filter((row) => String(row.status || '').trim() === 'Approved');
+}
+
+async function resolveLeaveKindForEmployeeDate(employeeCode, dateKey, approvedLeaves = null) {
+  const leaves =
+    approvedLeaves == null
+      ? await listApprovedLeaveForEmployee(employeeCode)
+      : approvedLeaves;
+  return classifyApprovedLeaveForDate(leaves, dateKey);
+}
+
+async function assertDateAllowsPlannerTaskCreate(employeeCode, dateKey, approvedLeaves = null) {
+  const { kind } = await resolveLeaveKindForEmployeeDate(employeeCode, dateKey, approvedLeaves);
+  if (kind === 'full') {
+    const err = new Error(FULL_DAY_LEAVE_TASK_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    err.code = 'FULL_DAY_LEAVE_BLOCKED';
+    throw err;
+  }
+  return kind;
+}
+
+/**
+ * Idempotent: move open planned tasks off approved full-day leave dates to the
+ * first eligible working day after the leave period (skips weekends/holidays/other full leave).
+ */
+export const rescheduleTasksOffApprovedFullDayLeave = async (leaveRequest, authUser = null) => {
+  const request = leaveRequest || {};
+  const leaveRequestId = String(request.leaveRequestId || '').trim();
+  const employeeCode = String(request.employeeCode || '').trim();
+  if (!leaveRequestId || !employeeCode) {
+    return { moved: [], targetDate: null };
+  }
+  if (!isFullDayLeaveType(request.leaveType)) {
+    return { moved: [], targetDate: null };
+  }
+  if (String(request.status || '').trim() !== 'Approved') {
+    return { moved: [], targetDate: null };
+  }
+
+  const startDate = String(request.startDate || '').trim().slice(0, 10);
+  const endDate = String(request.endDate || '').trim().slice(0, 10);
+  if (!startDate || !endDate) {
+    return { moved: [], targetDate: null };
+  }
+
+  const location = await getEmployeeLocation(employeeCode);
+  const approvedLeaves = await listApprovedLeaveForEmployee(employeeCode);
+  // Ensure the just-approved row is included even if list is briefly stale.
+  if (!approvedLeaves.some((r) => String(r.leaveRequestId || '').trim() === leaveRequestId)) {
+    approvedLeaves.push(request);
+  }
+
+  const targetDate = getNextEligiblePlannerWorkingDayAfter(endDate, location, approvedLeaves);
+  if (!targetDate) {
+    return { moved: [], targetDate: null };
+  }
+
+  const tasksOnLeave = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    employeeCode,
+    startDate,
+    endDate,
+  );
+  const actorCode = String(authUser?.employeeCode || authUser?.id || 'SYSTEM').trim() || 'SYSTEM';
+  const actorName =
+    String(
+      authUser?.fullName ||
+        `${authUser?.firstName || ''} ${authUser?.lastName || ''}`.trim() ||
+        'Leave Approval',
+    ).trim() || 'Leave Approval';
+  const nowIso = new Date().toISOString();
+  const moved = [];
+
+  for (const existing of tasksOnLeave || []) {
+    if (!isOpenPlannerTaskForLeaveReschedule(existing)) continue;
+    if (String(existing.leaveAutoRescheduleLeaveRequestId || '').trim() === leaveRequestId) {
+      continue;
+    }
+    // Idempotent: already moved for this leave (child already exists).
+    const alreadyChild = (tasksOnLeave || []).some(
+      (t) =>
+        String(t.parentTaskId || '').trim() === String(existing.plannerTaskId || '').trim() &&
+        String(t.leaveAutoRescheduleLeaveRequestId || '').trim() === leaveRequestId,
+    );
+    if (alreadyChild) continue;
+
+    const taskDate = String(existing.date || '').trim().slice(0, 10);
+    const { kind } = classifyApprovedLeaveForDate(approvedLeaves, taskDate);
+    if (kind !== 'full') continue;
+    if (taskDate === targetDate) continue;
+
+    const reason = `Auto-rescheduled due to approved leave (${startDate} → ${endDate})`;
+    const closed = await DailyPlannerTasksModel.updateTask(existing.plannerTaskId, {
+      status: 'Rescheduled',
+      reason,
+      rescheduledFromDate: existing.date,
+      rescheduledToDate: targetDate,
+      rescheduledBy: actorCode,
+      rescheduledByName: actorName,
+      rescheduledAt: nowIso,
+      leaveAutoRescheduleLeaveRequestId: leaveRequestId,
+      completionScore: 0,
+      finalScore: 0,
+    });
+
+    const rescheduledTask = await DailyPlannerTasksModel.createTask({
+      employeeCode: existing.employeeCode,
+      employeeName: existing.employeeName,
+      date: targetDate,
+      taskName: existing.taskName,
+      description: existing.description,
+      procedureSteps: Array.isArray(existing.procedureSteps) ? existing.procedureSteps : [],
+      priority: existing.currentPriority || existing.priority,
+      originalPriority: existing.originalPriority || existing.priority,
+      currentPriority: existing.currentPriority || existing.priority,
+      priorityEdited: existing.priorityEdited,
+      hoursRequired: existing.hoursRequired,
+      originalHoursRequired: existing.originalHoursRequired ?? existing.hoursRequired,
+      hoursRequiredEdited: existing.hoursRequiredEdited,
+      taskType: existing.taskType,
+      source: PLANNING_SOURCE_RESCHEDULED,
+      salesPlannerId: existing.salesPlannerId,
+      status: existing.status === 'Needs Revision' ? 'Needs Revision' : existing.status || 'Pending',
+      approved: existing.approved,
+      approvalStatus: existing.approvalStatus,
+      approvedBy: existing.approvedBy,
+      approvedByName: existing.approvedByName,
+      approvedAt: existing.approvedAt,
+      approvedDate: existing.approvedDate,
+      managerComments: existing.managerComments,
+      managerInstructions: existing.managerInstructions,
+      planningCategory:
+        existing.planningCategory === PLANNING_CATEGORY_URGENT
+          ? PLANNING_CATEGORY_URGENT
+          : PLANNING_CATEGORY_REGULAR,
+      urgentReason: existing.urgentReason || '',
+      originalDate: existing.originalDate || existing.date,
+      rescheduledFrom: existing.date,
+      reason,
+      parentTaskId: existing.plannerTaskId,
+      planningWindowUsed: null,
+      planningTimestamp: nowIso,
+      planningScore: Number(existing.planningScore) || 0,
+      completionScore: 0,
+      finalScore: Number(existing.planningScore) || 0,
+      createdByRole: String(existing.createdByRole || '').trim(),
+      createdByEmployeeCode: String(existing.createdByEmployeeCode || '').trim(),
+      createdByName: String(existing.createdByName || '').trim(),
+      isProjectBased: Boolean(existing.isProjectBased),
+      projectName: String(existing.projectName || '').trim(),
+      projectTaskId: String(existing.projectTaskId || '').trim(),
+      planFinalizedAt: existing.planFinalizedAt || null,
+      planFinalizedBy: String(existing.planFinalizedBy || '').trim(),
+      leaveAutoRescheduleLeaveRequestId: leaveRequestId,
+      needsDocument: existing.needsDocument,
+      documentFileName: existing.documentFileName,
+      documentFileKey: existing.documentFileKey,
+      documentUploadedAt: existing.documentUploadedAt,
+      documentContentType: existing.documentContentType,
+      progressDone: existing.progressDone,
+      flagStatus: existing.flagStatus,
+      flagInstruction: existing.flagInstruction,
+      flagRaisedBy: existing.flagRaisedBy,
+      flagRaisedByName: existing.flagRaisedByName,
+      flagRaisedAt: existing.flagRaisedAt,
+      flagAcceptedAt: existing.flagAcceptedAt,
+      flagHistory: existing.flagHistory,
+      revisionReason: existing.revisionReason,
+      revisionRequestedBy: existing.revisionRequestedBy,
+      revisionRequestedByName: existing.revisionRequestedByName,
+      revisionRequestedAt: existing.revisionRequestedAt,
+    });
+
+    if (authUser) {
+      auditPlannerTask(
+        authUser,
+        AUDIT_ACTIONS.STATUS_CHANGE,
+        closed,
+        'Task Auto-Rescheduled For Approved Leave',
+        {
+          oldValues: { date: existing.date, status: existing.status },
+          newValues: {
+            date: targetDate,
+            status: 'Rescheduled',
+            leaveRequestId,
+            rescheduledTaskId: rescheduledTask.plannerTaskId,
+          },
+        },
+      );
+    }
+
+    moved.push({ from: closed, to: rescheduledTask });
+  }
+
+  return { moved, targetDate };
+};
+
 function revisionOutcomeOf(task) {
   return String(task?.revisionOutcome || '').trim();
 }
@@ -149,19 +398,25 @@ function assertCanModerateTeamTask(effectiveRole) {
   }
 }
 
+async function isEmployeeOnManagersTeam(managerCode, employeeCode) {
+  const mgr = String(managerCode || '').trim();
+  const target = String(employeeCode || '').trim();
+  if (!mgr || !target) return false;
+  const team = await DailyPlannerTeamMappingsModel.listEmployeesForManager(mgr);
+  return (team || []).some(
+    (m) =>
+      String(m.status || 'Active').trim() === 'Active' &&
+      String(m.employeeCode || '').trim() === target,
+  );
+}
+
 /**
- * Super Admin: unrestricted (existing behavior).
+ * Mutations (create/edit/approve/complete/etc.) for a team employee's tasks.
+ * Super Admin: only employees on their own Active Daily Planner team mapping.
+ *   Out-of-team employees are view + review-comment only (see submitSuperadminReviewComment).
  * Admin / Developer: only employees on their Active team mapping.
  */
 async function assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, employeeCode) {
-  if (isSuperAdmin(effectiveRole)) return;
-
-  if (!isAdmin(effectiveRole) && !isDeveloper(effectiveRole)) {
-    const err = new Error('Forbidden');
-    err.statusCode = 403;
-    throw err;
-  }
-
   const target = String(employeeCode || '').trim();
   const managerCode = employeeCodeOf(authUser);
   if (!target || !managerCode) {
@@ -170,9 +425,54 @@ async function assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, employe
     throw err;
   }
 
-  const team = await DailyPlannerTeamMappingsModel.listEmployeesForManager(managerCode);
-  const allowed = team.some((m) => String(m.employeeCode || '').trim() === target);
-  if (!allowed) {
+  if (isSuperAdmin(effectiveRole)) {
+    const onTeam = await isEmployeeOnManagersTeam(managerCode, target);
+    if (!onTeam) {
+      const err = new Error(
+        'Super Admin may only manage Daily Planner tasks for employees on their own team. Out-of-team access is view and review-comment only.',
+      );
+      err.statusCode = 403;
+      err.code = 'SUPERADMIN_OUT_OF_TEAM_READONLY';
+      throw err;
+    }
+    return;
+  }
+
+  if (!isAdmin(effectiveRole) && !isDeveloper(effectiveRole)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const onTeam = await isEmployeeOnManagersTeam(managerCode, target);
+  if (!onTeam) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+/**
+ * Read access for Team Daily Planner (including Super Admin company-wide view).
+ */
+async function assertCanViewTeamEmployeePlanner(authUser, effectiveRole, employeeCode) {
+  const target = String(employeeCode || '').trim();
+  const self = employeeCodeOf(authUser);
+  if (!target) {
+    const err = new Error('employeeCode is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (target === self) return;
+  if (isSuperAdmin(effectiveRole)) return;
+  if (!canAccessAllRecords(effectiveRole)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+  // Admin / Developer: own team only.
+  const onTeam = await isEmployeeOnManagersTeam(self, target);
+  if (!onTeam) {
     const err = new Error('Forbidden');
     err.statusCode = 403;
     throw err;
@@ -342,6 +642,70 @@ async function sendRevisedPlanEmailForEmployee({
   });
 }
 
+/**
+ * Factory task owners must always create project-based tasks with a Project Name.
+ * Office behavior is unchanged (body.isProjectBased decides).
+ */
+async function resolveProjectBindingForOwner(ownerEmployeeCode, body) {
+  const factoryOwner = await resolveFactoryEligibilityForEmployeeCode(ownerEmployeeCode);
+  const isProjectBased =
+    factoryOwner || Boolean(body?.isProjectBased === true || body?.isProjectBased === 'Yes');
+  let projectName = isProjectBased
+    ? String(body?.projectName || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+    : '';
+  if (isProjectBased && !projectName) {
+    const err = new Error(
+      factoryOwner
+        ? 'Project Name is required for Factory tasks'
+        : 'Project Name is required when the task is project-based',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let projectTaskId = isProjectBased ? String(body?.projectTaskId || '').trim() : '';
+  if (isProjectBased && projectName) {
+    // Case/whitespace-insensitive reuse of an existing project record.
+    const existing = await DailyPlannerProjectsModel.getProjectByName(projectName);
+    if (existing?.projectName) {
+      projectName = existing.projectName;
+    }
+    if (existing?.managed) {
+      const activeTasks = (existing.projectTasks || []).filter((t) => t.status === 'Active');
+      if (projectTaskId) {
+        const match = activeTasks.find((t) => t.projectTaskId === projectTaskId);
+        if (!match) {
+          const err = new Error('Selected task does not belong to the selected project');
+          err.statusCode = 400;
+          throw err;
+        }
+      } else {
+        // Resolve by task name when projectTaskId omitted (backward compatible).
+        const byName = activeTasks.find(
+          (t) =>
+            String(t.taskName || '').trim().toLowerCase() ===
+            String(body?.taskName || '').trim().toLowerCase(),
+        );
+        if (byName) projectTaskId = byName.projectTaskId;
+      }
+    }
+  }
+
+  return { isProjectBased, projectName, projectTaskId, factoryOwner };
+}
+
+/** Upsert catalog project; return canonical displayName (deduped by normalizeProjectKey). */
+async function upsertCanonicalProjectName(projectName, createdBy) {
+  const name = String(projectName || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!name) return '';
+  const project = await DailyPlannerProjectsModel.upsertProject(name, createdBy);
+  return String(project?.projectName || name).trim();
+}
+
 /** Parse HH:mm / H:mm into minutes since midnight; returns null if invalid. */
 function parseTimeToMinutes(value) {
   const raw = String(value || '').trim();
@@ -400,6 +764,12 @@ function sumDayReportedHoursFromStartEnd(tasks) {
   let total = 0;
   for (const task of tasks || []) {
     if (!done.has(String(task?.status || '').trim())) continue;
+    // Prefer timeSlots (Factory multi-slot) via reportedMinutesFromTask; falls back to start/end.
+    const minutes = reportedMinutesFromTask(task);
+    if (minutes != null && Number.isFinite(minutes)) {
+      total += minutes / 60;
+      continue;
+    }
     try {
       total += durationHoursFromStartEnd(task.completionStartTime, task.completionEndTime);
     } catch {
@@ -546,8 +916,9 @@ export const listMyMonth = async (authUser, year, month) => {
     parsed.year,
     parsed.month,
   );
+  const sorted = sortDailyPlannerTasks(tasks);
   return {
-    tasks: sortDailyPlannerTasks(tasks),
+    tasks: await annotateReportingPersonCreatedTasks(sorted, code),
     year: parsed.year,
     month: parsed.month,
   };
@@ -563,10 +934,13 @@ export const listDayTasks = async (authUser, dateParam) => {
   }
   const [y, m] = date.split('-').map(Number);
   const tasks = await syncSalesPlannerImports(code, employeeNameOf(authUser), date, date, y, m);
-  return { tasks: sortDailyPlannerTasks(tasks), date };
+  const sorted = sortDailyPlannerTasks(tasks);
+  return { tasks: await annotateReportingPersonCreatedTasks(sorted, code), date };
 };
 
-export const createManualTask = async (body, authUser, effectiveRole, options = {}) => {
+export const createManualTask = async (rawBody, authUser, effectiveRole, options = {}) => {
+  const { body, procedure } = applyProcedurePayload(rawBody);
+  const procedureSteps = procedure?.procedureSteps ?? [];
   const code = employeeCodeOf(authUser);
   const date = String(body.date || '').trim();
   const taskName = String(body.taskName || '').trim();
@@ -577,6 +951,7 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
   }
 
   await assertEmployeeCodeActiveOnDate(code, date);
+  const leaveKindForDate = await assertDateAllowsPlannerTaskCreate(code, date);
 
   const isExtraTask =
     body.isExtraTask === true ||
@@ -585,10 +960,11 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
 
   // Extra Task: unplanned work already performed during today's completion flow.
   // Completed + self-approved immediately; no planning score / min-hours.
-  // Must still be inside the employee planning window (5:30 PM → 11:00 AM).
+  // Must still be inside the employee planning window (5:30 PM → 11:00 AM),
+  // except approved half-day leave allows reporting anytime that day.
   if (isExtraTask) {
     const now = new Date();
-    if (!isEmployeePlanningWindow(now)) {
+    if (!isEmployeePlanningWindow(now) && leaveKindForDate !== 'half') {
       const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
       err.statusCode = 400;
       throw err;
@@ -613,17 +989,17 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     const completionDurationHours = durationHoursFromStartEnd(startTimeRaw, endTimeRaw);
     const completionStartTime = normalizeClockTime(startTimeRaw);
     const completionEndTime = normalizeClockTime(endTimeRaw);
-    const hoursRequired = assertValidHoursRequired(completionDurationHours, { required: true });
-    const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
-    const projectName = isProjectBased ? String(body.projectName || '').trim() : '';
-    if (isProjectBased && !projectName) {
-      const err = new Error('Project Name is required when the task is project-based');
-      err.statusCode = 400;
-      throw err;
-    }
-    if (projectName) {
-      await DailyPlannerProjectsModel.upsertProject(projectName, code);
-    }
+    const completedDurationHours = assertValidHoursRequired(completionDurationHours, {
+      required: true,
+    });
+    // Planned hours follow the step sum when steps are provided; otherwise Start → End duration.
+    const hoursRequired = procedure ? procedure.hoursRequired : completedDurationHours;
+    const binding = await resolveProjectBindingForOwner(code, body);
+    const isProjectBased = binding.isProjectBased;
+    const projectTaskId = binding.projectTaskId;
+    const projectName = binding.projectName
+      ? await upsertCanonicalProjectName(binding.projectName, code)
+      : '';
 
     const planningScore = 0;
     const completionScore = computeTaskCompletionContribution('Completed');
@@ -655,7 +1031,10 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
       managerInstructions: '',
       isProjectBased,
       projectName,
+      projectTaskId,
       createdByRole: 'User',
+      createdByEmployeeCode: code,
+      createdByName: employeeNameOf(authUser),
       planningCategory: planningCategoryFromPriority(priority),
       urgentReason: '',
       planningWindowUsed: resolveActivePlanningWindow(now),
@@ -665,7 +1044,8 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
       finalScore: planningScore + completionScore,
       completionStartTime,
       completionEndTime,
-      completionDurationHours: hoursRequired,
+      completionDurationHours: completedDurationHours,
+      procedureSteps,
       verificationStatus: 'VERIFIED_COMPLETED',
       verifiedBy: code,
       verifiedByName: employeeNameOf(authUser),
@@ -733,19 +1113,16 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     assertExactSevenPlannedHours(
       Math.round((existingHours + hoursRequired) * 100) / 100,
       location,
+      leaveKindForDate,
     );
   }
 
-  const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
-  const projectName = isProjectBased ? String(body.projectName || '').trim() : '';
-  if (isProjectBased && !projectName) {
-    const err = new Error('Project Name is required when the task is project-based');
-    err.statusCode = 400;
-    throw err;
-  }
-  if (projectName) {
-    await DailyPlannerProjectsModel.upsertProject(projectName, code);
-  }
+  const binding = await resolveProjectBindingForOwner(code, body);
+  const isProjectBased = binding.isProjectBased;
+  const projectTaskId = binding.projectTaskId;
+  const projectName = binding.projectName
+    ? await upsertCanonicalProjectName(binding.projectName, code)
+    : '';
 
   let planningScore = 0;
   if (planningMeta.planningCategory === PLANNING_CATEGORY_REGULAR) {
@@ -790,6 +1167,7 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     date,
     taskName,
     description: String(body.description || '').trim(),
+    procedureSteps,
     priority,
     originalPriority: priority,
     currentPriority: priority,
@@ -809,8 +1187,11 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
     managerInstructions,
     isProjectBased,
     projectName,
+    projectTaskId,
     ...enhancedFields,
     createdByRole: elevated ? 'Manager' : 'User',
+    createdByEmployeeCode: code,
+    createdByName: employeeNameOf(authUser),
     planningCategory: planningMeta.planningCategory,
     urgentReason: planningMeta.urgentReason,
     planningWindowUsed: planningMeta.planningWindowUsed,
@@ -868,7 +1249,9 @@ export const createManualTask = async (body, authUser, effectiveRole, options = 
  * (existing planned hours for that date + this batch).
  */
 export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
-  const drafts = Array.isArray(body?.tasks) ? body.tasks : [];
+  const drafts = (Array.isArray(body?.tasks) ? body.tasks : []).map(
+    (draft) => applyProcedurePayload(draft).body,
+  );
   if (drafts.length === 0) {
     const err = new Error('At least one task is required');
     err.statusCode = 400;
@@ -918,11 +1301,13 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
   // Batch create is the My Daily Planner plan submit path — enforce minimum hours for
   // today/tomorrow. Dates after tomorrow allow partial advance planning.
   const location = await getEmployeeLocation(code);
+  const leaveKind = await assertDateAllowsPlannerTaskCreate(code, sharedDate);
   const existingHours = sumPlannedHoursForDate(existing, sharedDate);
   if (getPlanningTargetDateMode(sharedDate, new Date()) !== 'other') {
     assertExactSevenPlannedHours(
       Math.round((existingHours + batchHours) * 100) / 100,
       location,
+      leaveKind,
     );
   }
 
@@ -963,7 +1348,9 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
 /**
  * Manager/Admin creates a task for a team employee (auto-approved).
  */
-export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
+export const createTaskForEmployee = async (rawBody, authUser, effectiveRole) => {
+  const { body, procedure } = applyProcedurePayload(rawBody);
+  const procedureSteps = procedure?.procedureSteps ?? [];
   assertCanModerateTeamTask(effectiveRole);
   const targetCode = String(body.employeeCode || '').trim();
   if (!targetCode) {
@@ -996,6 +1383,7 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
   }
 
   await assertEmployeeCodeActiveOnDate(targetCode, date);
+  await assertDateAllowsPlannerTaskCreate(targetCode, date);
 
   const now = new Date();
   const location = await getEmployeeLocation(targetCode);
@@ -1023,16 +1411,13 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     { elevated: true },
   );
   const hoursRequired = assertValidHoursRequired(body.hoursRequired, { required: true });
-  const isProjectBased = Boolean(body.isProjectBased === true || body.isProjectBased === 'Yes');
-  const projectName = isProjectBased ? String(body.projectName || '').trim() : '';
-  if (isProjectBased && !projectName) {
-    const err = new Error('Project Name is required when the task is project-based');
-    err.statusCode = 400;
-    throw err;
-  }
-  if (projectName) {
-    await DailyPlannerProjectsModel.upsertProject(projectName, managerCode);
-  }
+  // Factory rule applies to the task OWNER (target employee), not the manager creating it.
+  const binding = await resolveProjectBindingForOwner(targetCode, body);
+  const isProjectBased = binding.isProjectBased;
+  const projectTaskId = binding.projectTaskId;
+  const projectName = binding.projectName
+    ? await upsertCanonicalProjectName(binding.projectName, managerCode)
+    : '';
 
   const managerInstructions = String(body.managerInstructions || body.instructions || '').trim();
   const targetEligible = await resolveEnhancedEligibilityForEmployeeCode(targetCode);
@@ -1046,6 +1431,7 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     date,
     taskName,
     description: String(body.description || '').trim(),
+    procedureSteps,
     priority,
     originalPriority: priority,
     currentPriority: priority,
@@ -1065,8 +1451,11 @@ export const createTaskForEmployee = async (body, authUser, effectiveRole) => {
     managerInstructions,
     isProjectBased,
     projectName,
+    projectTaskId,
     ...enhancedFields,
     createdByRole: 'Manager',
+    createdByEmployeeCode: managerCode,
+    createdByName: employeeNameOf(authUser),
     planningCategory: planningMeta.planningCategory,
     urgentReason: planningMeta.urgentReason,
     planningWindowUsed: planningMeta.planningWindowUsed,
@@ -1121,6 +1510,54 @@ export const listProjects = async () => {
   return { projects };
 };
 
+/**
+ * Factory: list project observations for a project the user (or a managed team member) works on.
+ */
+export const listProjectObservations = async (query, authUser, effectiveRole) => {
+  const eligible = await resolveFactoryEligibilityForAuthUser(authUser);
+  assertFactoryDailyPlannerEligible(
+    eligible,
+    'Project observations are only available for Factory employees.',
+  );
+
+  const projectName = String(query?.projectName || '').trim();
+  const projectKey = DailyPlannerProjectObservationsModel.normalizeProjectKey(projectName);
+  if (!projectKey) {
+    const err = new Error('projectName is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const hasProject = (tasks) =>
+    (tasks || []).some(
+      (t) =>
+        DailyPlannerProjectObservationsModel.normalizeProjectKey(t.projectName) === projectKey,
+    );
+
+  const selfCode = employeeCodeOf(authUser);
+  let allowed = hasProject(
+    await DailyPlannerTasksModel.listTasksForEmployeeMonth(selfCode, null, null),
+  );
+
+  if (!allowed) {
+    const teamCodes = (await resolveTeamEmployeeCodes(selfCode, effectiveRole)).filter(
+      (c) => c && c !== selfCode,
+    );
+    if (teamCodes.length > 0) {
+      allowed = hasProject(await DailyPlannerTasksModel.listTasksForEmployees(teamCodes, null, null));
+    }
+  }
+
+  if (!allowed) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const observations = await DailyPlannerProjectObservationsModel.listByProjectKey(projectKey);
+  return { projectName, projectKey, observations };
+};
+
 export const upsertProject = async (body, authUser) => {
   const project = await DailyPlannerProjectsModel.upsertProject(
     body?.projectName,
@@ -1148,9 +1585,17 @@ export const finalizeEmployeePlan = async (body, authUser, effectiveRole) => {
     err.statusCode = 400;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, employeeCode);
 
   const location = await getEmployeeLocation(employeeCode);
-  const minHours = getMinPlannedHoursForLocation(location);
+  const { kind: leaveKind } = await resolveLeaveKindForEmployeeDate(employeeCode, date);
+  if (leaveKind === 'full') {
+    const err = new Error(FULL_DAY_LEAVE_TASK_BLOCKED_MESSAGE);
+    err.statusCode = 400;
+    err.code = 'FULL_DAY_LEAVE_BLOCKED';
+    throw err;
+  }
+  const minHours = getMinPlannedHoursForLocation(location, leaveKind);
 
   const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
     employeeCode,
@@ -1168,7 +1613,7 @@ export const finalizeEmployeePlan = async (body, authUser, effectiveRole) => {
     throw err;
   }
   const totalHours = sumPlannedHoursForDate(activeTasks, date);
-  if (Math.round(totalHours * 100) / 100 < minHours) {
+  if (minHours > 0 && Math.round(totalHours * 100) / 100 < minHours) {
     const err = new Error(
       `Final plan must total at least ${formatDurationLabel(minHours)} (currently ${formatDurationLabel(totalHours)}).`,
     );
@@ -1382,6 +1827,7 @@ export const reviewTaskCompletion = async (taskId, body, authUser, effectiveRole
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
   if (!existing.dayCompletionSubmittedAt) {
     const err = new Error('Employee has not submitted completion for this day yet');
     err.statusCode = 400;
@@ -1414,6 +1860,7 @@ export const submitDayCompletionReview = async (body, authUser, effectiveRole) =
     err.statusCode = 400;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, employeeCode);
 
   const tasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
     employeeCode,
@@ -1569,6 +2016,46 @@ async function listActiveManagersForEmployee(employeeCode) {
       managerName: String(m.managerName || '').trim(),
     }))
     .filter((m) => m.managerCode);
+}
+
+/** True when the employee has at least one active reporting manager (other than self). */
+async function employeeHasReportingPerson(employeeCode) {
+  const code = String(employeeCode || '').trim();
+  if (!code) return false;
+  const managers = await listActiveManagersForEmployee(code);
+  return managers.some((m) => m.managerCode && m.managerCode !== code);
+}
+
+/**
+ * Enrich tasks for My Daily Planner: flag tasks created by an active reporting person.
+ * Does not invent creator names when createdByEmployeeCode is missing.
+ */
+async function annotateReportingPersonCreatedTasks(tasks, employeeCode) {
+  const code = String(employeeCode || '').trim();
+  const list = Array.isArray(tasks) ? tasks : [];
+  if (!code || list.length === 0) return list;
+  const managers = await listActiveManagersForEmployee(code);
+  const managerByCode = new Map(
+    managers
+      .filter((m) => m.managerCode && m.managerCode !== code)
+      .map((m) => [m.managerCode, m.managerName || '']),
+  );
+  if (managerByCode.size === 0) {
+    return list.map((t) => ({ ...t, createdByReportingPerson: false }));
+  }
+  return list.map((t) => {
+    const creator = String(t.createdByEmployeeCode || '').trim();
+    const isReportingPerson =
+      Boolean(creator) && creator !== code && managerByCode.has(creator);
+    const mappedName = isReportingPerson ? managerByCode.get(creator) || '' : '';
+    const storedName = String(t.createdByName || '').trim();
+    return {
+      ...t,
+      createdByReportingPerson: isReportingPerson,
+      // Prefer stored creator name; fall back to mapping name when available.
+      createdByName: storedName || (isReportingPerson ? mappedName : ''),
+    };
+  });
 }
 
 function formatPlannerDateLabel(dateKey) {
@@ -1728,6 +2215,30 @@ export const updateManualTask = async (taskId, body, authUser) => {
     }
   }
   if (body.date !== undefined) patch.date = String(body.date || '').trim();
+  if (patch.date && patch.date !== existing.date) {
+    await assertDateAllowsPlannerTaskCreate(existing.employeeCode, patch.date);
+  }
+
+  if (
+    body.projectName !== undefined ||
+    body.isProjectBased !== undefined ||
+    body.projectTaskId !== undefined
+  ) {
+    const binding = await resolveProjectBindingForOwner(existing.employeeCode, {
+      isProjectBased:
+        body.isProjectBased !== undefined ? body.isProjectBased : existing.isProjectBased,
+      projectName:
+        body.projectName !== undefined ? body.projectName : existing.projectName,
+      projectTaskId:
+        body.projectTaskId !== undefined ? body.projectTaskId : existing.projectTaskId,
+      taskName: body.taskName !== undefined ? body.taskName : existing.taskName,
+    });
+    patch.isProjectBased = binding.isProjectBased;
+    patch.projectTaskId = binding.projectTaskId || '';
+    patch.projectName = binding.projectName
+      ? await upsertCanonicalProjectName(binding.projectName, existing.employeeCode)
+      : '';
+  }
 
   const ownerEligible = await resolveEnhancedEligibilityForEmployeeCode(existing.employeeCode);
   Object.assign(
@@ -1761,6 +2272,8 @@ export const updateManualTask = async (taskId, body, authUser) => {
     'taskName',
     'description',
     'priority',
+    'projectName',
+    'isProjectBased',
     'currentPriority',
     'hoursRequired',
     'date',
@@ -1794,8 +2307,10 @@ export const updateManualTask = async (taskId, body, authUser) => {
  * Manager/Admin updates a team employee's task (allowed even after plan finalize).
  * When the plan was finalized, sends a revised plan email describing the changes.
  */
-export const updateTaskForEmployee = async (taskId, body, authUser, effectiveRole) => {
+export const updateTaskForEmployee = async (taskId, rawBody, authUser, effectiveRole) => {
   assertCanModerateTeamTask(effectiveRole);
+  // When procedureSteps are sent, description + hoursRequired are synced from the steps.
+  const { body, procedure } = applyProcedurePayload(rawBody || {});
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing) {
     const err = new Error('Task not found');
@@ -1868,6 +2383,14 @@ export const updateTaskForEmployee = async (taskId, body, authUser, effectiveRol
       );
     }
   }
+  if (procedure) {
+    patch.procedureSteps = procedure.procedureSteps;
+    if (
+      JSON.stringify(procedure.procedureSteps) !== JSON.stringify(existing.procedureSteps || [])
+    ) {
+      changes.push(`Step procedure updated for "${existing.taskName}"`);
+    }
+  }
   if (body.managerInstructions !== undefined || body.instructions !== undefined) {
     const next = String(body.managerInstructions ?? body.instructions ?? '').trim();
     if (next !== String(existing.managerInstructions || '').trim()) {
@@ -1891,7 +2414,11 @@ export const updateTaskForEmployee = async (taskId, body, authUser, effectiveRol
     'Rescheduled',
     'Not Completed',
   ]);
-  if (!closedStatuses.has(String(existing.status || '').trim()) && existing.status !== 'Approved') {
+  if (
+    body?.preserveStatus !== true &&
+    !closedStatuses.has(String(existing.status || '').trim()) &&
+    existing.status !== 'Approved'
+  ) {
     const reviewerCode = employeeCodeOf(authUser);
     const nowIso = new Date().toISOString();
     patch.status = 'Approved';
@@ -2005,18 +2532,25 @@ async function cancelLinkedRescheduledChildren(parentTask) {
   return cancelled;
 }
 
-export const markTaskCompleted = async (taskId, body, authUser) => {
-  const workDone = String(body?.workDone || body?.reason || '').trim();
-  if (!workDone) {
+function parseYesNoFlag(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const v = String(value).trim().toLowerCase();
+  if (v === 'true' || v === 'yes' || v === '1') return true;
+  if (v === 'false' || v === 'no' || v === '0') return false;
+  return null;
+}
+
+export const markTaskCompleted = async (taskId, body, authUser, effectiveRole) => {
+  let workDone = String(body?.workDone || body?.reason || '').trim();
+  const stepFlow = Array.isArray(body?.procedureSteps) && body.procedureSteps.length > 0;
+  // Step-based completion can derive Work Done from the completed step descriptions.
+  if (!workDone && !stepFlow) {
     const err = new Error('Work done is required');
     err.statusCode = 400;
     throw err;
   }
-  const startTimeRaw = body?.startTime ?? body?.completionStartTime;
-  const endTimeRaw = body?.endTime ?? body?.completionEndTime;
-  const completionDurationHours = durationHoursFromStartEnd(startTimeRaw, endTimeRaw);
-  const completionStartTime = normalizeClockTime(startTimeRaw);
-  const completionEndTime = normalizeClockTime(endTimeRaw);
 
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing || existing.employeeCode !== employeeCodeOf(authUser)) {
@@ -2024,8 +2558,122 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     err.statusCode = 403;
     throw err;
   }
+
+  // Idempotent: already verified-complete — return current task (preserve completion data).
+  if (
+    String(existing.status || '').trim() === 'Verified Complete' ||
+    String(existing.verificationStatus || '').trim() === 'VERIFIED_COMPLETED'
+  ) {
+    return {
+      task: existing,
+      cancelledRescheduledTasks: [],
+      completionDurationHours: existing.completionDurationHours ?? null,
+      dayCompletedHours: null,
+    };
+  }
+
+  const factoryOwner = await resolveFactoryEligibilityForEmployeeCode(existing.employeeCode);
+  const startTimeRaw = body?.startTime ?? body?.completionStartTime;
+  const endTimeRaw = body?.endTime ?? body?.completionEndTime;
+
+  let completionDurationHours;
+  let completionStartTime;
+  let completionEndTime;
+  let timeSlotsPatch = {};
+  let stepPatch = null;
+  let hasRescheduledSteps = false;
+  if (stepFlow) {
+    // Step-based reporting (Factory + Office): per-step Start/End is the primary path.
+    const { steps, incompleteStepIds } = evaluateStepTimings(
+      mergeStepsForCompletion(existing, body.procedureSteps),
+    );
+    const activeSteps = steps.filter((s) => s.status !== 'rescheduled');
+    if (activeSteps.length === 0) {
+      const err = new Error('At least one step is required to mark the task completed');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (incompleteStepIds.length > 0) {
+      const err = new Error(
+        'Some steps do not have complete time entries. Enter Start and End Time for every step, or reschedule the incomplete steps.',
+      );
+      err.statusCode = 400;
+      err.incompleteStepIds = incompleteStepIds;
+      throw err;
+    }
+    const totalActualMinutes = sumActualMinutes(steps);
+    const bounds = stepTimeBounds(steps);
+    completionDurationHours = decimalHoursFromMinutes(totalActualMinutes);
+    completionStartTime = bounds.startTime;
+    completionEndTime = bounds.endTime;
+    timeSlotsPatch = { timeSlots: [] };
+    hasRescheduledSteps = steps.some((s) => s.status === 'rescheduled');
+    if (!workDone) {
+      // Prefer per-step Work Done reports; fall back to planned descriptions.
+      workDone = workDoneFromSteps(activeSteps);
+    }
+    stepPatch = {
+      procedureSteps: steps,
+      // Duration-weighted; all steps completed => 100% even when actual < planned.
+      progressDone: progressFromProcedureSteps(steps),
+    };
+  } else if (factoryOwner) {
+    // Factory: up to 3 time slots (or legacy start/end as a single slot).
+    const normalized = normalizeCompletionTimeSlots(body?.timeSlots, {
+      startTime: startTimeRaw,
+      endTime: endTimeRaw,
+    });
+    completionDurationHours = normalized.completionDurationHours;
+    completionStartTime = normalized.completionStartTime;
+    completionEndTime = normalized.completionEndTime;
+    timeSlotsPatch = { timeSlots: normalized.timeSlots };
+  } else {
+    // Office: unchanged — Start/End only.
+    completionDurationHours = durationHoursFromStartEnd(startTimeRaw, endTimeRaw);
+    completionStartTime = normalizeClockTime(startTimeRaw);
+    completionEndTime = normalizeClockTime(endTimeRaw);
+  }
+
   assertTaskNotPermanentlyClosed(existing);
   assertTaskNotAlreadyRescheduled(existing);
+
+  // Factory/Office v2 observation capture (task-owner eligibility).
+  let observationPatch = {};
+  let observationToSync = null;
+  if (factoryOwner) {
+    const hasObservation = parseYesNoFlag(body?.hasObservation);
+    const observationProvided =
+      body?.observationText !== undefined || body?.observation !== undefined;
+    const observationTextRaw = String(body?.observationText ?? body?.observation ?? '').trim();
+    if (hasObservation === true) {
+      if (!observationTextRaw) {
+        const err = new Error('Observation is required when Observation is Yes');
+        err.statusCode = 400;
+        throw err;
+      }
+      const nowIso = new Date().toISOString();
+      const observationId =
+        String(body?.observationId || '').trim() ||
+        String(existing.observationId || '').trim() ||
+        uuidv4();
+      const sameObservation = String(existing.observationId || '').trim() === observationId;
+      observationPatch = {
+        hasObservation: true,
+        observationText: observationTextRaw,
+        observationId,
+        observationSubmittedBy: employeeCodeOf(authUser),
+        observationSubmittedByName: employeeNameOf(authUser),
+        observationSubmittedAt:
+          (sameObservation && existing.observationSubmittedAt) || nowIso,
+      };
+      observationToSync = { observationId, observationText: observationTextRaw };
+    } else if (hasObservation === false) {
+      observationPatch = { hasObservation: false };
+      // Only clear text when the client explicitly sent the field; never wipe history on omit.
+      if (observationProvided) observationPatch.observationText = '';
+    }
+  }
+
   const planningScore = Number(existing.planningScore) || 0;
   // Keep existing scoring: employee completion still awards Completed contribution.
   const completionScore = computeTaskCompletionContribution('Completed');
@@ -2034,21 +2682,82 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
     body || {},
     ownerEligible,
   );
+
+  // Super Admin with no reporting person: self-approve completion (no manager exists).
+  // User/Admin and anyone with a reporting person keep normal Awaiting Verification flow.
+  const actorCode = employeeCodeOf(authUser);
+  const actorName = employeeNameOf(authUser);
+  const nowIso = new Date().toISOString();
+  const selfApproveCompletion =
+    isSuperAdmin(effectiveRole) && !(await employeeHasReportingPerson(actorCode));
+
+  const completionStatusPatch = selfApproveCompletion
+    ? {
+        status: 'Verified Complete',
+        verificationStatus: 'VERIFIED_COMPLETED',
+        verifiedBy: actorCode,
+        verifiedByName: actorName,
+        verifiedAt: nowIso,
+        completionManagerReviewedAt: nowIso,
+        completionManagerReviewedBy: actorCode,
+        dayCompletionSubmittedAt: existing.dayCompletionSubmittedAt || nowIso,
+        dayCompletionSubmittedBy: existing.dayCompletionSubmittedBy || actorCode,
+        dayCompletionReviewSubmittedAt: existing.dayCompletionReviewSubmittedAt || nowIso,
+        dayCompletionReviewSubmittedBy: existing.dayCompletionReviewSubmittedBy || actorCode,
+      }
+    : {
+        status: 'Awaiting Verification',
+        verificationStatus: 'AWAITING_VERIFICATION',
+      };
+
   const task = await DailyPlannerTasksModel.updateTask(taskId, {
-    status: 'Awaiting Verification',
     reason: workDone,
-    verificationStatus: 'AWAITING_VERIFICATION',
     completionStartTime,
     completionEndTime,
     completionDurationHours,
+    ...timeSlotsPatch,
     completionScore,
     finalScore: planningScore + completionScore,
     ...enhancedFields,
+    // Step-derived progress overrides any manually supplied Progress Done (%).
+    ...(stepPatch
+      ? {
+          procedureSteps: stepPatch.procedureSteps,
+          ...(ownerEligible ? { progressDone: stepPatch.progressDone } : {}),
+        }
+      : {}),
+    ...observationPatch,
+    ...completionStatusPatch,
   });
+
+  if (observationToSync) {
+    const projectName = String(existing.projectName || body?.projectName || '').trim();
+    if (projectName) {
+      // Idempotent by (projectKey, observationId); retries reuse the persisted observationId.
+      await DailyPlannerProjectObservationsModel.putObservation({
+        projectName,
+        observationId: observationToSync.observationId,
+        observationText: observationToSync.observationText,
+        employeeCode: existing.employeeCode,
+        employeeName: employeeNameOf(authUser) || existing.employeeName,
+        plannerTaskId: existing.plannerTaskId,
+        submittedAt: observationPatch.observationSubmittedAt,
+      });
+    } else {
+      console.warn(
+        'Observation saved on task but not synced to project observations (no projectName):',
+        existing.plannerTaskId,
+      );
+    }
+  }
 
   // Incomplete → Reschedule creates a child via parentTaskId. Completing the original
   // must invalidate that linked rescheduled task so it does not remain active.
-  const cancelledRescheduledTasks = await cancelLinkedRescheduledChildren(existing);
+  // Step-level reschedules (reschedule-steps) intentionally keep their child task: it holds the
+  // unfinished steps and must survive completion of the original.
+  const cancelledRescheduledTasks = hasRescheduledSteps
+    ? []
+    : await cancelLinkedRescheduledChildren(existing);
 
   if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
     await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
@@ -2056,10 +2765,22 @@ export const markTaskCompleted = async (taskId, body, authUser) => {
       workingDayDateKey: existing.date,
     });
   }
-  auditPlannerTask(authUser, AUDIT_ACTIONS.STATUS_CHANGE, task, 'Task Closed', {
-    oldValues: { status: existing.status },
-    newValues: { status: task.status, reason: workDone },
-  });
+  if (selfApproveCompletion) {
+    auditPlannerTask(authUser, AUDIT_ACTIONS.VERIFY, task, 'Completion Self-Verified (Super Admin)', {
+      oldValues: { status: existing.status },
+      newValues: {
+        status: task.status,
+        verificationStatus: task.verificationStatus,
+        reason: workDone,
+        verifiedBy: actorCode,
+      },
+    });
+  } else {
+    auditPlannerTask(authUser, AUDIT_ACTIONS.STATUS_CHANGE, task, 'Task Closed', {
+      oldValues: { status: existing.status },
+      newValues: { status: task.status, reason: workDone },
+    });
+  }
 
   const dayTasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
     existing.employeeCode,
@@ -2141,6 +2862,7 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
       throw err;
     }
     await assertEmployeeCodeActiveOnDate(existing.employeeCode, newDate);
+    await assertDateAllowsPlannerTaskCreate(existing.employeeCode, newDate);
 
     const rescheduledAt = now.toISOString();
     const task = await DailyPlannerTasksModel.updateTask(taskId, {
@@ -2186,6 +2908,12 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
       planningScore: 0,
       completionScore: 0,
       finalScore: 0,
+      // Preserve original creator through reschedule (do not replace with editor).
+      createdByRole: String(existing.createdByRole || '').trim(),
+      createdByEmployeeCode: String(existing.createdByEmployeeCode || '').trim(),
+      createdByName: String(existing.createdByName || '').trim(),
+      isProjectBased: Boolean(existing.isProjectBased),
+      projectName: String(existing.projectName || '').trim(),
     });
 
     if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
@@ -2201,6 +2929,257 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
   const err = new Error('Invalid action. Use terminate or next_date.');
   err.statusCode = 400;
   throw err;
+};
+
+/**
+ * Step-level reschedule (Mark Completed → "No, reschedule missing steps").
+ * - Steps without a full Start + End time are marked `rescheduled` on the original task.
+ * - A NEW task on `newDate` is created holding ONLY those unfinished steps.
+ * - Completed (timed) steps stay on the original; hoursRequired / progressDone are recalculated.
+ * The original task is NOT closed here — the client then completes it via the normal
+ * complete API so Awaiting Verification / approval is unchanged.
+ */
+export const rescheduleIncompleteSteps = async (taskId, body, authUser) => {
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing || existing.employeeCode !== employeeCodeOf(authUser)) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+  assertTaskNotPermanentlyClosed(existing);
+  assertTaskNotAlreadyRescheduled(existing);
+  if (String(existing.source || '').trim() === PLANNING_SOURCE_EXTRA) {
+    const err = new Error('Extra tasks cannot be partially rescheduled');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const { steps, incompleteStepIds } = evaluateStepTimings(
+    mergeStepsForCompletion(existing, body?.procedureSteps),
+  );
+  const incompleteSet = new Set(incompleteStepIds);
+  const incompleteSteps = steps.filter((s) => incompleteSet.has(s.stepId));
+  const completedSteps = steps.filter((s) => s.status === 'completed');
+  if (incompleteSteps.length === 0) {
+    const err = new Error('There are no incomplete steps to reschedule');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (completedSteps.length === 0) {
+    const err = new Error(
+      'Enter Start and End Time for at least one step, or use Not Completed → Next Date to reschedule the whole task.',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const now = new Date();
+  const code = employeeCodeOf(authUser);
+  const name = employeeNameOf(authUser);
+  const location = await getEmployeeLocation(code);
+  const newDate = await PlanningRecognitionService.validateRescheduleTargetDate(
+    body?.newDate,
+    now,
+    location,
+  );
+  await assertDateAllowsPlannerTaskCreate(existing.employeeCode, newDate);
+  if (newDate === existing.date) {
+    const err = new Error('New date must be different from the current task date');
+    err.statusCode = 400;
+    throw err;
+  }
+  await assertEmployeeCodeActiveOnDate(existing.employeeCode, newDate);
+
+  const reason =
+    String(body?.reason || '').trim() ||
+    `Incomplete steps rescheduled to ${newDate}`;
+  const rescheduledAt = now.toISOString();
+
+  const originalSteps = steps.map((s) =>
+    incompleteSet.has(s.stepId)
+      ? {
+          ...s,
+          status: 'rescheduled',
+          completed: false,
+          rescheduledToDate: newDate,
+        }
+      : s,
+  );
+  const remainingSteps = originalSteps.filter((s) => s.status !== 'rescheduled');
+  const remainingPlannedMinutes = sumPlannedMinutes(remainingSteps);
+
+  const childSteps = incompleteSteps.map((s) => ({
+    stepId: s.stepId,
+    description: s.description,
+    plannedMinutes: s.plannedMinutes,
+    startTime: null,
+    endTime: null,
+    actualMinutes: null,
+    status: 'pending',
+    completed: false,
+    rescheduledToDate: null,
+    managerComment: '',
+  }));
+  const childHours = decimalHoursFromMinutes(sumPlannedMinutes(childSteps));
+
+  const rescheduledTask = await DailyPlannerTasksModel.createTask({
+    employeeCode: existing.employeeCode,
+    employeeName: existing.employeeName,
+    date: newDate,
+    taskName: existing.taskName,
+    description: descriptionFromSteps(childSteps),
+    procedureSteps: childSteps,
+    priority: existing.currentPriority || existing.priority,
+    originalPriority: existing.originalPriority || existing.priority,
+    currentPriority: existing.currentPriority || existing.priority,
+    priorityEdited: existing.priorityEdited,
+    hoursRequired: childHours,
+    originalHoursRequired: childHours,
+    hoursRequiredEdited: false,
+    taskType: existing.taskType,
+    source: PLANNING_SOURCE_RESCHEDULED,
+    salesPlannerId: existing.salesPlannerId,
+    status: 'Pending',
+    planningCategory:
+      existing.planningCategory === PLANNING_CATEGORY_URGENT
+        ? PLANNING_CATEGORY_URGENT
+        : PLANNING_CATEGORY_REGULAR,
+    urgentReason: existing.urgentReason || '',
+    originalDate: existing.originalDate || existing.date,
+    rescheduledFrom: existing.date,
+    reason,
+    parentTaskId: existing.plannerTaskId,
+    planningWindowUsed: null,
+    planningTimestamp: rescheduledAt,
+    planningScore: 0,
+    completionScore: 0,
+    finalScore: 0,
+    createdByRole: String(existing.createdByRole || '').trim(),
+    createdByEmployeeCode: String(existing.createdByEmployeeCode || '').trim(),
+    createdByName: String(existing.createdByName || '').trim(),
+    isProjectBased: Boolean(existing.isProjectBased),
+    projectName: String(existing.projectName || '').trim(),
+    projectTaskId: String(existing.projectTaskId || '').trim(),
+  });
+
+  const ownerEligible = await resolveEnhancedEligibilityForEmployeeCode(existing.employeeCode);
+  const task = await DailyPlannerTasksModel.updateTask(taskId, {
+    procedureSteps: originalSteps,
+    description: descriptionFromSteps(remainingSteps),
+    hoursRequired: decimalHoursFromMinutes(remainingPlannedMinutes),
+    ...(ownerEligible ? { progressDone: progressFromProcedureSteps(originalSteps) } : {}),
+  });
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.STATUS_CHANGE, task, 'Incomplete Steps Rescheduled', {
+    oldValues: { hoursRequired: existing.hoursRequired },
+    newValues: {
+      hoursRequired: task.hoursRequired,
+      rescheduledToDate: newDate,
+      rescheduledStepIds: incompleteSteps.map((s) => s.stepId),
+      rescheduledTaskId: rescheduledTask.plannerTaskId,
+      reason,
+      rescheduledBy: name,
+    },
+  });
+
+  return { task, rescheduledTask };
+};
+
+/**
+ * Factory batch completion: sequential markTaskCompleted / markTaskNotCompleted.
+ * Does NOT submit the day (client still calls submit-completion). Partial failures are reported.
+ */
+export const batchCompleteTasks = async (body, authUser, effectiveRole) => {
+  const eligible = await resolveFactoryEligibilityForAuthUser(authUser);
+  assertFactoryDailyPlannerEligible(
+    eligible,
+    'Batch completion is only available for Factory employees.',
+  );
+
+  const date = String(body?.date || '').trim();
+  const completions = Array.isArray(body?.completions) ? body.completions : [];
+  const notCompleted = Array.isArray(body?.notCompleted) ? body.notCompleted : [];
+  if (completions.length === 0 && notCompleted.length === 0) {
+    const err = new Error('At least one completion or not-completed entry is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const succeeded = [];
+  const failed = [];
+
+  const assertTaskOnDate = async (taskId) => {
+    if (!date) return;
+    const task = await DailyPlannerTasksModel.getTaskById(taskId);
+    if (task && task.date !== date) {
+      const err = new Error(`Task is not scheduled for ${date}`);
+      err.statusCode = 400;
+      throw err;
+    }
+  };
+
+  for (const entry of completions) {
+    const taskId = String(entry?.taskId || '').trim();
+    try {
+      if (!taskId) {
+        const err = new Error('taskId is required');
+        err.statusCode = 400;
+        throw err;
+      }
+      await assertTaskOnDate(taskId);
+      const { taskId: _omit, ...payload } = entry;
+      const result = await markTaskCompleted(taskId, payload, authUser, effectiveRole);
+      succeeded.push({
+        taskId,
+        type: 'completed',
+        task: result.task,
+        cancelledRescheduledTasks: result.cancelledRescheduledTasks || [],
+      });
+    } catch (error) {
+      console.error('Daily planner batchComplete completion error:', taskId, error?.message || error);
+      failed.push({
+        taskId,
+        message: String(error?.message || 'Failed to complete task'),
+        statusCode: error?.statusCode || 500,
+      });
+    }
+  }
+
+  for (const entry of notCompleted) {
+    const taskId = String(entry?.taskId || '').trim();
+    try {
+      if (!taskId) {
+        const err = new Error('taskId is required');
+        err.statusCode = 400;
+        throw err;
+      }
+      await assertTaskOnDate(taskId);
+      const rawAction = String(entry?.action || 'terminate').trim().toLowerCase();
+      const action = ['reschedule', 'next_date', 'nextdate'].includes(rawAction)
+        ? 'next_date'
+        : rawAction;
+      const result = await markTaskNotCompleted(
+        taskId,
+        { reason: entry?.reason, action, newDate: entry?.newDate },
+        authUser,
+      );
+      succeeded.push({
+        taskId,
+        type: 'notCompleted',
+        task: result.task,
+        rescheduledTask: result.rescheduledTask || null,
+      });
+    } catch (error) {
+      console.error('Daily planner batchComplete notCompleted error:', taskId, error?.message || error);
+      failed.push({
+        taskId,
+        message: String(error?.message || 'Failed to update task'),
+        statusCode: error?.statusCode || 500,
+      });
+    }
+  }
+
+  return { succeeded, failed };
 };
 
 export const deleteManualTask = async (taskId, authUser) => {
@@ -2300,6 +3279,80 @@ export const listTeamTasks = async (authUser, effectiveRole, filters = {}) => {
   return { tasks: sortDailyPlannerTasks(tasks) };
 };
 
+const PAST_DATA_STATUSES = new Set(['Completed', 'Verified Complete']);
+const PAST_DATA_MAX_RANGE_DAYS = 366;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Team Task Review → Past Data: completed tasks for one project in a date range.
+ * Authorization mirrors Task Review: team managers only, scoped to their team
+ * (Super Admin / all-records roles: every mapped employee).
+ */
+export const listProjectCompletedTasks = async (
+  projectKeyRaw,
+  query,
+  authUser,
+  effectiveRole,
+) => {
+  assertCanModerateTeamTask(effectiveRole);
+
+  const projectKey = DailyPlannerProjectsModel.normalizeProjectKey(projectKeyRaw);
+  if (!projectKey) {
+    const err = new Error('projectKey is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const from = String(query?.from || '').trim().slice(0, 10);
+  const to = String(query?.to || '').trim().slice(0, 10);
+  if (!ISO_DATE_RE.test(from) || !ISO_DATE_RE.test(to)) {
+    const err = new Error('from and to dates (YYYY-MM-DD) are required');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (from > to) {
+    const err = new Error('From Date must not be after To Date');
+    err.statusCode = 400;
+    throw err;
+  }
+  const spanDays = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000;
+  if (!(spanDays <= PAST_DATA_MAX_RANGE_DAYS)) {
+    const err = new Error(`Date range cannot exceed ${PAST_DATA_MAX_RANGE_DAYS} days`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const managerCode = employeeCodeOf(authUser);
+  let employeeCodes = await resolveTeamEmployeeCodes(managerCode, effectiveRole);
+  const filterEmployee = String(query?.employeeCode || '').trim();
+  if (filterEmployee) {
+    if (!employeeCodes.includes(filterEmployee) && !canAccessAllRecords(effectiveRole)) {
+      const err = new Error('Forbidden');
+      err.statusCode = 403;
+      throw err;
+    }
+    employeeCodes = [filterEmployee];
+  }
+  if (employeeCodes.length === 0) {
+    return { projectKey, from, to, tasks: [] };
+  }
+
+  // One indexed (employeeCode + date range) query per employee, then project/status filter.
+  const rows = await DailyPlannerTasksModel.listTasksForEmployees(employeeCodes, from, to);
+  const tasks = rows
+    .filter(
+      (t) =>
+        PAST_DATA_STATUSES.has(String(t.status || '').trim()) &&
+        DailyPlannerProjectsModel.normalizeProjectKey(t.projectName) === projectKey,
+    )
+    .sort((a, b) => {
+      const byDate = String(b.date || '').localeCompare(String(a.date || ''));
+      if (byDate !== 0) return byDate;
+      return String(a.employeeCode || '').localeCompare(String(b.employeeCode || ''));
+    });
+
+  return { projectKey, from, to, tasks };
+};
+
 export const approveTask = async (taskId, body, authUser, effectiveRole) => {
   assertCanModerateTeamTask(effectiveRole);
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
@@ -2308,6 +3361,7 @@ export const approveTask = async (taskId, body, authUser, effectiveRole) => {
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
 
   // Persist Manager Comments only (Finish Review flush) — do not change status/workflow.
   if (body?.commentsOnly === true || body?.persistCommentsOnly === true) {
@@ -2433,6 +3487,7 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
   if (existing.revisedTaskId && String(existing.revisionOutcome || '').trim()) {
     const revisedTask = await DailyPlannerTasksModel.getTaskById(existing.revisedTaskId);
     return { task: existing, revisedTask: revisedTask || undefined };
@@ -2523,6 +3578,9 @@ export const requestNeedsRevision = async (taskId, body, authUser, effectiveRole
     finalScore: 0,
     planFinalizedAt: existing.planFinalizedAt || null,
     planFinalizedBy: String(existing.planFinalizedBy || '').trim(),
+    createdByRole: 'Manager',
+    createdByEmployeeCode: reviewerCode,
+    createdByName: reviewerName,
   });
 
   const handled = await markRevisionHandled(
@@ -2653,6 +3711,7 @@ export const rescheduleTaskBySuperAdmin = async (taskId, body, authUser, effecti
     throw err;
   }
   await assertEmployeeCodeActiveOnDate(existing.employeeCode, newDate);
+  await assertDateAllowsPlannerTaskCreate(existing.employeeCode, newDate);
 
   const now = new Date();
   const actorCode = employeeCodeOf(authUser);
@@ -2714,6 +3773,11 @@ export const rescheduleTaskBySuperAdmin = async (taskId, body, authUser, effecti
     finalScore: 0,
     planFinalizedAt: existing.planFinalizedAt || null,
     planFinalizedBy: String(existing.planFinalizedBy || '').trim(),
+    createdByRole: String(existing.createdByRole || '').trim(),
+    createdByEmployeeCode: String(existing.createdByEmployeeCode || '').trim(),
+    createdByName: String(existing.createdByName || '').trim(),
+    isProjectBased: Boolean(existing.isProjectBased),
+    projectName: String(existing.projectName || '').trim(),
   });
 
   if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
@@ -2815,6 +3879,7 @@ export const verifyTaskCompletion = async (taskId, body, authUser, effectiveRole
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
 
   const status = String(existing.status || '').trim();
   if (status !== 'Awaiting Verification' && status !== 'Completed') {
@@ -2936,6 +4001,9 @@ export const acceptRevisionSuggestion = async (taskId, authUser) => {
     finalScore: 0,
     planFinalizedAt: existing.planFinalizedAt || null,
     planFinalizedBy: String(existing.planFinalizedBy || '').trim(),
+    createdByRole: 'Manager',
+    createdByEmployeeCode: reviewerCode,
+    createdByName: reviewerName,
   });
 
   const task = await markRevisionHandled(
@@ -2975,6 +4043,7 @@ export const editTaskPriority = async (taskId, body, authUser, effectiveRole) =>
     err.statusCode = 404;
     throw err;
   }
+  await assertCanCorrectTeamEmployeeTask(authUser, effectiveRole, existing.employeeCode);
 
   const nowIso = new Date().toISOString();
   const originalPriority = existing.originalPriority || existing.priority || newPriority;
@@ -3115,7 +4184,8 @@ export const getPlanningConfig = async (authUser, effectiveRole) => {
   const code = employeeCodeOf(authUser);
   const config = await PlanningRecognitionService.getPlanningConfig(new Date(), code);
   const enhancedEligible = await resolveEnhancedEligibilityForAuthUser(authUser, effectiveRole);
-  return { config: { ...config, enhancedEligible } };
+  const factoryEligible = await resolveFactoryEligibilityForAuthUser(authUser);
+  return { config: { ...config, enhancedEligible, factoryEligible } };
 };
 
 export const getMyPlanningProfile = async (authUser) => {
@@ -3172,4 +4242,230 @@ export const getTeamPlanningHistory = async (authUser, effectiveRole, query = {}
 
 export const getPlanningExportPayload = async (authUser, effectiveRole, query = {}) => {
   return PlanningAnalyticsService.getPlanningExportPayload(authUser, effectiveRole, query);
+};
+
+/**
+ * Approved Payroll leave for Daily Planner calendars (source of truth: PayrollLeaveRequests).
+ * Auth: self, Super Admin (company-wide), or Admin/Developer for their own DP team only.
+ */
+export const listApprovedLeaveForPlanner = async (
+  employeeCode,
+  authUser,
+  effectiveRole,
+  query = {},
+) => {
+  const code = String(employeeCode || '').trim();
+  if (!code) {
+    const err = new Error('employeeCode is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  await assertCanViewTeamEmployeePlanner(authUser, effectiveRole, code);
+
+  const year = Number(query.year);
+  const month = Number(query.month);
+  const all = await PayrollLeaveRequestsModel.listLeaveRequestsForEmployee(code);
+  let leaveRequests = (all || []).filter(
+    (row) => String(row.status || '').trim() === 'Approved',
+  );
+  if (Number.isFinite(year) && year > 0 && Number.isFinite(month) && month >= 1 && month <= 12) {
+    leaveRequests = leaveRequests.filter((row) =>
+      rangesOverlapMonth(row.startDate, row.endDate, year, month),
+    );
+  }
+  leaveRequests.sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+  return { leaveRequests };
+};
+
+function officialEmailOfEmployee(employee) {
+  return String(
+    employee?.officialEmail || employee?.official_email || employee?.email || '',
+  ).trim();
+}
+
+/**
+ * Super Admin review comment for an employee outside their own team.
+ * Persists permanently on the task; emails employee + reporting person(s).
+ */
+export const submitSuperadminReviewComment = async (
+  taskId,
+  body,
+  authUser,
+  effectiveRole,
+) => {
+  if (!isSuperAdmin(effectiveRole)) {
+    const err = new Error('Only Super Admin can submit company-wide review comments');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const existing = await DailyPlannerTasksModel.getTaskById(taskId);
+  if (!existing) {
+    const err = new Error('Task not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const targetCode = String(existing.employeeCode || '').trim();
+  const reviewerCode = employeeCodeOf(authUser);
+  const onTeam = await isEmployeeOnManagersTeam(reviewerCode, targetCode);
+  if (onTeam) {
+    const err = new Error(
+      'Use the normal Team Daily Planner review actions for employees on your own team',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const commentText = String(body?.comment || body?.comments || '').trim();
+  if (!commentText) {
+    const err = new Error('Review comment is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const submissionId = String(body?.submissionId || '').trim();
+  const prior = Array.isArray(existing.superadminReviewComments)
+    ? existing.superadminReviewComments
+    : [];
+  if (submissionId) {
+    const dup = prior.find((c) => String(c?.submissionId || '').trim() === submissionId);
+    if (dup) {
+      return {
+        task: existing,
+        comment: dup,
+        duplicate: true,
+        email: {
+          employee: { ok: false, skipped: true, reason: 'duplicate_submission' },
+          reportingPersons: [],
+        },
+      };
+    }
+  }
+
+  const reviewerName = employeeNameOf(authUser) || reviewerCode;
+  const comment = {
+    commentId: uuidv4(),
+    submissionId: submissionId || uuidv4(),
+    commentText,
+    reviewerCode,
+    reviewerName,
+    employeeCode: targetCode,
+    plannerTaskId: String(existing.plannerTaskId || taskId).trim(),
+    taskDate: String(existing.date || '').trim().slice(0, 10),
+    taskName: String(existing.taskName || '').trim(),
+    projectName: String(existing.projectName || '').trim(),
+    submittedAt: new Date().toISOString(),
+  };
+
+  const task = await DailyPlannerTasksModel.updateTask(taskId, {
+    superadminReviewComments: [...prior, comment],
+  });
+
+  // Notify after persist — never roll back comment on email failure.
+  const employee = await EmployeeMasterModel.getEmployeeByCode(targetCode);
+  const employeeName =
+    String(employee?.fullName || '').trim() ||
+    `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() ||
+    String(existing.employeeName || '').trim() ||
+    targetCode;
+  const employeeEmail = officialEmailOfEmployee(employee);
+  const mail = buildSuperadminReviewEmail({
+    recipientName: employeeName,
+    employeeName,
+    reviewerName,
+    taskName: comment.taskName,
+    projectName: comment.projectName,
+    taskDate: comment.taskDate,
+    commentText: comment.commentText,
+  });
+
+  let employeeEmailResult = { ok: false, skipped: true, reason: 'missing_email' };
+  if (employeeEmail) {
+    employeeEmailResult = await sendEmail({
+      to: employeeEmail,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+    });
+    if (!employeeEmailResult?.ok) {
+      console.error('Superadmin review email to employee failed', {
+        employeeCode: targetCode,
+        error: employeeEmailResult?.error,
+      });
+    }
+  } else {
+    console.error('Superadmin review email skipped — employee has no official email', {
+      employeeCode: targetCode,
+    });
+  }
+
+  const managers = await listActiveManagersForEmployee(targetCode);
+  const reportingResults = [];
+  for (const manager of managers) {
+    if (!manager.managerCode || manager.managerCode === targetCode) continue;
+    if (manager.managerCode === reviewerCode) continue;
+    const mgrEmp = await EmployeeMasterModel.getEmployeeByCode(manager.managerCode);
+    const mgrEmail = officialEmailOfEmployee(mgrEmp);
+    const mgrName =
+      String(mgrEmp?.fullName || '').trim() ||
+      manager.managerName ||
+      manager.managerCode;
+    if (!mgrEmail) {
+      console.error('Superadmin review email skipped — reporting person has no email', {
+        managerCode: manager.managerCode,
+      });
+      reportingResults.push({
+        managerCode: manager.managerCode,
+        ok: false,
+        skipped: true,
+        reason: 'missing_email',
+      });
+      continue;
+    }
+    const mgrMail = buildSuperadminReviewEmail({
+      recipientName: mgrName,
+      employeeName,
+      reviewerName,
+      taskName: comment.taskName,
+      projectName: comment.projectName,
+      taskDate: comment.taskDate,
+      commentText: comment.commentText,
+    });
+    const result = await sendEmail({
+      to: mgrEmail,
+      subject: mgrMail.subject,
+      text: mgrMail.text,
+      html: mgrMail.html,
+    });
+    if (!result?.ok) {
+      console.error('Superadmin review email to reporting person failed', {
+        managerCode: manager.managerCode,
+        error: result?.error,
+      });
+    }
+    reportingResults.push({
+      managerCode: manager.managerCode,
+      ok: Boolean(result?.ok),
+      skipped: false,
+      error: result?.ok ? undefined : result?.error,
+    });
+  }
+
+  auditPlannerTask(authUser, AUDIT_ACTIONS.UPDATE, task, 'Superadmin review comment', {
+    newValues: {
+      commentId: comment.commentId,
+      taskDate: comment.taskDate,
+    },
+  });
+
+  return {
+    task,
+    comment,
+    duplicate: false,
+    email: {
+      employee: employeeEmailResult,
+      reportingPersons: reportingResults,
+    },
+  };
 };

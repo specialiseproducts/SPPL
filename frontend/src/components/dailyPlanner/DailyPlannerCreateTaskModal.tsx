@@ -1,15 +1,23 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type MutableRefObject,
+} from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
 import { Label } from '../ui/label';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
+import StepProcedureEditor from './StepProcedureEditor';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
 import type { DailyPlannerPriority, DailyPlannerTask, DailyPlannerTaskDraft } from '../../types/dailyPlanner';
@@ -26,13 +34,28 @@ import {
   PLANNING_CATEGORY_URGENT,
   PLANNING_WINDOW_CLOSED_MESSAGE,
 } from '../../utils/planningRecognition';
-import { hasBulletContent, parseBulletPoints } from './bulletPointUtils';
+import {
+  descriptionFromProcedureSteps,
+  newProcedureStepDraft,
+  sumDraftDecimalHours,
+  validateProcedureDrafts,
+  type ProcedureStepDraft,
+} from '../../utils/dailyPlannerProcedureSteps';
 import { sumPlannedHoursForDate } from './dailyPlannerUtils';
 import { cn } from '../ui/utils';
-import { fetchDailyPlannerProjects, uploadDailyPlannerTaskDocument } from '../../hooks/dailyPlanner/dailyPlannerApi';
+import {
+  fetchDailyPlannerProjects,
+  fetchProjectFormOptions,
+  uploadDailyPlannerTaskDocument,
+  type ProjectFormOption,
+} from '../../hooks/dailyPlanner/dailyPlannerApi';
 import DailyPlannerPlanSummaryDialog from './DailyPlannerPlanSummaryDialog';
 import HoursMinutesFields from './HoursMinutesFields';
-import DailyPlannerEnhancedTaskFields from './DailyPlannerEnhancedTaskFields';
+import DailyPlannerEnhancedTaskFields, { resolveDocumentUploadPayload } from './DailyPlannerEnhancedTaskFields';
+import ProjectObservationsButton, { type ProjectObservationsCache } from './ProjectObservationsButton';
+import { normalizeProjectKey } from './ProjectPastDataDialog';
+import TwelveHourTimeInput from './TwelveHourTimeInput';
+import { isFactoryDailyPlannerEligible } from '../../utils/dailyPlannerFactoryEligibility';
 
 /** Same duration helper as Mark Completed (Start/End → decimal hours). */
 function calcDurationFromTimes(startTime: string, endTime: string): number | null {
@@ -52,24 +75,29 @@ function calcDurationFromTimes(startTime: string, endTime: string): number | nul
 type TaskSectionState = {
   id: string;
   taskName: string;
-  description: string;
+  /** Step By Step Procedure — source of truth for description + hoursRequired. */
+  procedureSteps: ProcedureStepDraft[];
   priority: DailyPlannerPriority;
+  /** Read-only: always the sum of procedure step durations. */
   hoursRequired: number | null;
   isProjectBased: 'Yes' | 'No';
   projectName: string;
+  projectTaskId: string;
   managerInstructions: string;
   startTime: string;
   endTime: string;
   needsDocument: 'Yes' | 'No';
   progressDone: number | null;
   documentFile: File | null;
+  documentFiles?: File[];
 };
 
 type SectionErrors = Record<
   string,
   {
     taskName?: boolean;
-    hoursRequired?: boolean;
+    /** Validation message for Step By Step Procedure (incomplete steps). */
+    procedureSteps?: string;
     projectName?: boolean;
     startEnd?: boolean;
     workDone?: boolean;
@@ -80,23 +108,68 @@ function createEmptySection(): TaskSectionState {
   return {
     id: crypto.randomUUID(),
     taskName: '',
-    description: '',
+    procedureSteps: [newProcedureStepDraft()],
     priority: 'Medium',
     hoursRequired: null,
     isProjectBased: 'No',
     projectName: '',
+    projectTaskId: '',
     managerInstructions: '',
     startTime: '',
     endTime: '',
     needsDocument: 'No',
     progressDone: null,
     documentFile: null,
+    documentFiles: [],
   };
 }
 
-function isSectionEmpty(taskName: string, description: string): boolean {
-  const hasDescription = hasBulletContent(parseBulletPoints(description));
-  return !taskName.trim() && !hasDescription;
+function isSectionEmpty(taskName: string, procedureSteps: ProcedureStepDraft[]): boolean {
+  const hasSteps = procedureSteps.some((step) => step.description.trim().length > 0);
+  return !taskName.trim() && !hasSteps;
+}
+
+/** Total of all step durations as decimal hours (null when nothing entered yet). */
+/** Collapse whitespace; reuse canonical display name when a case-insensitive match exists. */
+function resolveCanonicalProjectName(
+  raw: string,
+  managedProjects: ProjectFormOption[],
+  legacyNames: string[],
+): string {
+  const collapsed = String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!collapsed) return '';
+  const key = normalizeProjectKey(collapsed);
+  const managed = managedProjects.find((p) => normalizeProjectKey(p.projectName) === key);
+  if (managed) return managed.projectName;
+  const legacy = legacyNames.find((n) => normalizeProjectKey(n) === key);
+  if (legacy) return legacy;
+  return collapsed;
+}
+
+function buildProjectNameOptions(
+  managedProjects: ProjectFormOption[],
+  legacyNames: string[],
+): string[] {
+  const byKey = new Map<string, string>();
+  for (const p of managedProjects) {
+    const name = String(p.projectName || '').trim();
+    if (!name) continue;
+    byKey.set(normalizeProjectKey(name), name);
+  }
+  for (const n of legacyNames) {
+    const name = String(n || '').trim();
+    if (!name) continue;
+    const key = normalizeProjectKey(name);
+    if (!byKey.has(key)) byKey.set(key, name);
+  }
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function stepsTotalHours(procedureSteps: ProcedureStepDraft[]): number | null {
+  const total = sumDraftDecimalHours(procedureSteps);
+  return total > 0 ? total : null;
 }
 
 interface TaskSectionRowProps {
@@ -105,13 +178,17 @@ interface TaskSectionRowProps {
   canRemove: boolean;
   elevated: boolean;
   enhancedEligible?: boolean;
+  /** Factory v2: mandatory Project Name first; no Yes/No; Progress Done always. */
+  factoryMode?: boolean;
+  highlighted?: boolean;
   projectOptions: string[];
+  managedProjects?: ProjectFormOption[];
+  observationCacheRef: MutableRefObject<ProjectObservationsCache>;
   showTaskNameError: boolean;
-  showHoursRequiredError: boolean;
+  procedureError?: string;
   showProjectNameError: boolean;
   onChange: (patch: Partial<TaskSectionState>) => void;
   onRemove: () => void;
-  onDescriptionRef: (handle: BulletPointEditorHandle | null) => void;
 }
 
 function TaskSectionRow({
@@ -120,16 +197,52 @@ function TaskSectionRow({
   canRemove,
   elevated,
   enhancedEligible = false,
+  factoryMode = false,
+  highlighted = false,
   projectOptions,
+  managedProjects = [],
+  observationCacheRef,
   showTaskNameError,
-  showHoursRequiredError,
+  procedureError,
   showProjectNameError,
   onChange,
   onRemove,
-  onDescriptionRef,
 }: TaskSectionRowProps) {
+  const showProjectName = factoryMode || section.isProjectBased === 'Yes';
+  const selectedManaged = managedProjects.find(
+    (p) => normalizeProjectKey(p.projectName) === normalizeProjectKey(section.projectName),
+  );
+  const managedTaskOptions = selectedManaged?.tasks || [];
+  const projectNameChoices = buildProjectNameOptions(managedProjects, projectOptions);
+
+  const applyProjectName = (raw: string, canonicalize: boolean) => {
+    const nextName = canonicalize
+      ? resolveCanonicalProjectName(raw, managedProjects, projectOptions)
+      : raw;
+    const matched = managedProjects.find(
+      (p) => normalizeProjectKey(p.projectName) === normalizeProjectKey(nextName),
+    );
+    const sameManaged =
+      matched &&
+      selectedManaged &&
+      normalizeProjectKey(matched.projectName) === normalizeProjectKey(selectedManaged.projectName);
+    onChange({
+      projectName: nextName,
+      projectTaskId: sameManaged ? section.projectTaskId : '',
+      ...(sameManaged ? {} : { taskName: matched ? '' : section.taskName }),
+      ...(factoryMode ? { isProjectBased: 'Yes' as const } : {}),
+    });
+  };
+
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50/40 p-4 space-y-4">
+    <div
+      id={`create-task-section-${section.id}`}
+      data-task-section-id={section.id}
+      className={cn(
+        'rounded-lg border bg-gray-50/40 p-4 space-y-4 scroll-mt-4',
+        highlighted ? 'border-[#007BFF] ring-2 ring-[#007BFF]/30' : 'border-gray-200',
+      )}
+    >
       <div className="flex items-center justify-between gap-2">
         <p className="text-sm font-semibold text-[#212529]">Task {index + 1}</p>
         {canRemove ? (
@@ -147,39 +260,102 @@ function TaskSectionRow({
         ) : null}
       </div>
 
+      {showProjectName ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Label htmlFor={`project-name-${section.id}`}>Project Name *</Label>
+            {factoryMode ? (
+              <ProjectObservationsButton
+                projectName={section.projectName}
+                cacheRef={observationCacheRef}
+              />
+            ) : null}
+          </div>
+          <Input
+            id={`project-name-${section.id}`}
+            list={`project-options-${section.id}`}
+            value={section.projectName}
+            onChange={(e) => applyProjectName(e.target.value, false)}
+            onBlur={() => applyProjectName(section.projectName, true)}
+            placeholder="Select or type a project name"
+            className={cn(showProjectNameError && 'border-red-500 focus-visible:ring-red-500/30')}
+            aria-invalid={showProjectNameError}
+            autoComplete="off"
+          />
+          <datalist id={`project-options-${section.id}`}>
+            {projectNameChoices.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          {showProjectNameError ? (
+            <p className="text-xs text-red-600">Project Name is required.</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="space-y-2">
         <Label htmlFor={`task-name-${section.id}`}>Task Name *</Label>
-        <Input
-          id={`task-name-${section.id}`}
-          value={section.taskName}
-          onChange={(e) => onChange({ taskName: e.target.value })}
-          className={cn(showTaskNameError && 'border-red-500 focus-visible:ring-red-500/30')}
-          aria-invalid={showTaskNameError}
-        />
+        {managedTaskOptions.length > 0 ? (
+          <select
+            id={`task-name-${section.id}`}
+            className={cn(
+              'border-input bg-background h-9 w-full rounded-md border px-2 text-sm',
+              showTaskNameError && 'border-red-500',
+            )}
+            value={section.projectTaskId || ''}
+            onChange={(e) => {
+              const id = e.target.value;
+              const match = managedTaskOptions.find((t) => t.projectTaskId === id);
+              onChange({
+                projectTaskId: id,
+                taskName: match?.taskName || '',
+              });
+            }}
+            aria-invalid={showTaskNameError}
+          >
+            <option value="">Select task</option>
+            {managedTaskOptions.map((t) => (
+              <option key={t.projectTaskId} value={t.projectTaskId}>
+                {t.taskName}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <Input
+            id={`task-name-${section.id}`}
+            value={section.taskName}
+            onChange={(e) => onChange({ taskName: e.target.value, projectTaskId: '' })}
+            className={cn(showTaskNameError && 'border-red-500 focus-visible:ring-red-500/30')}
+            aria-invalid={showTaskNameError}
+          />
+        )}
         {showTaskNameError ? (
           <p className="text-xs text-red-600">Task name is required.</p>
         ) : null}
       </div>
 
-      <BulletPointEditor
-        key={`${section.id}-description`}
-        ref={onDescriptionRef}
-        id={`task-description-${section.id}`}
-        label="Task Description"
-        defaultValue={section.description}
-      />
+      <div className="space-y-1">
+        <StepProcedureEditor
+          id={`task-procedure-${section.id}`}
+          label="Step By Step Procedure"
+          required
+          steps={section.procedureSteps}
+          onChange={(procedureSteps) => onChange({ procedureSteps })}
+          error={Boolean(procedureError)}
+        />
+        {procedureError ? <p className="text-xs text-red-600">{procedureError}</p> : null}
+      </div>
 
       <div className="space-y-2">
-        <Label>Hours Required to Complete *</Label>
+        <Label>Hours Required to Complete</Label>
+        {/* Read-only: auto-calculated from the Step By Step Procedure durations. */}
         <HoursMinutesFields
           idPrefix={`hours-required-${section.id}`}
           value={section.hoursRequired}
-          onChange={(decimal) => onChange({ hoursRequired: decimal })}
-          error={showHoursRequiredError}
+          onChange={() => undefined}
+          disabled
         />
-        {showHoursRequiredError ? (
-          <p className="text-xs text-red-600">Enter hours and minutes greater than 0.</p>
-        ) : null}
+        <p className="text-xs text-gray-500">Auto-calculated from the steps above.</p>
       </div>
 
       <div className="space-y-2">
@@ -200,48 +376,27 @@ function TaskSectionRow({
         </Select>
       </div>
 
-      <div className="space-y-2">
-        <Label>Is this task based on the project?</Label>
-        <Select
-          value={section.isProjectBased}
-          onValueChange={(v) =>
-            onChange({
-              isProjectBased: v as 'Yes' | 'No',
-              projectName: v === 'No' ? '' : section.projectName,
-              progressDone: v === 'No' ? null : section.progressDone,
-            })
-          }
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="No">No</SelectItem>
-            <SelectItem value="Yes">Yes</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      {section.isProjectBased === 'Yes' ? (
+      {!factoryMode ? (
         <div className="space-y-2">
-          <Label htmlFor={`project-name-${section.id}`}>Project Name *</Label>
-          <Input
-            id={`project-name-${section.id}`}
-            list={`project-options-${section.id}`}
-            value={section.projectName}
-            onChange={(e) => onChange({ projectName: e.target.value })}
-            placeholder="Select or type a project name"
-            className={cn(showProjectNameError && 'border-red-500 focus-visible:ring-red-500/30')}
-            aria-invalid={showProjectNameError}
-          />
-          <datalist id={`project-options-${section.id}`}>
-            {projectOptions.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-          {showProjectNameError ? (
-            <p className="text-xs text-red-600">Project Name is required.</p>
-          ) : null}
+          <Label>Is this task based on the project?</Label>
+          <Select
+            value={section.isProjectBased}
+            onValueChange={(v) =>
+              onChange({
+                isProjectBased: v as 'Yes' | 'No',
+                projectName: v === 'No' ? '' : section.projectName,
+                progressDone: v === 'No' ? null : section.progressDone,
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="No">No</SelectItem>
+              <SelectItem value="Yes">Yes</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       ) : null}
 
@@ -260,11 +415,14 @@ function TaskSectionRow({
       {enhancedEligible ? (
         <DailyPlannerEnhancedTaskFields
           idPrefix={`create-${section.id}`}
-          isProjectBased={section.isProjectBased === 'Yes'}
+          // Progress Done is not collected at Create New Task — keep Extra Task / completion flows unchanged.
+          isProjectBased={false}
+          alwaysShowProgressDone={false}
           values={{
             needsDocument: section.needsDocument,
-            progressDone: section.progressDone,
+            progressDone: null,
             documentFile: section.documentFile,
+            documentFiles: section.documentFiles,
           }}
           onChange={(patch) => onChange(patch)}
         />
@@ -275,53 +433,136 @@ function TaskSectionRow({
 
 interface ExtraTaskSectionFieldsProps {
   section: TaskSectionState;
+  factoryMode?: boolean;
+  enhancedEligible?: boolean;
   projectOptions: string[];
+  managedProjects?: ProjectFormOption[];
+  observationCacheRef: MutableRefObject<ProjectObservationsCache>;
   showTaskNameError: boolean;
   showProjectNameError: boolean;
   showStartEndError: boolean;
   showWorkDoneError: boolean;
   onChange: (patch: Partial<TaskSectionState>) => void;
-  onDescriptionRef: (handle: BulletPointEditorHandle | null) => void;
   onWorkDoneRef: (handle: BulletPointEditorHandle | null) => void;
 }
 
 /** Extra Task field set — reuses existing Daily Planner field components / Mark Completed time + Work Done. */
 function ExtraTaskSectionFields({
   section,
+  factoryMode = false,
+  enhancedEligible = false,
   projectOptions,
+  managedProjects = [],
+  observationCacheRef,
   showTaskNameError,
   showProjectNameError,
   showStartEndError,
   showWorkDoneError,
   onChange,
-  onDescriptionRef,
   onWorkDoneRef,
 }: ExtraTaskSectionFieldsProps) {
   const durationPreview = calcDurationFromTimes(section.startTime, section.endTime);
+  const showProjectName = factoryMode || section.isProjectBased === 'Yes';
+  const selectedManaged = managedProjects.find(
+    (p) => normalizeProjectKey(p.projectName) === normalizeProjectKey(section.projectName),
+  );
+  const managedTaskOptions = selectedManaged?.tasks || [];
+  const projectNameChoices = buildProjectNameOptions(managedProjects, projectOptions);
+
+  const applyProjectName = (raw: string, canonicalize: boolean) => {
+    const nextName = canonicalize
+      ? resolveCanonicalProjectName(raw, managedProjects, projectOptions)
+      : raw;
+    const matched = managedProjects.find(
+      (p) => normalizeProjectKey(p.projectName) === normalizeProjectKey(nextName),
+    );
+    const sameManaged =
+      matched &&
+      selectedManaged &&
+      normalizeProjectKey(matched.projectName) === normalizeProjectKey(selectedManaged.projectName);
+    onChange({
+      projectName: nextName,
+      projectTaskId: sameManaged ? section.projectTaskId : '',
+      ...(sameManaged ? {} : { taskName: matched ? '' : section.taskName }),
+      ...(factoryMode ? { isProjectBased: 'Yes' as const } : {}),
+    });
+  };
 
   return (
     <div className="rounded-lg border border-gray-200 bg-gray-50/40 p-4 space-y-4">
+      {showProjectName ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Label htmlFor={`project-name-${section.id}`}>Project Name *</Label>
+            {factoryMode ? (
+              <ProjectObservationsButton
+                projectName={section.projectName}
+                cacheRef={observationCacheRef}
+              />
+            ) : null}
+          </div>
+          <Input
+            id={`project-name-${section.id}`}
+            list={`extra-project-options-${section.id}`}
+            value={section.projectName}
+            onChange={(e) => applyProjectName(e.target.value, false)}
+            onBlur={() => applyProjectName(section.projectName, true)}
+            placeholder="Select or type a project name"
+            className={cn(showProjectNameError && 'border-red-500 focus-visible:ring-red-500/30')}
+            aria-invalid={showProjectNameError}
+            autoComplete="off"
+          />
+          <datalist id={`extra-project-options-${section.id}`}>
+            {projectNameChoices.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          {showProjectNameError ? (
+            <p className="text-xs text-red-600">Project Name is required.</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="space-y-2">
         <Label htmlFor={`task-name-${section.id}`}>Task Name *</Label>
-        <Input
-          id={`task-name-${section.id}`}
-          value={section.taskName}
-          onChange={(e) => onChange({ taskName: e.target.value })}
-          className={cn(showTaskNameError && 'border-red-500 focus-visible:ring-red-500/30')}
-          aria-invalid={showTaskNameError}
-        />
+        {managedTaskOptions.length > 0 ? (
+          <select
+            id={`task-name-${section.id}`}
+            className={cn(
+              'border-input bg-background h-9 w-full rounded-md border px-2 text-sm',
+              showTaskNameError && 'border-red-500',
+            )}
+            value={section.projectTaskId || ''}
+            onChange={(e) => {
+              const id = e.target.value;
+              const match = managedTaskOptions.find((t) => t.projectTaskId === id);
+              onChange({
+                projectTaskId: id,
+                taskName: match?.taskName || '',
+              });
+            }}
+            aria-invalid={showTaskNameError}
+          >
+            <option value="">Select task</option>
+            {managedTaskOptions.map((t) => (
+              <option key={t.projectTaskId} value={t.projectTaskId}>
+                {t.taskName}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <Input
+            id={`task-name-${section.id}`}
+            value={section.taskName}
+            onChange={(e) => onChange({ taskName: e.target.value, projectTaskId: '' })}
+            className={cn(showTaskNameError && 'border-red-500 focus-visible:ring-red-500/30')}
+            aria-invalid={showTaskNameError}
+          />
+        )}
         {showTaskNameError ? (
           <p className="text-xs text-red-600">Task name is required.</p>
         ) : null}
       </div>
-
-      <BulletPointEditor
-        key={`${section.id}-description`}
-        ref={onDescriptionRef}
-        id={`task-description-${section.id}`}
-        label="Task Description"
-        defaultValue={section.description}
-      />
 
       <div className="space-y-2">
         <Label>Priority *</Label>
@@ -341,75 +582,90 @@ function ExtraTaskSectionFields({
         </Select>
       </div>
 
-      <div className="space-y-2">
-        <Label>Is this task based on the project?</Label>
-        <Select
-          value={section.isProjectBased}
-          onValueChange={(v) =>
-            onChange({
-              isProjectBased: v as 'Yes' | 'No',
-              projectName: v === 'No' ? '' : section.projectName,
-              progressDone: v === 'No' ? null : section.progressDone,
-            })
-          }
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="No">No</SelectItem>
-            <SelectItem value="Yes">Yes</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      {section.isProjectBased === 'Yes' ? (
+      {!factoryMode ? (
         <div className="space-y-2">
-          <Label htmlFor={`project-name-${section.id}`}>Project Name *</Label>
-          <Input
-            id={`project-name-${section.id}`}
-            list={`project-options-${section.id}`}
-            value={section.projectName}
-            onChange={(e) => onChange({ projectName: e.target.value })}
-            placeholder="Select or type a project name"
-            className={cn(showProjectNameError && 'border-red-500 focus-visible:ring-red-500/30')}
-            aria-invalid={showProjectNameError}
-          />
-          <datalist id={`project-options-${section.id}`}>
-            {projectOptions.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-          {showProjectNameError ? (
-            <p className="text-xs text-red-600">Project Name is required.</p>
-          ) : null}
+          <Label>Is this task based on the project?</Label>
+          <Select
+            value={section.isProjectBased}
+            onValueChange={(v) =>
+              onChange({
+                isProjectBased: v as 'Yes' | 'No',
+                projectName: v === 'No' ? '' : section.projectName,
+                progressDone: v === 'No' ? null : section.progressDone,
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="No">No</SelectItem>
+              <SelectItem value="Yes">Yes</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-2">
-          <Label htmlFor={`extra-start-time-${section.id}`}>Start Time *</Label>
-          <Input
+      {enhancedEligible ? (
+        <DailyPlannerEnhancedTaskFields
+          idPrefix={`extra-${section.id}`}
+          isProjectBased={factoryMode || section.isProjectBased === 'Yes'}
+          alwaysShowProgressDone={factoryMode}
+          values={{
+            needsDocument: section.needsDocument,
+            progressDone: section.progressDone,
+            documentFile: section.documentFile,
+            documentFiles: section.documentFiles,
+          }}
+          onChange={(patch) => onChange(patch)}
+        />
+      ) : null}
+
+      {factoryMode ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <TwelveHourTimeInput
             id={`extra-start-time-${section.id}`}
-            type="time"
+            label="Start Time"
+            required
             value={section.startTime}
-            onChange={(e) => onChange({ startTime: e.target.value })}
-            className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
-            aria-invalid={showStartEndError}
+            onChange={(hhmm) => onChange({ startTime: hhmm })}
+            error={showStartEndError}
           />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor={`extra-end-time-${section.id}`}>End Time *</Label>
-          <Input
+          <TwelveHourTimeInput
             id={`extra-end-time-${section.id}`}
-            type="time"
+            label="End Time"
+            required
             value={section.endTime}
-            onChange={(e) => onChange({ endTime: e.target.value })}
-            className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
-            aria-invalid={showStartEndError}
+            onChange={(hhmm) => onChange({ endTime: hhmm })}
+            error={showStartEndError}
           />
         </div>
-      </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <Label htmlFor={`extra-start-time-${section.id}`}>Start Time *</Label>
+            <Input
+              id={`extra-start-time-${section.id}`}
+              type="time"
+              value={section.startTime}
+              onChange={(e) => onChange({ startTime: e.target.value })}
+              className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
+              aria-invalid={showStartEndError}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`extra-end-time-${section.id}`}>End Time *</Label>
+            <Input
+              id={`extra-end-time-${section.id}`}
+              type="time"
+              value={section.endTime}
+              onChange={(e) => onChange({ endTime: e.target.value })}
+              className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
+              aria-invalid={showStartEndError}
+            />
+          </div>
+        </div>
+      )}
       {durationPreview != null && durationPreview > 0 ? (
         <p className="text-sm text-gray-600">Duration: {formatDurationLabel(durationPreview)}</p>
       ) : section.startTime && section.endTime ? (
@@ -422,15 +678,14 @@ function ExtraTaskSectionFields({
         <p className="text-xs text-red-600">Start Time and End Time are required.</p>
       ) : null}
 
-      <div className={cn(showWorkDoneError && 'rounded-md ring-1 ring-red-500/40')}>
-        <BulletPointEditor
-          key={`${section.id}-work-done`}
-          ref={onWorkDoneRef}
-          id={`work-done-${section.id}`}
-          label="Work Done"
-          required
-        />
-      </div>
+      {/* Same Work Done control as Mark Completed (DailyPlannerDayTasksModal). */}
+      <BulletPointEditor
+        key={`${section.id}-work-done`}
+        ref={onWorkDoneRef}
+        id={`work-done-${section.id}`}
+        label="Work Done"
+        required
+      />
       {showWorkDoneError ? (
         <p className="text-xs text-red-600">Work done is required.</p>
       ) : null}
@@ -453,14 +708,27 @@ interface DailyPlannerCreateTaskModalProps {
   /** Factory / Office SuperAdmin — document + progress fields. */
   enhancedEligible?: boolean;
   /**
+   * Factory v2 features (mandatory Project Name, navigator, etc.).
+   * Prefer server `planningConfig.factoryEligible`; prop overrides when creating for a team employee.
+   */
+  factoryEligible?: boolean;
+  /**
    * Extra Task from Mark Completed / Not Completed — same fields as Add Task,
    * saved as Completed + self-approved (no min-hours / plan-summary).
    */
   isExtraTask?: boolean;
   /** Existing tasks already planned for `date` (same set the calendar uses for that day). */
   existingTasksForDate?: DailyPlannerTask[];
+  /** Approved leave kind for `date` (full/half/none) — drives minimum hours. */
+  leaveKind?: 'none' | 'full' | 'half';
   onClose: () => void;
   onSave: (drafts: DailyPlannerTaskDraft[]) => Promise<DailyPlannerTask[] | void>;
+}
+
+function createEmptySectionForMode(factoryMode: boolean): TaskSectionState {
+  const base = createEmptySection();
+  if (!factoryMode) return base;
+  return { ...base, isProjectBased: 'Yes' };
 }
 
 export default function DailyPlannerCreateTaskModal({
@@ -472,28 +740,47 @@ export default function DailyPlannerCreateTaskModal({
   forEmployeeCode,
   skipPlanningWindowAssert = false,
   enhancedEligible = false,
+  factoryEligible,
   isExtraTask = false,
   existingTasksForDate = [],
+  leaveKind = 'none',
   onClose,
   onSave,
 }: DailyPlannerCreateTaskModalProps) {
-  const [sections, setSections] = useState<TaskSectionState[]>([createEmptySection()]);
+  const factoryMode = useMemo(() => {
+    if (typeof factoryEligible === 'boolean') return factoryEligible;
+    if (typeof planningConfig?.factoryEligible === 'boolean') return planningConfig.factoryEligible;
+    return isFactoryDailyPlannerEligible(planningConfig?.employeeLocation);
+  }, [factoryEligible, planningConfig?.factoryEligible, planningConfig?.employeeLocation]);
+
+  const [sections, setSections] = useState<TaskSectionState[]>(() => [
+    createEmptySectionForMode(false),
+  ]);
   const [errors, setErrors] = useState<SectionErrors>({});
   const [saving, setSaving] = useState(false);
   const [manualOutsideWindowMode, setManualOutsideWindowMode] = useState(false);
   const [projectOptions, setProjectOptions] = useState<string[]>([]);
+  const [managedProjects, setManagedProjects] = useState<ProjectFormOption[]>([]);
   const [hoursAlert, setHoursAlert] = useState<string | null>(null);
   const [summaryDrafts, setSummaryDrafts] = useState<DailyPlannerTaskDraft[] | null>(null);
-  const descriptionRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
   const workDoneRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
+  const formScrollRef = useRef<HTMLDivElement | null>(null);
+  /** Scroll target after + New Task (or nav click) — applied after the section is in the DOM. */
+  const pendingScrollSectionIdRef = useRef<string | null>(null);
   const submitLockRef = useRef(false);
   const clientBatchIdRef = useRef('');
+  const observationCacheRef = useRef<ProjectObservationsCache>(new Map());
 
   const advancePartialPlanning =
     Boolean(planningConfig) && getPlanningTargetDateMode(date, planningConfig!) === 'other';
   const requireMinHours =
-    !elevated && !forEmployeeCode && !isExtraTask && !advancePartialPlanning;
-  const minPlannedHours = getMinPlannedHours(planningConfig);
+    !elevated &&
+    !forEmployeeCode &&
+    !isExtraTask &&
+    !advancePartialPlanning &&
+    leaveKind !== 'full';
+  const minPlannedHours = getMinPlannedHours(planningConfig, undefined, leaveKind);
 
   const windowState = useMemo(
     () => getPlanningWindowUiState(planningConfig),
@@ -513,18 +800,34 @@ export default function DailyPlannerCreateTaskModal({
     if (open) {
       submitLockRef.current = false;
       clientBatchIdRef.current = '';
-      setSections([createEmptySection()]);
+      observationCacheRef.current = new Map();
+      const initial = createEmptySectionForMode(factoryMode);
+      setSections([initial]);
+      setActiveSectionId(initial.id);
       setErrors({});
       setManualOutsideWindowMode(false);
       setHoursAlert(null);
       setSummaryDrafts(null);
-      descriptionRefs.current = {};
       workDoneRefs.current = {};
-      void fetchDailyPlannerProjects()
-        .then((projects) => setProjectOptions(projects.map((p) => p.projectName).filter(Boolean)))
-        .catch(() => setProjectOptions([]));
+      void fetchProjectFormOptions()
+        .then((opts) => {
+          setManagedProjects(opts.projects || []);
+          const names = [
+            ...(opts.projects || []).map((p) => p.projectName),
+            ...(opts.legacyProjectNames || []),
+          ];
+          setProjectOptions([...new Set(names.filter(Boolean))]);
+        })
+        .catch(() => {
+          void fetchDailyPlannerProjects()
+            .then((projects) =>
+              setProjectOptions(projects.map((p) => p.projectName).filter(Boolean)),
+            )
+            .catch(() => setProjectOptions([]));
+          setManagedProjects([]);
+        });
     }
-  }, [open, date, elevated, isExtraTask]);
+  }, [open, date, elevated, isExtraTask, factoryMode]);
 
   const existingPlannedHours = useMemo(
     () => sumPlannedHoursForDate(existingTasksForDate, date),
@@ -545,6 +848,8 @@ export default function DailyPlannerCreateTaskModal({
     if (!isExtraTask) return null;
     const section = sections[0];
     if (!section) return null;
+    const stepsHours = stepsTotalHours(section.procedureSteps);
+    if (stepsHours != null) return Math.round(stepsHours * 100) / 100;
     const duration = calcDurationFromTimes(section.startTime, section.endTime);
     if (duration == null || duration <= 0) return null;
     return Math.round(duration * 100) / 100;
@@ -555,8 +860,23 @@ export default function DailyPlannerCreateTaskModal({
   };
 
   const updateSection = (id: string, patch: Partial<TaskSectionState>) => {
-    setSections((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+    setSections((prev) =>
+      prev.map((s) => {
+        if (s.id !== id) return s;
+        const next = { ...s, ...patch };
+        // Hours Required always follows the step sum (never independently editable).
+        if (patch.procedureSteps) next.hoursRequired = stepsTotalHours(patch.procedureSteps);
+        return next;
+      }),
+    );
     setHoursAlert(null);
+    if (patch.procedureSteps) {
+      setErrors((prev) => {
+        if (!prev[id]?.procedureSteps) return prev;
+        const { procedureSteps: _cleared, ...rest } = prev[id];
+        return { ...prev, [id]: rest };
+      });
+    }
     if (patch.taskName !== undefined && patch.taskName.trim()) {
       setErrors((prev) => {
         if (!prev[id]?.taskName) return prev;
@@ -567,17 +887,49 @@ export default function DailyPlannerCreateTaskModal({
     }
   };
 
+  /**
+   * Scroll only the modal's middle content container so the task sits fully below the
+   * fixed header. Avoid element.scrollIntoView — it can scroll outer ancestors and
+   * align the section under the non-scrolling header.
+   */
+  const scrollTaskSectionIntoContent = (sectionId: string) => {
+    const container = formScrollRef.current;
+    if (!container) return false;
+    const el =
+      (container.querySelector(
+        `[data-task-section-id="${sectionId}"]`,
+      ) as HTMLElement | null) ||
+      document.getElementById(`create-task-section-${sectionId}`);
+    if (!el || !container.contains(el)) return false;
+
+    const containerRect = container.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const delta = elRect.top - containerRect.top;
+    const padding = 8;
+    container.scrollTo({
+      top: Math.max(0, container.scrollTop + delta - padding),
+      behavior: 'smooth',
+    });
+    return true;
+  };
+
   const addSection = () => {
-    setSections((prev) => [...prev, createEmptySection()]);
+    const next = createEmptySectionForMode(factoryMode);
+    pendingScrollSectionIdRef.current = next.id;
+    setSections((prev) => [...prev, next]);
+    setActiveSectionId(next.id);
     setHoursAlert(null);
   };
 
   const removeSection = (id: string) => {
     setSections((prev) => {
       if (prev.length <= 1) return prev;
-      return prev.filter((s) => s.id !== id);
+      const next = prev.filter((s) => s.id !== id);
+      if (activeSectionId === id) {
+        setActiveSectionId(next[0]?.id ?? null);
+      }
+      return next;
     });
-    delete descriptionRefs.current[id];
     setHoursAlert(null);
     setErrors((prev) => {
       if (!prev[id]) return prev;
@@ -587,14 +939,25 @@ export default function DailyPlannerCreateTaskModal({
     });
   };
 
+  useLayoutEffect(() => {
+    const sectionId = pendingScrollSectionIdRef.current;
+    if (!sectionId) return;
+    if (!sections.some((s) => s.id === sectionId)) return;
+    pendingScrollSectionIdRef.current = null;
+    scrollTaskSectionIntoContent(sectionId);
+  }, [sections]);
+
+  const scrollToSection = (sectionId: string) => {
+    setActiveSectionId(sectionId);
+    // Section already mounted — scroll the content container directly.
+    scrollTaskSectionIntoContent(sectionId);
+  };
+
   const collectDrafts = (): { drafts: DailyPlannerTaskDraft[]; validationErrors: SectionErrors } => {
     const validationErrors: SectionErrors = {};
     const drafts: DailyPlannerTaskDraft[] = [];
 
     for (const section of sections) {
-      const description =
-        descriptionRefs.current[section.id]?.getFormattedValue() ?? '';
-
       if (isExtraTask) {
         if (!section.taskName.trim()) {
           validationErrors[section.id] = {
@@ -602,7 +965,15 @@ export default function DailyPlannerCreateTaskModal({
             taskName: true,
           };
         }
-        if (section.isProjectBased === 'Yes' && !section.projectName.trim()) {
+        const requireProject = factoryMode || section.isProjectBased === 'Yes';
+        const canonicalProjectName = requireProject
+          ? resolveCanonicalProjectName(
+              section.projectName,
+              managedProjects,
+              projectOptions,
+            )
+          : '';
+        if (requireProject && !canonicalProjectName) {
           validationErrors[section.id] = {
             ...(validationErrors[section.id] || {}),
             projectName: true,
@@ -634,19 +1005,23 @@ export default function DailyPlannerCreateTaskModal({
 
         const category =
           section.priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR;
+        const projectBased = factoryMode || section.isProjectBased === 'Yes';
+        // Extra Task: no Step By Step Procedure / Hours Required — hours from Start→End.
+        // Omit procedureSteps so the backend uses durationHoursFromStartEnd.
         drafts.push({
           date,
           taskName: section.taskName.trim(),
-          description,
+          description: '',
           priority: section.priority,
-          hoursRequired: Math.round((duration as number) * 100) / 100,
+          hoursRequired: duration as number,
           planningCategory: category,
           urgentReason: '',
-          isProjectBased: section.isProjectBased === 'Yes',
-          projectName: section.isProjectBased === 'Yes' ? section.projectName.trim() : '',
+          isProjectBased: projectBased,
+          projectName: projectBased ? canonicalProjectName : '',
+          projectTaskId: projectBased ? section.projectTaskId.trim() : '',
           needsDocument: enhancedEligible ? section.needsDocument === 'Yes' : undefined,
           progressDone:
-            enhancedEligible && section.isProjectBased === 'Yes' ? section.progressDone : undefined,
+            enhancedEligible && (factoryMode || projectBased) ? section.progressDone : undefined,
           managerInstructions: '',
           employeeCode: forEmployeeCode || undefined,
           isExtraTask: true,
@@ -657,7 +1032,7 @@ export default function DailyPlannerCreateTaskModal({
         continue;
       }
 
-      if (isSectionEmpty(section.taskName, description)) {
+      if (isSectionEmpty(section.taskName, section.procedureSteps)) {
         continue;
       }
 
@@ -666,20 +1041,22 @@ export default function DailyPlannerCreateTaskModal({
         continue;
       }
 
-      const hoursValue = Number(section.hoursRequired);
-      if (
-        section.hoursRequired == null ||
-        !Number.isFinite(hoursValue) ||
-        hoursValue <= 0
-      ) {
+      // Incomplete steps (missing description / duration) block save.
+      const procedureCheck = validateProcedureDrafts(section.procedureSteps);
+      if (!procedureCheck.ok) {
         validationErrors[section.id] = {
           ...(validationErrors[section.id] || {}),
-          hoursRequired: true,
+          procedureSteps: procedureCheck.error || 'Complete all steps before saving',
         };
         continue;
       }
+      const hoursValue = procedureCheck.hoursRequired;
 
-      if (section.isProjectBased === 'Yes' && !section.projectName.trim()) {
+      const requireProject = factoryMode || section.isProjectBased === 'Yes';
+      const canonicalProjectName = requireProject
+        ? resolveCanonicalProjectName(section.projectName, managedProjects, projectOptions)
+        : '';
+      if (requireProject && !canonicalProjectName) {
         validationErrors[section.id] = {
           ...(validationErrors[section.id] || {}),
           projectName: true,
@@ -689,20 +1066,23 @@ export default function DailyPlannerCreateTaskModal({
 
       const category =
         section.priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR;
+      const projectBased = factoryMode || section.isProjectBased === 'Yes';
 
       drafts.push({
         date,
         taskName: section.taskName.trim(),
-        description,
+        description: descriptionFromProcedureSteps(procedureCheck.steps),
+        procedureSteps: procedureCheck.steps,
         priority: section.priority,
         hoursRequired: Math.round(hoursValue * 100) / 100,
         planningCategory: category,
         urgentReason: '',
-        isProjectBased: section.isProjectBased === 'Yes',
-        projectName: section.isProjectBased === 'Yes' ? section.projectName.trim() : '',
+        isProjectBased: projectBased,
+        projectName: projectBased ? canonicalProjectName : '',
+        projectTaskId: projectBased ? section.projectTaskId.trim() : '',
         needsDocument: enhancedEligible ? section.needsDocument === 'Yes' : undefined,
-        progressDone:
-          enhancedEligible && section.isProjectBased === 'Yes' ? section.progressDone : undefined,
+        // Create New Task no longer collects Progress Done (%).
+        progressDone: undefined,
         managerInstructions: elevated ? section.managerInstructions.trim() : '',
         employeeCode: forEmployeeCode || undefined,
       });
@@ -719,13 +1099,11 @@ export default function DailyPlannerCreateTaskModal({
       const created = await onSave(drafts);
       const createdList = Array.isArray(created) ? created : [];
       if (enhancedEligible && createdList.length > 0) {
-        const filledSections = sections.filter((section) => {
-          const desc =
-            descriptionRefs.current[section.id]?.getFormattedValue() ?? section.description;
-          return !isSectionEmpty(section.taskName, desc);
-        });
+        const filledSections = sections.filter(
+          (section) => !isSectionEmpty(section.taskName, section.procedureSteps),
+        );
         for (let i = 0; i < Math.min(filledSections.length, createdList.length); i += 1) {
-          const file = filledSections[i]?.documentFile;
+          const file = filledSections[i] ? resolveDocumentUploadPayload(filledSections[i]) : null;
           const taskId = createdList[i]?.plannerTaskId;
           if (file && taskId && filledSections[i]?.needsDocument === 'Yes') {
             try {
@@ -754,10 +1132,8 @@ export default function DailyPlannerCreateTaskModal({
     setSections((prev) =>
       prev.map((section, index) => ({
         ...section,
-        description: drafts[index]?.description ?? section.description,
         taskName: drafts[index]?.taskName ?? section.taskName,
         priority: (drafts[index]?.priority as DailyPlannerPriority) || section.priority,
-        hoursRequired: drafts[index]?.hoursRequired ?? section.hoursRequired,
         managerInstructions: drafts[index]?.managerInstructions ?? section.managerInstructions,
       })),
     );
@@ -792,7 +1168,7 @@ export default function DailyPlannerCreateTaskModal({
     const total = Math.round((existingPlannedHours + draftHours) * 100) / 100;
 
     if (requireMinHours && total < minPlannedHours) {
-      const message = buildMinimumHoursRequirementMessage(planningConfig);
+      const message = buildMinimumHoursRequirementMessage(planningConfig, undefined, leaveKind);
       setHoursAlert(message);
       toast.error(message);
       return;
@@ -842,6 +1218,16 @@ export default function DailyPlannerCreateTaskModal({
   };
 
   const multipleSections = sections.length > 1;
+  const showTaskNavigator = factoryMode && !isExtraTask && !planningClosed && sections.length > 0;
+
+  const navigatorLabel = (section: TaskSectionState, index: number) => {
+    const project = section.projectName.trim();
+    const task = section.taskName.trim();
+    if (project || task) {
+      return { project: project || '—', task: task || 'Untitled task' };
+    }
+    return { project: `New Task ${index + 1}`, task: '' };
+  };
 
   const totalHoursIndicator = (
     <div
@@ -878,86 +1264,190 @@ export default function DailyPlannerCreateTaskModal({
     <>
       <Dialog open={open && !summaryDrafts} onOpenChange={(v) => !v && !summaryDrafts && handleClose()}>
         <DialogContent
-          className="!flex !h-[90vh] !max-h-[90vh] !w-[min(92vw,32rem)] !max-w-lg !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-lg"
-          style={{ height: '90vh', maxHeight: '90vh' }}
+          className={cn(
+            // Match Task Review dimensions: override DialogContent defaults (incl. sm:max-w-lg)
+            // with both utility classes and inline styles so width cannot collapse.
+            '!flex !h-[92vh] !max-h-[92vh] !w-[min(96vw,1200px)] !max-w-[1200px] !flex-col !gap-0 overflow-hidden !p-0 sm:!max-w-[1200px]',
+          )}
+          style={{
+            width: 'min(96vw, 1200px)',
+            maxWidth: '1200px',
+            height: '92vh',
+            maxHeight: '92vh',
+          }}
         >
-          <DialogHeader className="shrink-0 border-b border-gray-200 px-6 py-4 pr-12 text-left">
-            <DialogTitle>{isExtraTask ? 'Extra Task' : 'Create Task'}</DialogTitle>
-          </DialogHeader>
+          {/*
+            Plain header row (not DialogHeader): DialogHeader defaults to flex-col, which
+            stacked Date under the title. Keep title left / Date right on one nowrap row.
+            pr-12 reserves space for the dialog close (X) control.
+          */}
+          <div className="flex w-full shrink-0 flex-nowrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-3 pr-12">
+            <DialogTitle className="shrink-0 text-left text-lg font-semibold leading-none">
+              {isExtraTask ? 'Extra Task' : 'Create Task'}
+            </DialogTitle>
+            {!isExtraTask ? (
+              <div className="flex shrink-0 items-center gap-2">
+                <Label htmlFor="create-task-date" className="shrink-0 text-sm font-medium">
+                  Date
+                </Label>
+                <Input
+                  id="create-task-date"
+                  value={date}
+                  readOnly
+                  disabled
+                  className="h-9 w-[10.5rem] shrink-0 bg-gray-50"
+                />
+              </div>
+            ) : null}
+          </div>
 
           <form
             onSubmit={(e) => void handleSubmit(e)}
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
-            <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth overscroll-contain px-6 py-4">
-              <div className="space-y-4">
-                {!isExtraTask ? (
-                  <div className="space-y-2">
-                    <Label>Date</Label>
-                    <Input value={date} readOnly disabled className="bg-gray-50" />
-                  </div>
-                ) : null}
-
-                {planningClosed ? (
-                  <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 whitespace-pre-wrap">
-                    {closedMessage}
-                    {elevated ? (
-                      <div className="pt-1">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="border-amber-300 bg-white hover:bg-amber-100"
-                          onClick={() => setManualOutsideWindowMode(true)}
-                        >
-                          Create Task Anyway
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {!planningClosed && isExtraTask
-                  ? sections.slice(0, 1).map((section) => (
-                      <ExtraTaskSectionFields
+            {/* Mobile task navigator only (Date lives in the dialog header for Create Task). */}
+            {showTaskNavigator ? (
+              <div className="shrink-0 space-y-3 border-b border-gray-200 bg-white px-6 py-3 sm:hidden">
+                <div className="flex gap-1 overflow-x-auto pb-0.5">
+                  {sections.map((section, index) => {
+                    const label = navigatorLabel(section, index);
+                    const selected = activeSectionId === section.id;
+                    return (
+                      <button
                         key={section.id}
-                        section={section}
-                        projectOptions={projectOptions}
-                        showTaskNameError={Boolean(errors[section.id]?.taskName)}
-                        showProjectNameError={Boolean(errors[section.id]?.projectName)}
-                        showStartEndError={Boolean(errors[section.id]?.startEnd)}
-                        showWorkDoneError={Boolean(errors[section.id]?.workDone)}
-                        onChange={(patch) => updateSection(section.id, patch)}
-                        onDescriptionRef={(handle) => {
-                          descriptionRefs.current[section.id] = handle;
-                        }}
-                        onWorkDoneRef={(handle) => {
-                          workDoneRefs.current[section.id] = handle;
-                        }}
-                      />
-                    ))
-                  : null}
+                        type="button"
+                        onClick={() => scrollToSection(section.id)}
+                        className={cn(
+                          'shrink-0 rounded-md border px-2 py-1 text-left text-[11px]',
+                          selected
+                            ? 'border-[#007BFF] bg-[#007BFF]/10 text-[#007BFF]'
+                            : 'border-gray-200 bg-white text-gray-700',
+                        )}
+                      >
+                        <span className="block max-w-[7rem] truncate font-semibold">
+                          {label.project}
+                        </span>
+                        {label.task ? (
+                          <span className="block max-w-[7rem] truncate text-gray-500">
+                            {label.task}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
 
-                {!planningClosed && !isExtraTask
-                  ? sections.map((section, index) => (
-                      <TaskSectionRow
-                        key={section.id}
-                        index={index}
-                        section={section}
-                        canRemove={sections.length > 1}
-                        elevated={elevated}
-                        enhancedEligible={enhancedEligible}
-                        projectOptions={projectOptions}
-                        showTaskNameError={Boolean(errors[section.id]?.taskName)}
-                        showHoursRequiredError={Boolean(errors[section.id]?.hoursRequired)}
-                        showProjectNameError={Boolean(errors[section.id]?.projectName)}
-                        onChange={(patch) => updateSection(section.id, patch)}
-                        onRemove={() => removeSection(section.id)}
-                        onDescriptionRef={(handle) => {
-                          descriptionRefs.current[section.id] = handle;
-                        }}
-                      />
-                    ))
-                  : null}
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              {showTaskNavigator ? (
+                <aside className="hidden w-44 shrink-0 flex-col border-r border-gray-200 bg-gray-50/80 sm:flex md:w-52">
+                  <p className="shrink-0 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                    Tasks
+                  </p>
+                  <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+                    <ul className="space-y-1">
+                      {sections.map((section, index) => {
+                        const label = navigatorLabel(section, index);
+                        const selected = activeSectionId === section.id;
+                        return (
+                          <li key={section.id}>
+                            <button
+                              type="button"
+                              onClick={() => scrollToSection(section.id)}
+                              className={cn(
+                                'w-full rounded-md px-2 py-2 text-left transition-colors',
+                                selected
+                                  ? 'bg-[#007BFF]/10 text-[#007BFF] ring-1 ring-[#007BFF]/30'
+                                  : 'hover:bg-white text-[#212529]',
+                              )}
+                            >
+                              <span className="block truncate text-xs font-semibold">
+                                {label.project}
+                              </span>
+                              {label.task ? (
+                                <span className="mt-0.5 block truncate text-[11px] text-gray-600">
+                                  {label.task}
+                                </span>
+                              ) : null}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </nav>
+                </aside>
+              ) : null}
+
+              {/* Only task forms scroll between fixed header and footer. */}
+              <div
+                ref={formScrollRef}
+                className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth overscroll-contain px-6 py-4"
+              >
+                <div className="space-y-4">
+                  {planningClosed ? (
+                    <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 whitespace-pre-wrap">
+                      {closedMessage}
+                      {elevated ? (
+                        <div className="pt-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="border-amber-300 bg-white hover:bg-amber-100"
+                            onClick={() => setManualOutsideWindowMode(true)}
+                          >
+                            Create Task Anyway
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {!planningClosed && isExtraTask
+                    ? sections.slice(0, 1).map((section) => (
+                        <ExtraTaskSectionFields
+                          key={section.id}
+                          section={section}
+                          factoryMode={factoryMode}
+                          enhancedEligible={enhancedEligible}
+                          projectOptions={projectOptions}
+                          managedProjects={managedProjects}
+                          observationCacheRef={observationCacheRef}
+                          showTaskNameError={Boolean(errors[section.id]?.taskName)}
+                          showProjectNameError={Boolean(errors[section.id]?.projectName)}
+                          showStartEndError={Boolean(errors[section.id]?.startEnd)}
+                          showWorkDoneError={Boolean(errors[section.id]?.workDone)}
+                          onChange={(patch) => updateSection(section.id, patch)}
+                          onWorkDoneRef={(handle) => {
+                            workDoneRefs.current[section.id] = handle;
+                          }}
+                        />
+                      ))
+                    : null}
+
+                  {!planningClosed && !isExtraTask
+                    ? sections.map((section, index) => (
+                        <TaskSectionRow
+                          key={section.id}
+                          index={index}
+                          section={section}
+                          canRemove={sections.length > 1}
+                          elevated={elevated}
+                          enhancedEligible={enhancedEligible}
+                          factoryMode={factoryMode}
+                          highlighted={activeSectionId === section.id}
+                          projectOptions={projectOptions}
+                          managedProjects={managedProjects}
+                          observationCacheRef={observationCacheRef}
+                          showTaskNameError={Boolean(errors[section.id]?.taskName)}
+                          procedureError={errors[section.id]?.procedureSteps}
+                          showProjectNameError={Boolean(errors[section.id]?.projectName)}
+                          onChange={(patch) => updateSection(section.id, patch)}
+                          onRemove={() => removeSection(section.id)}
+                        />
+                      ))
+                    : null}
+                </div>
               </div>
             </div>
 

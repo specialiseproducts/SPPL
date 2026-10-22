@@ -62,8 +62,10 @@ export interface PlanningConfig {
   employeeLocation?: string;
   minPlannedHoursPerWorkingDay?: number;
   minPlannedTasksPerWorkingDay?: number;
-  /** Factory OR (Office + Super Admin) — server-resolved. */
+  /** Factory OR Office — server-resolved. Enhanced features (docs / Project Progress / flags). */
   enhancedEligible?: boolean;
+  /** Factory OR Office — server-resolved. Daily Planner v2 workflow features. */
+  factoryEligible?: boolean;
   windows: {
     morning: { start: string; end: string; active: boolean };
     evening: { start: string; end: string; active: boolean };
@@ -133,8 +135,20 @@ function getIstMinutesFromServerTime(serverTimeIso: string): number {
  * Location / config-based daily minimum planned hours (Office 7.5, Factory 7).
  * When an explicit `location` is provided (e.g. task owner's location in Task Review),
  * that location wins over the logged-in user's planning-config minimum.
+ * Optional `leaveKind`: full → 0; half → Office 3.75 / Factory 3.5.
  */
-export function getMinPlannedHours(config?: PlanningConfig | null, location?: string | null): number {
+export function getMinPlannedHours(
+  config?: PlanningConfig | null,
+  location?: string | null,
+  leaveKind: 'none' | 'full' | 'half' = 'none',
+): number {
+  if (leaveKind === 'full') return 0;
+  if (leaveKind === 'half') {
+    const loc =
+      String(location || '').trim() ||
+      String(config?.employeeLocation || '').trim();
+    return loc === 'Factory' ? 3.5 : 3.75;
+  }
   const explicitLoc = String(location || '').trim();
   if (explicitLoc) {
     return explicitLoc === 'Factory' ? MIN_PLANNED_HOURS_FACTORY : MIN_PLANNED_HOURS_OFFICE;
@@ -152,8 +166,15 @@ export function getMinPlannedHours(config?: PlanningConfig | null, location?: st
 export function buildMinimumHoursRequirementMessage(
   config?: PlanningConfig | null,
   location?: string | null,
+  leaveKind: 'none' | 'full' | 'half' = 'none',
 ): string {
-  const min = getMinPlannedHours(config, location);
+  if (leaveKind === 'full') {
+    return 'This employee is on approved full-day leave for this date. Daily Planner tasks are not required and cannot be created.';
+  }
+  const min = getMinPlannedHours(config, location, leaveKind);
+  if (leaveKind === 'half') {
+    return `Your minimum total hours planning is not completed. Please plan ${formatDurationLabel(min)}.`;
+  }
   if (min === MIN_PLANNED_HOURS_OFFICE) {
     return 'Your minimum total hours planning is not completed. Please plan 7 Hours 30 Minutes.';
   }
@@ -379,19 +400,23 @@ export function isPlanningWindowClosed(config: PlanningConfig | null | undefined
 /**
  * Whether today's tasks can be updated (complete, edit, delete) in the current window.
  * Uses morning.active or evening.active (evening spans midnight through 11:00 AM).
+ * Approved half-day leave allows completion reporting anytime on that date.
  */
 export function canUpdateTasksOnDate(
   taskDateIso: string,
   config: PlanningConfig | null | undefined,
+  options?: { halfDayLeave?: boolean },
 ): boolean {
   if (!config) return false;
   if (getPlanningTargetDateMode(taskDateIso, config) !== 'today') return false;
+  if (options?.halfDayLeave) return true;
   return Boolean(config.windows.morning.active || config.windows.evening.active);
 }
 
 export function assertCanUpdateTasksOnDate(
   taskDateIso: string,
   config: PlanningConfig | null | undefined,
+  options?: { halfDayLeave?: boolean },
 ): void {
   if (!config) {
     throw new Error(TASK_UPDATES_READONLY_MESSAGE);
@@ -399,7 +424,7 @@ export function assertCanUpdateTasksOnDate(
   if (getPlanningTargetDateMode(taskDateIso, config) === 'past') {
     throw new Error('Cannot update tasks for past dates.');
   }
-  if (!canUpdateTasksOnDate(taskDateIso, config)) {
+  if (!canUpdateTasksOnDate(taskDateIso, config, options)) {
     throw new Error(TASK_UPDATES_READONLY_MESSAGE);
   }
 }

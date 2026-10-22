@@ -7,11 +7,20 @@ import { Button } from '../ui/button';
 import { cn } from '../ui/utils';
 import { toast } from 'sonner';
 import {
+  useApprovedLeaveForPlannerQuery,
   useDailyPlannerMonthQuery,
   useInvalidateDailyPlannerQueries,
   useMyPlanningProfileQuery,
   usePlanningConfigQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
+import DailyPlannerLeaveChip from './DailyPlannerLeaveChip';
+import { groupLeaveRequestsByDate } from '../../utils/payrollLeaveDates';
+import type { PayrollLeaveRequest } from '../../types/payroll';
+import {
+  FULL_DAY_LEAVE_NO_PLANNING_MESSAGE,
+  classifyApprovedLeaveForDate,
+  partitionLeavesForPlannerCell,
+} from '../../utils/dailyPlannerLeaveRules';
 import { createDailyPlannerTasks } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import {
   markRevisionParentHandledInCache,
@@ -70,6 +79,7 @@ function PlannerDayCell({
   onToggleExpand,
   onCreate,
   onSelectTask,
+  leaves = [],
 }: {
   cell: DailyCalendarDayCell;
   cellIndex: number;
@@ -77,10 +87,37 @@ function PlannerDayCell({
   onToggleExpand: () => void;
   onCreate: (iso: string) => void;
   onSelectTask: (task: DailyPlannerTask) => void;
+  leaves?: PayrollLeaveRequest[];
 }) {
   const weekRow = Math.floor(cellIndex / 7);
-  const visibleTasks = expanded ? cell.tasks : cell.tasks.slice(0, MAX_VISIBLE_EVENTS);
-  const hiddenCount = expanded ? 0 : Math.max(0, cell.tasks.length - MAX_VISIBLE_EVENTS);
+  const { fullDay, firstHalf, secondHalf } = partitionLeavesForPlannerCell(leaves);
+  const leaveSlots = [...fullDay, ...firstHalf, ...secondHalf];
+  const totalItems = cell.tasks.length + leaveSlots.length;
+  const leaveBudget = Math.min(leaveSlots.length, MAX_VISIBLE_EVENTS);
+  const visibleTasks = expanded
+    ? cell.tasks
+    : cell.tasks.slice(0, Math.max(0, MAX_VISIBLE_EVENTS - leaveBudget));
+  const visibleLeaveSlots = expanded ? leaveSlots : leaveSlots.slice(0, leaveBudget);
+  const visibleFullDay = visibleLeaveSlots.filter((r) => fullDay.includes(r));
+  const visibleFirstHalf = visibleLeaveSlots.filter((r) => firstHalf.includes(r));
+  const visibleSecondHalf = visibleLeaveSlots.filter((r) => secondHalf.includes(r));
+  const shownCount =
+    (expanded ? cell.tasks.length : visibleTasks.length) + visibleLeaveSlots.length;
+  const hiddenCount = expanded ? 0 : Math.max(0, totalItems - shownCount);
+  const hasTasksRegion =
+    visibleTasks.length > 0 || hiddenCount > 0 || (expanded && totalItems > MAX_VISIBLE_EVENTS);
+  const onlyFullDayLeave =
+    visibleFullDay.length > 0 &&
+    visibleFirstHalf.length === 0 &&
+    visibleSecondHalf.length === 0 &&
+    !hasTasksRegion;
+
+  const renderLeaveChip = (request: PayrollLeaveRequest) => (
+    <DailyPlannerLeaveChip
+      key={`${request.leaveRequestId}-${cell.iso}`}
+      request={request}
+    />
+  );
 
   return (
     <div
@@ -105,33 +142,79 @@ function PlannerDayCell({
       />
 
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden">
-        {visibleTasks.map((task) => (
-          <DailyPlannerTaskChip key={task.plannerTaskId} task={task} onSelect={onSelectTask} />
-        ))}
-        {hiddenCount > 0 ? (
-          <button
-            type="button"
-            className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] font-medium text-[#007BFF] hover:bg-blue-50 hover:underline"
-            style={{ color: '#007BFF', fontSize: 11 }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleExpand();
-            }}
+        {onlyFullDayLeave ? (
+          <div
+            className="flex min-h-0 w-full min-w-0 flex-col items-stretch gap-1"
+            style={{ flex: '1 1 0', height: '100%', minHeight: 0 }}
+            onClick={(e) => e.stopPropagation()}
           >
-            +{hiddenCount} more
-          </button>
-        ) : expanded && cell.tasks.length > MAX_VISIBLE_EVENTS ? (
-          <button
-            type="button"
-            className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] text-muted-foreground hover:underline"
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleExpand();
-            }}
-          >
-            Show less
-          </button>
-        ) : null}
+            {visibleFullDay.map(renderLeaveChip)}
+          </div>
+        ) : (
+          <>
+            <div
+              className="flex min-h-0 w-full min-w-0 flex-1 flex-col items-stretch gap-1 overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {visibleFullDay.length > 0 ? (
+                <div
+                  className="flex min-h-0 w-full flex-col items-stretch gap-1"
+                  style={{ flex: '1 1 0', minHeight: 0 }}
+                >
+                  {visibleFullDay.map(renderLeaveChip)}
+                </div>
+              ) : null}
+              {visibleFirstHalf.length > 0 ? (
+                <div
+                  className="flex min-h-0 w-full flex-col items-stretch gap-1"
+                  style={{ flex: '1 1 0', minHeight: 0, maxHeight: '50%' }}
+                >
+                  {visibleFirstHalf.map(renderLeaveChip)}
+                </div>
+              ) : null}
+            </div>
+            {hasTasksRegion ? (
+              <div className="flex shrink-0 flex-col gap-1">
+                {visibleTasks.map((task) => (
+                  <DailyPlannerTaskChip key={task.plannerTaskId} task={task} onSelect={onSelectTask} />
+                ))}
+                {hiddenCount > 0 ? (
+                  <button
+                    type="button"
+                    className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] font-medium text-[#007BFF] hover:bg-blue-50 hover:underline"
+                    style={{ color: '#007BFF', fontSize: 11 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleExpand();
+                    }}
+                  >
+                    +{hiddenCount} more
+                  </button>
+                ) : expanded && totalItems > MAX_VISIBLE_EVENTS ? (
+                  <button
+                    type="button"
+                    className="w-full shrink-0 rounded-md px-1 py-0.5 text-left text-[11px] text-muted-foreground hover:underline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleExpand();
+                    }}
+                  >
+                    Show less
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {visibleSecondHalf.length > 0 ? (
+              <div
+                className="mt-auto flex min-h-0 w-full min-w-0 flex-1 flex-col items-stretch justify-end gap-1 overflow-hidden"
+                style={{ maxHeight: '50%' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {visibleSecondHalf.map(renderLeaveChip)}
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );
@@ -152,6 +235,8 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
   const [finalPlanOpen, setFinalPlanOpen] = useState(false);
 
   const monthQuery = useDailyPlannerMonthQuery(year, month);
+  const myEmployeeCode = String(user?.employeeCode || user?.id || '').trim();
+  const leaveQuery = useApprovedLeaveForPlannerQuery(myEmployeeCode, year, month, !!myEmployeeCode);
   const planningConfigQuery = usePlanningConfigQuery();
   const planningProfileQuery = useMyPlanningProfileQuery();
   const invalidate = useInvalidateDailyPlannerQueries();
@@ -159,6 +244,10 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
   const tasks = useMemo(
     () => visibleEmployeePlannerTasks(monthQuery.data ?? []),
     [monthQuery.data],
+  );
+  const leavesByDate = useMemo(
+    () => groupLeaveRequestsByDate(leaveQuery.data ?? [], { approvedOnly: true }),
+    [leaveQuery.data],
   );
   const grid = useMemo(
     () => buildDailyMonthGrid(year, month, tasks, employeeLocation),
@@ -277,6 +366,12 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
       return;
     }
 
+    const dayLeaves = leavesByDate.get(dateKey) ?? [];
+    if (classifyApprovedLeaveForDate(dayLeaves, dateKey).kind === 'full') {
+      toast.error(FULL_DAY_LEAVE_NO_PLANNING_MESSAGE);
+      return;
+    }
+
     // My Daily Planner always uses employee planning-window rules (including Admin on this tab).
     // Team Daily Planner / for-employee flows keep elevated manager privileges separately.
     const eligibility = evaluateMyDailyPlannerCreateEligibility(iso, config, {
@@ -299,8 +394,16 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
       toast.error('Planning window information is loading. Please try again.');
       return;
     }
-    // Extra Task uses the same 5:30 PM → 11:00 AM employee planning window.
-    if (!config.windows.evening.active) {
+    const dateKey = String(iso || '').trim().slice(0, 10);
+    const dayLeaves = leavesByDate.get(dateKey) ?? [];
+    const leaveKind = classifyApprovedLeaveForDate(dayLeaves, dateKey).kind;
+    if (leaveKind === 'full') {
+      toast.error(FULL_DAY_LEAVE_NO_PLANNING_MESSAGE);
+      return;
+    }
+    // Extra Task uses the same 5:30 PM → 11:00 AM employee planning window,
+    // except approved half-day leave allows reporting anytime that day.
+    if (!config.windows.evening.active && leaveKind !== 'half') {
       toast.error(TASK_UPDATES_READONLY_MESSAGE);
       return;
     }
@@ -335,6 +438,11 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
       toast.error(
         'This daily plan has been finalized. No further planning is allowed for this date.',
       );
+      return;
+    }
+    const dayLeaves = leavesByDate.get(planDate) ?? [];
+    if (classifyApprovedLeaveForDate(dayLeaves, planDate).kind === 'full') {
+      toast.error(FULL_DAY_LEAVE_NO_PLANNING_MESSAGE);
       return;
     }
     const eligibility = evaluateMyDailyPlannerCreateEligibility(planDate, config, {
@@ -511,6 +619,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
                   onToggleExpand={() => toggleCellExpand(cell.iso)}
                   onCreate={openCreate}
                   onSelectTask={() => openDay(cell.iso)}
+                  leaves={leavesByDate.get(cell.iso) ?? []}
                 />
               ))}
             </div>
@@ -534,6 +643,11 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
             createDate
               ? tasks.filter((t) => String(t.date || '').trim().slice(0, 10) === createDate)
               : []
+          }
+          leaveKind={
+            createDate
+              ? classifyApprovedLeaveForDate(leavesByDate.get(createDate) ?? [], createDate).kind
+              : 'none'
           }
           onClose={() => {
             setCreateDate(null);
@@ -584,6 +698,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
           date={dayDate ?? ''}
           tasks={dayTasks}
           planningConfig={planningConfigQuery.data}
+          approvedLeavesForDate={dayDate ? leavesByDate.get(dayDate) ?? [] : []}
           onClose={() => setDayDate(null)}
           onChanged={refresh}
           onAddTask={(revisesTaskId) => {

@@ -91,7 +91,7 @@ export type DailyPlannerTabId =
 /**
  * Role-wise Daily Planner tab visibility based on the module access role.
  * Updates automatically when Access Management changes the Daily Planner role.
- * @param enhancedEligible Factory OR (Office + Super Admin) — adds Project Progress tab.
+ * @param enhancedEligible Factory OR Office — adds Project Progress tab.
  */
 export function getDailyPlannerVisibleTabs(
   role: string,
@@ -144,5 +144,49 @@ export function getDailyPlannerVisibleTabs(
 export function getDefaultDailyPlannerTab(role: string): DailyPlannerTabId {
   const visible = getDailyPlannerVisibleTabs(role);
   return visible[0] ?? 'my-daily-planner';
+}
+
+/** Payroll — Team Calendar tab (managers and above). */
+export function canManagePayrollTeam(role: string) {
+  return canManageDailyPlannerTeam(role);
+}
+
+/**
+ * Payroll Team (management) tab — matches Daily Planner Team Management:
+ * Super Admin and Developer only (Admin sees Team Calendar but not management UI).
+ */
+export function canManagePayrollTeamMappings(role: string) {
+  const r = normalizeRole(role);
+  return isSuperAdmin(r) || isDeveloper(r);
+}
+
+export type PayrollTabId = 'my-calendar' | 'team-calendar' | 'payroll-team';
+
+/**
+ * Role-wise Payroll tab visibility based on the Payroll module access role
+ * (`getEffectiveRole('payroll', …)`), not the global application role.
+ *
+ * - User: My Calendar only
+ * - Admin: My Calendar + Team Calendar
+ * - Super Admin / Developer: My Calendar + Team Calendar + Payroll Team
+ */
+export function getPayrollVisibleTabs(role: string): PayrollTabId[] {
+  const r = normalizeRole(role);
+  if (isSuperAdmin(r) || isDeveloper(r)) {
+    return ['my-calendar', 'team-calendar', 'payroll-team'];
+  }
+  if (isAdmin(r)) {
+    return ['my-calendar', 'team-calendar'];
+  }
+  return ['my-calendar'];
+}
+
+/** Always open Payroll on My Calendar. */
+export function getDefaultPayrollTab(_role?: string): PayrollTabId {
+  return 'my-calendar';
+}
+
+export function isPayrollTabVisible(tab: string, role: string): tab is PayrollTabId {
+  return getPayrollVisibleTabs(role).includes(tab as PayrollTabId);
 }
 

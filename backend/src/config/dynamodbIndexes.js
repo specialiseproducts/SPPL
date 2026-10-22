@@ -16,7 +16,13 @@ export const GSI_NAMES = {
   EXPENSE_EMPLOYEE_UPDATED: 'GSI_EmployeeUpdated',
   DAILY_PLANNER_EMPLOYEE_DATE: 'GSI_EmployeeDate',
   DAILY_PLANNER_MANAGER_CODE: 'GSI_ManagerCode',
+  /** Same index shape as Daily Planner; lives on PayrollTeamMappings only. */
+  PAYROLL_MANAGER_CODE: 'GSI_ManagerCode',
+  /** Payroll leave requests by employee. */
+  PAYROLL_LEAVE_EMPLOYEE_CODE: 'GSI_EmployeeCode',
   DAILY_PLANNER_EMPLOYEE_PLANNING: 'GSI_EmployeePlanning',
+  /** Managed Daily Planner projects list (HASH managedListKey = "MANAGED"). */
+  DAILY_PLANNER_PROJECTS_MANAGED: 'GSI_ManagedList',
   NOTIFICATION_RECIPIENT_CREATED: 'GSI_RecipientCreated',
   AUDIT_ENTITY_PERFORMED: 'GSI_EntityPerformedAt',
   AUDIT_MODULE_PERFORMED: 'GSI_ModulePerformedAt',
@@ -149,6 +155,40 @@ export const TABLE_GSI_DEFINITIONS = {
       },
     ],
   },
+  /**
+   * Payroll-only manager ↔ employee mappings.
+   * Completely separate from DailyPlannerTeamMappings — never share rows.
+   */
+  PayrollTeamMappings: {
+    tableEnv: 'DYNAMODB_TABLE_PAYROLL_TEAM_MAPPINGS',
+    defaultName: 'PayrollTeamMappings',
+    attributeDefinitions: [
+      { AttributeName: 'mappingId', AttributeType: 'S' },
+      { AttributeName: 'managerCode', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.PAYROLL_MANAGER_CODE,
+        KeySchema: [{ AttributeName: 'managerCode', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
+  PayrollLeaveRequests: {
+    tableEnv: 'DYNAMODB_TABLE_PAYROLL_LEAVE_REQUESTS',
+    defaultName: 'PayrollLeaveRequests',
+    attributeDefinitions: [
+      { AttributeName: 'leaveRequestId', AttributeType: 'S' },
+      { AttributeName: 'employeeCode', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.PAYROLL_LEAVE_EMPLOYEE_CODE,
+        KeySchema: [{ AttributeName: 'employeeCode', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
   DailyPlannerPlanning: {
     tableEnv: 'DYNAMODB_TABLE_DAILY_PLANNER_PLANNING',
     defaultName: 'DailyPlannerPlanning',
@@ -171,7 +211,31 @@ export const TABLE_GSI_DEFINITIONS = {
   DailyPlannerProjects: {
     tableEnv: 'DYNAMODB_TABLE_DAILY_PLANNER_PROJECTS',
     defaultName: 'DailyPlannerProjects',
-    attributeDefinitions: [{ AttributeName: 'projectKey', AttributeType: 'S' }],
+    attributeDefinitions: [
+      { AttributeName: 'projectKey', AttributeType: 'S' },
+      { AttributeName: 'managedListKey', AttributeType: 'S' },
+      { AttributeName: 'updatedAt', AttributeType: 'S' },
+    ],
+    globalSecondaryIndexes: [
+      {
+        IndexName: GSI_NAMES.DAILY_PLANNER_PROJECTS_MANAGED,
+        KeySchema: [
+          { AttributeName: 'managedListKey', KeyType: 'HASH' },
+          { AttributeName: 'updatedAt', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  },
+  DailyPlannerProjectObservations: {
+    tableEnv: 'DYNAMODB_TABLE_DAILY_PLANNER_PROJECT_OBSERVATIONS',
+    defaultName: 'DailyPlannerProjectObservations',
+    // Table primary key: HASH projectKey, RANGE observationId (no GSIs)
+    attributeDefinitions: [
+      { AttributeName: 'projectKey', AttributeType: 'S' },
+      { AttributeName: 'observationId', AttributeType: 'S' },
+    ],
+    rangeKeyAttribute: 'observationId',
     globalSecondaryIndexes: [],
   },
   Notifications: {

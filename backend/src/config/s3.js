@@ -66,3 +66,5 @@ export const uploadDailyPlannerDocument = multer({
   fileFilter: dailyPlannerDocFilter,
   limits: { fileSize: 25 * 1024 * 1024 },
 });
+/** Shared S3 client (used for server-side combine of multi-file Daily Planner documents). */
+export { s3 as dailyPlannerS3Client };

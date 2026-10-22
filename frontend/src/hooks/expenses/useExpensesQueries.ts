@@ -21,9 +21,12 @@ import {
   buildAuditCacheKey,
   clearAuditExpenseCache,
   getAuditCacheEntry,
+  patchAuditExpenseDecisionInCaches,
   setAuditCacheEntry,
+  sortAuditExpensesPendingFirst,
 } from '../../utils/auditExpenseCache';
 import { expensesQueryKeys } from './expensesQueryKeys';
+import { rememberAuditExpenseDecision } from '../../utils/auditExpenseRecentDecisions';
 
 export function useExpensesInfiniteQuery() {
   return useInfiniteQuery({
@@ -83,16 +86,27 @@ export function useAuditExpensesFilteredQuery(
         const cacheKey = buildAuditCacheKey(filters);
         const cached = getAuditCacheEntry(cacheKey);
         if (cached) {
-          return cached;
+          // Map hit still applies recent approve/reject overlay (stale Pending guard).
+          return {
+            pages: sortAuditExpensesPendingFirst(cached.pages),
+            nextCursor: cached.nextCursor,
+          };
         }
 
         // Always fetch a single page. Further pages load via "Load more expenses"
         // (fetchNextAuditFilteredPage). Eagerly draining every cursor for large
         // employees blocked the table for minutes/hours.
         const page = await fetchAuditExpensesFiltered(filters);
-        const entry = { pages: page.data, nextCursor: page.nextCursor };
-        setAuditCacheEntry(cacheKey, entry);
-        return entry;
+        setAuditCacheEntry(cacheKey, {
+          pages: page.data,
+          nextCursor: page.nextCursor,
+        });
+        // Return the Map entry so recent approve/reject overlays are included.
+        const stored = getAuditCacheEntry(cacheKey);
+        return {
+          pages: sortAuditExpensesPendingFirst(stored?.pages ?? page.data),
+          nextCursor: stored?.nextCursor ?? page.nextCursor,
+        };
       }),
     ...queryDefaults.list,
   });
@@ -112,9 +126,15 @@ export async function fetchNextAuditFilteredPage(
   appendAuditCachePage(cacheKey, page.data, page.nextCursor);
   const cached = getAuditCacheEntry(cacheKey);
   if (!cached) {
-    return { pages: [...currentPages, ...page.data], nextCursor: page.nextCursor };
+    return {
+      pages: sortAuditExpensesPendingFirst([...currentPages, ...page.data]),
+      nextCursor: page.nextCursor,
+    };
   }
-  return cached;
+  return {
+    pages: sortAuditExpensesPendingFirst(cached.pages),
+    nextCursor: cached.nextCursor,
+  };
 }
 
 /** @deprecated Prefer useExpensesInfiniteQuery */
@@ -293,9 +313,21 @@ export function useExpenseSubcategoryAnalysisQuery(
 export function useInvalidateExpensesList() {
   const queryClient = useQueryClient();
   return () => {
+    // Drop Map so the next queryFn hits the network (avoids stale Pending rows).
     clearAuditExpenseCache();
     void queryClient.invalidateQueries({ queryKey: expensesQueryKeys.all });
     void queryClient.refetchQueries({ queryKey: expensesQueryKeys.all, type: 'all' });
+  };
+}
+
+/** Patch Audit Expenses caches immediately after approve/reject, then refetch. */
+export function useAuditExpenseDecisionInvalidation() {
+  const queryClient = useQueryClient();
+  const invalidateExpenses = useInvalidateExpensesList();
+  return (expenseId: string, decision: 'Approved' | 'Rejected') => {
+    rememberAuditExpenseDecision(expenseId, decision);
+    patchAuditExpenseDecisionInCaches(queryClient, expenseId, decision);
+    invalidateExpenses();
   };
 }
 

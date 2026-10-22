@@ -1,3 +1,5 @@
+import type { DailyPlannerProcedureStep } from '../utils/dailyPlannerProcedureSteps';
+
 export type DailyPlannerPriority = 'Urgent' | 'High' | 'Medium' | 'Low';
 export type DailyPlannerStatus =
   | 'Pending'
@@ -42,6 +44,8 @@ export interface DailyPlannerTask {
   priorityEditedAt?: string | null;
   /** Estimated hours required to complete this task (effective / reviewed value). */
   hoursRequired?: number | null;
+  /** Step-by-step procedure; description + hoursRequired are derived from these when present. */
+  procedureSteps?: DailyPlannerProcedureStep[];
   originalHoursRequired?: number | null;
   hoursRequiredEdited?: boolean;
   hoursRequiredEditedBy?: string;
@@ -66,8 +70,24 @@ export interface DailyPlannerTask {
   reopenReason?: string;
   managerComments: string;
   managerInstructions?: string;
+  /** Permanent Super Admin out-of-team review comments (does not replace managerComments). */
+  superadminReviewComments?: Array<{
+    commentId: string;
+    submissionId?: string;
+    commentText: string;
+    reviewerCode: string;
+    reviewerName: string;
+    employeeCode?: string;
+    plannerTaskId?: string;
+    taskDate?: string;
+    taskName?: string;
+    projectName?: string;
+    submittedAt?: string | null;
+  }>;
   isProjectBased?: boolean;
   projectName?: string;
+  /** Managed project task id when linked to Project Management. */
+  projectTaskId?: string;
   /** Enhanced (Factory / Office SuperAdmin): document required? */
   needsDocument?: boolean | null;
   /** Employee Document (create / mark completed). */
@@ -97,6 +117,15 @@ export interface DailyPlannerTask {
   planFinalizedAt?: string | null;
   planFinalizedBy?: string;
   createdByRole?: string;
+  /** Authenticated creator employee code (preserved across edits). */
+  createdByEmployeeCode?: string;
+  /** Authenticated creator display name when recorded at create time. */
+  createdByName?: string;
+  /**
+   * True when createdByEmployeeCode matches an active reporting manager for
+   * the task owner (server-enriched on My Daily Planner list responses).
+   */
+  createdByReportingPerson?: boolean;
   dayCompletionSubmittedAt?: string | null;
   dayCompletionSubmittedBy?: string;
   completionManagerReviewedAt?: string | null;
@@ -142,8 +171,33 @@ export interface DailyPlannerTask {
   completionEndTime?: string | null;
   /** Decimal hours computed from start/end on complete. */
   completionDurationHours?: number | null;
+  /** Factory: up to 3 distinct work periods (HH:mm). */
+  timeSlots?: Array<{
+    startTime: string;
+    endTime: string;
+    durationMinutes?: number;
+  }>;
+  /** Factory: employee chose to record a project/task observation on complete. */
+  hasObservation?: boolean | null;
+  observationText?: string;
+  observationId?: string | null;
+  observationSubmittedBy?: string;
+  observationSubmittedByName?: string;
+  observationSubmittedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
+}
+
+/** Project-level historical observation (Factory Obs. dialog). */
+export interface DailyPlannerProjectObservation {
+  observationId: string;
+  projectKey: string;
+  projectName: string;
+  observationText: string;
+  employeeCode: string;
+  employeeName: string;
+  plannerTaskId?: string | null;
+  submittedAt: string | null;
 }
 
 export interface DailyPlannerTeamMapping {
@@ -154,7 +208,7 @@ export interface DailyPlannerTeamMapping {
   employeeName: string;
   /** Canonical EmployeeMaster location (Office | Factory) for holiday/working-day rules. */
   location?: string;
-  /** Factory OR (Office + Super Admin) — enhanced Daily Planner features. */
+  /** Factory OR Office — enhanced Daily Planner features. */
   enhancedEligible?: boolean;
   status: string;
   createdBy: string;
@@ -168,11 +222,14 @@ export interface DailyPlannerTaskDraft {
   description: string;
   priority: DailyPlannerPriority;
   hoursRequired: number;
+  /** Step-by-step procedure (server re-derives description + hoursRequired from these). */
+  procedureSteps?: DailyPlannerProcedureStep[];
   planningCategory?: DailyPlannerPlanningCategory;
   urgentReason?: string;
   revisesTaskId?: string;
   isProjectBased?: boolean;
   projectName?: string;
+  projectTaskId?: string;
   needsDocument?: boolean;
   progressDone?: number | null;
   managerInstructions?: string;

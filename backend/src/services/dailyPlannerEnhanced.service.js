@@ -5,7 +5,7 @@
  * - Project Progress aggregation
  * - Raise / Accept Flag + urgent email
  *
- * Eligibility: Factory OR (Office + Super Admin). Enforced server-side.
+ * Eligibility: Factory OR Office (any access role). Enforced server-side.
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -19,6 +19,8 @@ import {
   resolveEnhancedEligibilityForEmployeeCode,
 } from '../utils/dailyPlannerEnhancedEligibility.js';
 import { getSignedFileUrl } from '../utils/s3SignedUrl.js';
+import { dailyPlannerS3Client } from '../config/s3.js';
+import { combineDocumentsToPdf } from '../utils/dailyPlannerPdfCombine.js';
 import { sendEmail } from './emailService.js';
 import log from '../utils/logger.js';
 
@@ -189,46 +191,130 @@ async function assertCanManageTaskEmployee(authUser, effectiveRole, employeeCode
   }
 }
 
+function s3BucketForFile(file) {
+  return String(file?.bucket || process.env.AWS_S3_BUCKET_NAME || '').trim();
+}
+
+async function deleteUploadedFiles(files) {
+  await Promise.all(
+    (files || []).map(async (f) => {
+      const key = String(f?.key || '').trim();
+      const bucket = s3BucketForFile(f);
+      if (!key || !bucket) return;
+      try {
+        await dailyPlannerS3Client.deleteObject({ Bucket: bucket, Key: key }).promise();
+      } catch (err) {
+        log.warn('Daily planner temp upload cleanup failed:', key, err?.message || err);
+      }
+    }),
+  );
+}
+
+/**
+ * Multi-file path: multer-s3 has already stored each file. Download them, combine into one PDF,
+ * upload the combined PDF to the normal daily-planner/ prefix, and remove the temporary originals.
+ * Returns a multer-s3-like file object for the existing single-file slot logic.
+ */
+async function combineUploadedFilesToSingle(files) {
+  const buffers = [];
+  for (const f of files) {
+    const key = String(f?.key || '').trim();
+    const bucket = s3BucketForFile(f);
+    if (!key || !bucket) {
+      const err = new Error('Document file is required');
+      err.statusCode = 400;
+      throw err;
+    }
+    const obj = await dailyPlannerS3Client.getObject({ Bucket: bucket, Key: key }).promise();
+    buffers.push({
+      buffer: Buffer.isBuffer(obj.Body) ? obj.Body : Buffer.from(obj.Body),
+      originalName: f.originalname,
+      mimetype: f.mimetype,
+    });
+  }
+
+  const combined = await combineDocumentsToPdf(buffers);
+  const safeName = String(combined.fileName).replace(/[^\w.\-()+ ]+/g, '_');
+  const key = `daily-planner/${Date.now()}-${safeName}`;
+  const bucket = s3BucketForFile(files[0]);
+  await dailyPlannerS3Client
+    .putObject({
+      Bucket: bucket,
+      Key: key,
+      Body: combined.buffer,
+      ContentType: combined.contentType,
+    })
+    .promise();
+
+  await deleteUploadedFiles(files);
+  return {
+    key,
+    bucket,
+    location: key,
+    originalname: combined.fileName,
+    mimetype: combined.contentType,
+    size: combined.buffer.length,
+  };
+}
+
 /**
  * Upload into one of three independent document slots.
  * - employee: task owner (or authorized team manager creating on behalf)
  * - managerReview / managerApproval: authorized manager only (never overwrites other slots)
+ *
+ * `fileOrFiles` is a single multer-s3 file (unchanged path) or an array. When more than one file
+ * is supplied (or `options.combine` is true) the files are merged into one PDF first.
  */
 export async function uploadTaskDocument(
   taskId,
-  file,
+  fileOrFiles,
   authUser,
   effectiveRole,
   documentTypeRaw = 'employee',
+  options = {},
 ) {
-  const task = await loadTaskOrThrow(taskId);
-  const documentType = normalizeDocumentType(documentTypeRaw);
+  const uploaded = (Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]).filter(Boolean);
+  const shouldCombine = uploaded.length > 1 || (Boolean(options?.combine) && uploaded.length > 0);
 
-  const eligible = await resolveEnhancedEligibilityForEmployeeCode(task.employeeCode);
-  assertEnhancedDailyPlannerEligible(eligible);
+  try {
+    const task = await loadTaskOrThrow(taskId);
+    const documentType = normalizeDocumentType(documentTypeRaw);
 
-  if (documentType === 'employee') {
-    await assertCanAccessTask(authUser, effectiveRole, task);
-  } else {
-    await assertCanManageTaskEmployee(authUser, effectiveRole, task.employeeCode);
+    const eligible = await resolveEnhancedEligibilityForEmployeeCode(task.employeeCode);
+    assertEnhancedDailyPlannerEligible(eligible);
+
+    if (documentType === 'employee') {
+      await assertCanAccessTask(authUser, effectiveRole, task);
+    } else {
+      await assertCanManageTaskEmployee(authUser, effectiveRole, task.employeeCode);
+    }
+
+    let file = uploaded[0];
+    if (shouldCombine) {
+      file = await combineUploadedFilesToSingle(uploaded);
+    }
+
+    if (!file?.key && !file?.location) {
+      const err = new Error('Document file is required');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const key = String(file.key || '').trim();
+    const fileName = String(file.originalname || fileNameFromKey(key) || 'document').trim();
+    const contentType = String(file.mimetype || '').trim();
+    const uploadedAt = new Date().toISOString();
+
+    const updated = await DailyPlannerTasksModel.updateTask(
+      task.plannerTaskId,
+      documentSlotPatch(documentType, { key, fileName, contentType, uploadedAt }),
+    );
+    return { task: updated, documentType };
+  } catch (error) {
+    // Multi-file path: do not leave orphaned temporary uploads behind on failure.
+    if (shouldCombine) await deleteUploadedFiles(uploaded);
+    throw error;
   }
-
-  if (!file?.key && !file?.location) {
-    const err = new Error('Document file is required');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const key = String(file.key || '').trim();
-  const fileName = String(file.originalname || fileNameFromKey(key) || 'document').trim();
-  const contentType = String(file.mimetype || '').trim();
-  const uploadedAt = new Date().toISOString();
-
-  const updated = await DailyPlannerTasksModel.updateTask(
-    task.plannerTaskId,
-    documentSlotPatch(documentType, { key, fileName, contentType, uploadedAt }),
-  );
-  return { task: updated, documentType };
 }
 
 function fileNameFromKey(key) {

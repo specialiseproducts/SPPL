@@ -79,6 +79,7 @@ function sortTasksByPriority(tasks) {
 function mapTaskRows(tasks) {
   return sortTasksByPriority(tasks).map((task, index) => ({
     srNo: index + 1,
+    projectName: String(task.projectName || '').trim() || '—',
     taskName: String(task.taskName || '').trim() || '—',
     description: String(task.description || '').trim(),
     priority: String(task.currentPriority || task.priority || 'Medium').trim(),
@@ -94,6 +95,7 @@ function buildTasksTable(rows) {
       (r) => `
       <tr>
         <td style="border:1px solid #d1d5db;padding:8px;vertical-align:top;text-align:center;">${r.srNo}</td>
+        <td style="border:1px solid #d1d5db;padding:8px;vertical-align:top;">${escapeHtml(r.projectName)}</td>
         <td style="border:1px solid #d1d5db;padding:8px;vertical-align:top;">${escapeHtml(r.taskName)}</td>
         <td style="border:1px solid #d1d5db;padding:8px;vertical-align:top;">${descriptionHtml(r.description)}</td>
         <td style="border:1px solid #d1d5db;padding:8px;vertical-align:top;"><strong>${escapeHtml(r.priority)}</strong></td>
@@ -105,10 +107,11 @@ function buildTasksTable(rows) {
 
   return `
   <div style="overflow-x:auto;">
-    <table style="border-collapse:collapse;width:100%;min-width:720px;font-size:14px;">
+    <table style="border-collapse:collapse;width:100%;min-width:800px;font-size:14px;">
       <thead>
         <tr style="background:#f3f4f6;">
           <th style="border:1px solid #d1d5db;padding:8px;text-align:left;">Sr. No.</th>
+          <th style="border:1px solid #d1d5db;padding:8px;text-align:left;">Project Name</th>
           <th style="border:1px solid #d1d5db;padding:8px;text-align:left;">Task Name</th>
           <th style="border:1px solid #d1d5db;padding:8px;text-align:left;">Task Description</th>
           <th style="border:1px solid #d1d5db;padding:8px;text-align:left;">Priority</th>
@@ -191,7 +194,7 @@ export function buildFinalPlanEmail({
     '',
     'Tasks:',
     ...rows.flatMap((r) => [
-      `${r.srNo}. ${r.taskName} | ${r.priority} | ${r.hours}`,
+      `${r.srNo}. ${r.projectName} | ${r.taskName} | ${r.priority} | ${r.hours}`,
       `   Description: ${descriptionText(r.description).replace(/\n/g, '\n   ')}`,
       `   Special Remark: ${r.remarksText.replace(/\n/g, '\n   ')}`,
     ]),
@@ -243,7 +246,7 @@ export function buildRevisedPlanEmail({
     '',
     'Complete Updated Final Plan:',
     ...rows.flatMap((r) => [
-      `${r.srNo}. ${r.taskName} | ${r.priority} | ${r.hours}`,
+      `${r.srNo}. ${r.projectName} | ${r.taskName} | ${r.priority} | ${r.hours}`,
       `   Description: ${descriptionText(r.description).replace(/\n/g, '\n   ')}`,
       `   Special Remark: ${r.remarksText.replace(/\n/g, '\n   ')}`,
     ]),

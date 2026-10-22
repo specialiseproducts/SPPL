@@ -17,23 +17,38 @@ import {
   submitDayCompletionReview,
   raiseDailyPlannerTaskFlag,
   uploadDailyPlannerTaskDocument,
+  submitSuperadminReviewComment,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import {
-  getDailyTaskStatusLabel,
   sortDailyPlannerTasksByPriority,
   sumAllTaskDurationHours,
   sumPlannedHoursForDate,
 } from './dailyPlannerUtils';
+import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import BulletPointList from './BulletPointList';
+import { hasBulletContent, parseBulletPoints } from './bulletPointUtils';
 import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerTaskDocumentsList from './DailyPlannerTaskDocumentsList';
 import HoursMinutesFields from './HoursMinutesFields';
 import { isEnhancedDailyPlannerEligible } from '../../utils/dailyPlannerEnhancedEligibility';
+import { isFactoryDailyPlannerEligible } from '../../utils/dailyPlannerFactoryEligibility';
+import {
+  descriptionFromProcedureSteps,
+  formatMinutesLabel,
+  partsFromPlannedMinutes,
+  partsToDecimalHours,
+  plannedMinutesFromParts,
+  resolveProcedureSteps,
+  sumActualMinutes,
+  sumPlannedMinutes,
+  type DailyPlannerProcedureStep,
+} from '../../utils/dailyPlannerProcedureSteps';
+import { hhMmTo12hParts } from './TwelveHourTimeInput';
+import ProjectPastDataDialog from './ProjectPastDataDialog';
 import {
   countCompletionReviewedTasks,
   countReviewedTasks,
   formatReviewDate,
-  getCompletionTime,
   getPreviousRevisionCount,
   getTaskOriginLabel,
   getWizardReviewIndicator,
@@ -45,6 +60,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import { Progress } from '../ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import {
@@ -76,72 +92,57 @@ function formatDateCell(iso: string | undefined | null): string {
   return d.toLocaleString('en-GB');
 }
 
-const STATUS_BADGE_STYLES: Record<string, { bg: string; text: string; border: string }> = {
-  Pending: { bg: '#FEF9C3', text: '#A16207', border: '#FDE047' },
-  Approved: { bg: '#DBEAFE', text: '#1D4ED8', border: '#93C5FD' },
-  Completed: { bg: '#ECFDF3', text: '#027A48', border: '#A6F4C5' },
-  'Verified Complete': { bg: '#ECFDF3', text: '#027A48', border: '#A6F4C5' },
-  'Awaiting Verification': { bg: '#FFEDD5', text: '#C2410C', border: '#FDBA74' },
-  'Needs Revision': { bg: '#FEF3F2', text: '#B42318', border: '#FECDCA' },
-  'Not Completed': { bg: '#FEF3F2', text: '#B42318', border: '#FECDCA' },
-  Rescheduled: { bg: '#FFFAEB', text: '#B54708', border: '#FEDF89' },
-  Terminated: { bg: '#FEF3F2', text: '#B42318', border: '#FECDCA' },
-};
-
-function formatClockDisplay(value?: string | null): string {
-  const raw = String(value || '').trim();
-  if (!raw) return '—';
-  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return raw;
-  let hours = Number(match[1]);
-  const minutes = match[2];
-  if (!Number.isFinite(hours)) return raw;
-  const suffix = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12 || 12;
-  return `${String(hours).padStart(2, '0')}:${minutes} ${suffix}`;
+/** Display HH:mm as 12-hour clock for Work Done rows (existing time convention). */
+function formatReviewTime12h(hhmm: string | null | undefined): string {
+  const parts = hhMmTo12hParts(String(hhmm || ''));
+  if (!parts.hour12) return '';
+  return `${parts.hour12}:${parts.minute} ${parts.period}`;
 }
 
-function isEmployeeCompletedReport(status?: string | null): boolean {
-  const value = String(status || '').trim();
+function ViewField({
+  label,
+  value,
+  compact,
+}: {
+  label: string;
+  value: ReactNode;
+  /** Tighter label/value gap (Task Summary only). */
+  compact?: boolean;
+}) {
   return (
-    value === 'Awaiting Verification' ||
-    value === 'Completed' ||
-    value === 'Verified Complete'
-  );
-}
-
-function isEmployeeNotCompletedReport(status?: string | null): boolean {
-  const value = String(status || '').trim();
-  return value === 'Terminated' || value === 'Rescheduled' || value === 'Not Completed';
-}
-
-function statusBadge(status: string) {
-  const colors = STATUS_BADGE_STYLES[status] || STATUS_BADGE_STYLES.Pending;
-  return (
-    <span
-      className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium"
-      style={{ backgroundColor: colors.bg, color: colors.text, border: `1px solid ${colors.border}` }}
-    >
-      {getDailyTaskStatusLabel(status as DailyPlannerTask['status'])}
-    </span>
-  );
-}
-
-function ViewField({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0 space-y-1.5">
+    <div className={cn('min-w-0', compact ? 'space-y-0.5' : 'space-y-1.5')}>
       <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</p>
       <div className="text-sm text-[#212529] break-words">{value}</div>
     </div>
   );
 }
 
-function ViewSection({ title, children }: { title: string; children: ReactNode }) {
+function ViewSection({
+  title,
+  children,
+  headerRight,
+  className,
+}: {
+  title: string;
+  children: ReactNode;
+  /** Optional control aligned with the section heading (e.g. Past Data). */
+  headerRight?: ReactNode;
+  className?: string;
+}) {
   return (
-    <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="mb-3 border-b border-gray-100 pb-2 text-sm font-semibold text-[#212529]">
-        {title}
-      </h3>
+    <section
+      className={cn(
+        'rounded-lg border border-gray-200 bg-white p-4 shadow-sm',
+        className,
+      )}
+    >
+      <div
+        data-slot="section-heading"
+        className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-2"
+      >
+        <h3 className="text-sm font-semibold text-[#212529]">{title}</h3>
+        {headerRight ? <div className="shrink-0">{headerRight}</div> : null}
+      </div>
       {children}
     </section>
   );
@@ -202,8 +203,20 @@ interface TodayTaskReviewWizardProps {
   initialTaskIndex?: number;
   /** When true, wizard runs completion-review stage (not plan finalize). */
   completionReviewMode?: boolean;
+  /**
+   * Historical Team Daily Planner viewing — full task details, no plan edits /
+   * finalize / add-task actions. Super Admin past-date review stays editable.
+   */
+  readOnly?: boolean;
+  /**
+   * Super Admin viewing an employee outside their own team: view + permanent
+   * review comment only (no task mutations).
+   */
+  outOfTeamReviewOnly?: boolean;
   /** Daily Planner module effective role — used for Super Admin correction privileges. */
   moduleRole?: string;
+  /** Approved leave kind for reviewDate (full → 0h, half → half requirement). */
+  leaveKind?: 'none' | 'full' | 'half';
   onClose: () => void;
   onFinish: () => void;
   onTasksUpdated: (
@@ -219,7 +232,10 @@ export default function TodayTaskReviewWizard({
   reviewDate,
   initialTaskIndex = 0,
   completionReviewMode = false,
+  readOnly = false,
+  outOfTeamReviewOnly = false,
   moduleRole,
+  leaveKind = 'none',
   onClose,
   onFinish,
   onTasksUpdated,
@@ -231,12 +247,18 @@ export default function TodayTaskReviewWizard({
   const [stagedPriority, setStagedPriority] = useState<DailyPlannerPriority>('Medium');
   const [editingHours, setEditingHours] = useState(false);
   const [stagedHours, setStagedHours] = useState<number | null>(null);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const descriptionEditorRef = useRef<BulletPointEditorHandle>(null);
   /** Draft Manager Comments keyed by plannerTaskId — survives Previous/Next navigation. */
   const [managerCommentsByTaskId, setManagerCommentsByTaskId] = useState<Record<string, string>>(
     {},
   );
   const managerCommentsByTaskIdRef = useRef(managerCommentsByTaskId);
   managerCommentsByTaskIdRef.current = managerCommentsByTaskId;
+  /** Super Admin out-of-team review comment drafts (separate from managerComments). */
+  const [outOfTeamCommentByTaskId, setOutOfTeamCommentByTaskId] = useState<Record<string, string>>(
+    {},
+  );
   const [busy, setBusy] = useState(false);
   const [savePhase, setSavePhase] = useState<'idle' | 'saved'>('idle');
   const [revisionOpen, setRevisionOpen] = useState(false);
@@ -268,11 +290,20 @@ export default function TodayTaskReviewWizard({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [flagOpen, setFlagOpen] = useState(false);
   const [flagInstruction, setFlagInstruction] = useState('');
+  /** Compact plan-review: edit one step field at a time (description or duration). */
+  const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [editingStepField, setEditingStepField] = useState<'description' | 'duration' | null>(
+    null,
+  );
+  const [stepDescDraft, setStepDescDraft] = useState('');
+  const [stepHoursDraft, setStepHoursDraft] = useState('0');
+  const [stepMinutesDraft, setStepMinutesDraft] = useState('0');
+  const [pastDataOpen, setPastDataOpen] = useState(false);
   const [uploadingManagerDoc, setUploadingManagerDoc] = useState(false);
   const managerDocInputRef = useRef<HTMLInputElement>(null);
   const planningConfigQuery = usePlanningConfigQuery();
   /** Always use the reviewed employee's location — never the manager's planning-config minimum. */
-  const minPlannedHours = getMinPlannedHours(null, employee.location);
+  const minPlannedHours = getMinPlannedHours(null, employee.location, leaveKind);
   /** Prefer server-enriched flag for the task owner; fall back to location+viewer role. */
   const showEnhancedTaskUi =
     typeof employee.enhancedEligible === 'boolean'
@@ -304,7 +335,7 @@ export default function TodayTaskReviewWizard({
     return String(draft).trim() !== String(reviewTask.managerComments || '').trim();
   });
   const canRefinalize = planModified || (editMode && commentDraftChanged);
-  const fieldsReadOnly = planFinalized && !editMode;
+  const fieldsReadOnly = readOnly || (planFinalized && !editMode);
 
   const task = sortedTasks[currentIndex] ?? null;
   const total = sortedTasks.length;
@@ -317,6 +348,67 @@ export default function TodayTaskReviewWizard({
   const managerComments = task
     ? (managerCommentsByTaskId[task.plannerTaskId] ?? task.managerComments ?? '')
     : '';
+  const outOfTeamCommentDraft = task
+    ? (outOfTeamCommentByTaskId[task.plannerTaskId] ?? '')
+    : '';
+  const savedOutOfTeamComments = task?.superadminReviewComments ?? [];
+
+  const handleSubmitOutOfTeamReviewComment = async () => {
+    if (!task || !outOfTeamReviewOnly) return;
+    const text = String(outOfTeamCommentDraft || '').trim();
+    if (!text) {
+      toast.error('Review comment is required');
+      return;
+    }
+    setBusy(true);
+    try {
+      const submissionId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `sa-review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const result = await submitSuperadminReviewComment(task.plannerTaskId, {
+        comment: text,
+        submissionId,
+      });
+      await onTasksUpdated([result.task]);
+      setOutOfTeamCommentByTaskId((prev) => ({
+        ...prev,
+        [task.plannerTaskId]: '',
+      }));
+
+      const empOk = Boolean(result.email?.employee?.ok);
+      const empSkipped = Boolean(result.email?.employee?.skipped);
+      const mgrResults = result.email?.reportingPersons || [];
+      const mgrOk = mgrResults.filter((r) => r.ok).length;
+      const mgrAttempted = mgrResults.filter((r) => !r.skipped).length;
+
+      if (result.duplicate) {
+        toast.message('Review comment was already saved');
+      } else if (empOk && (mgrOk === mgrAttempted || mgrAttempted === 0)) {
+        toast.success(
+          mgrAttempted === 0
+            ? 'Review comment saved. Employee notified (no reporting person email found).'
+            : 'Review comment saved. Employee and reporting person notified.',
+        );
+      } else if (empOk || mgrOk > 0) {
+        toast.message(
+          'Review comment saved, but some email notifications could not be sent. Check server logs.',
+        );
+      } else if (empSkipped && mgrAttempted === 0) {
+        toast.message(
+          'Review comment saved. No recipient emails were available for notifications.',
+        );
+      } else {
+        toast.message(
+          'Review comment saved, but email notifications could not be sent.',
+        );
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save review comment');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const getDraftCommentsForTask = useCallback((taskId: string, fallbackTask?: DailyPlannerTask | null) => {
     const drafts = managerCommentsByTaskIdRef.current;
@@ -339,10 +431,14 @@ export default function TodayTaskReviewWizard({
     setSavePhase('idle');
     setEditingPriority(false);
     setEditingHours(false);
+    setEditingDescription(false);
     setEditMode(false);
     setPlanModified(false);
     setManagerCommentsByTaskId({});
     setRevisionOpen(false);
+    setEditingStepId(null);
+    setEditingStepField(null);
+    setPastDataOpen(false);
   }, [open, initialTaskIndex, total, employee.employeeCode]);
 
   useEffect(() => {
@@ -350,6 +446,9 @@ export default function TodayTaskReviewWizard({
     setEditingPriority(false);
     setStagedPriority((task.currentPriority || task.priority || 'Medium') as DailyPlannerPriority);
     setEditingHours(false);
+    setEditingDescription(false);
+    setEditingStepId(null);
+    setEditingStepField(null);
     setStagedHours(
       task.hoursRequired != null && Number.isFinite(Number(task.hoursRequired))
         ? Number(task.hoursRequired)
@@ -406,6 +505,24 @@ export default function TodayTaskReviewWizard({
     Boolean(task) &&
     task?.status !== 'Rescheduled' &&
     task?.status !== 'Verified Complete';
+
+  /**
+   * Compact Task Summary + steps table for both plan review and Pending Completion Approval.
+   * Edit mode keeps the full form.
+   */
+  const compactReview = !editMode;
+  const procedureSteps = useMemo(() => (task ? resolveProcedureSteps(task) : []), [task]);
+  const procedureActualMinutes = useMemo(
+    () =>
+      sumActualMinutes(procedureSteps.filter((s) => s.status !== 'rescheduled')),
+    [procedureSteps],
+  );
+  const summaryActualTimeLabel = useMemo(() => {
+    if (procedureActualMinutes > 0) return formatMinutesLabel(procedureActualMinutes);
+    const stored = Number(task?.completionDurationHours);
+    if (Number.isFinite(stored) && stored >= 0) return formatDurationLabel(stored);
+    return '—';
+  }, [procedureActualMinutes, task?.completionDurationHours]);
 
   const advanceAfterSave = useCallback(() => {
     if (currentIndex < total - 1) {
@@ -468,6 +585,119 @@ export default function TodayTaskReviewWizard({
     });
   };
 
+  const handleSaveDescription = () => {
+    if (!task || !editingDescription) return;
+    const formatted = String(
+      descriptionEditorRef.current?.getFormattedValue() || stagedDescription || '',
+    ).trim();
+    if (!hasBulletContent(parseBulletPoints(formatted))) {
+      toast.error('Task Description is required');
+      return;
+    }
+    const taskId = task.plannerTaskId;
+    setBusy(true);
+    void (async () => {
+      try {
+        const updated = await updateDailyPlannerTaskForEmployee(taskId, {
+          description: formatted,
+          allowFinalizedEdit: Boolean(task.planFinalizedAt),
+          skipRevisedEmail: true,
+        });
+        setStagedDescription(formatted);
+        setEditingDescription(false);
+        if (task.planFinalizedAt) setPlanModified(true);
+        await onTasksUpdated([updated]);
+        toast.success('Description updated');
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to update description');
+      } finally {
+        setBusy(false);
+      }
+    })();
+  };
+
+  const handleCancelDescription = () => {
+    setEditingDescription(false);
+    setStagedDescription(task?.description || '');
+  };
+
+  /** Persist procedureSteps via the existing for-employee update (description + hours re-synced server-side). */
+  const persistProcedureSteps = async (
+    nextSteps: DailyPlannerProcedureStep[],
+    options: { preserveStatus?: boolean; successMessage: string },
+  ): Promise<boolean> => {
+    if (!task) return false;
+    const taskId = task.plannerTaskId;
+    const parts = partsFromPlannedMinutes(sumPlannedMinutes(nextSteps));
+    setBusy(true);
+    try {
+      const updated = await updateDailyPlannerTaskForEmployee(taskId, {
+        procedureSteps: nextSteps,
+        description: descriptionFromProcedureSteps(nextSteps),
+        hoursRequired: partsToDecimalHours(parts.hours, parts.minutes),
+        allowFinalizedEdit: Boolean(task.planFinalizedAt),
+        skipRevisedEmail: true,
+        preserveStatus: options.preserveStatus,
+      });
+      if (task.planFinalizedAt) setPlanModified(true);
+      await onTasksUpdated([updated]);
+      toast.success(options.successMessage);
+      return true;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update steps');
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelStepEdit = () => {
+    setEditingStepId(null);
+    setEditingStepField(null);
+  };
+
+  const startEditStepDescription = (step: DailyPlannerProcedureStep) => {
+    if (fieldsReadOnly) return;
+    setEditingStepId(step.stepId);
+    setEditingStepField('description');
+    setStepDescDraft(step.description);
+  };
+
+  const startEditStepDuration = (step: DailyPlannerProcedureStep) => {
+    if (fieldsReadOnly) return;
+    const parts = partsFromPlannedMinutes(step.plannedMinutes);
+    setEditingStepId(step.stepId);
+    setEditingStepField('duration');
+    setStepHoursDraft(String(parts.hours));
+    setStepMinutesDraft(String(parts.minutes));
+  };
+
+  const handleSaveStepDescription = async (stepId: string) => {
+    const description = stepDescDraft.trim();
+    if (!description) {
+      toast.error('Step description is required');
+      return;
+    }
+    const nextSteps = procedureSteps.map((s) =>
+      s.stepId === stepId ? { ...s, description } : s,
+    );
+    const ok = await persistProcedureSteps(nextSteps, { successMessage: 'Step description updated' });
+    if (ok) cancelStepEdit();
+  };
+
+  const handleSaveStepDuration = async (stepId: string) => {
+    const minutes = plannedMinutesFromParts(Number(stepHoursDraft), Number(stepMinutesDraft));
+    if (!(minutes > 0)) {
+      toast.error('Step duration must be greater than 0');
+      return;
+    }
+    const nextSteps = procedureSteps.map((s) =>
+      s.stepId === stepId ? { ...s, plannedMinutes: minutes } : s,
+    );
+    const ok = await persistProcedureSteps(nextSteps, { successMessage: 'Step duration updated' });
+    if (ok) cancelStepEdit();
+  };
+
   const handleApprove = () => {
     if (!task) return;
     if (editingHours) {
@@ -504,21 +734,26 @@ export default function TodayTaskReviewWizard({
     });
   };
 
-  const handleManagerDocumentSelected = async (file: File | null) => {
-    if (!task || !file || !showEnhancedTaskUi) return;
+  const handleManagerDocumentSelected = async (files: File[]) => {
+    if (!task || files.length === 0 || !showEnhancedTaskUi || readOnly) return;
     const documentType = completionReviewMode ? 'managerApproval' : 'managerReview';
     setUploadingManagerDoc(true);
     try {
+      const payload = files.length === 1 ? files[0] : files;
       const updated = await uploadDailyPlannerTaskDocument(
         task.plannerTaskId,
-        file,
+        payload,
         documentType,
       );
       await onTasksUpdated([updated]);
       toast.success(
         documentType === 'managerApproval'
-          ? 'Manager Approval Document uploaded'
-          : 'Manager Review Document uploaded',
+          ? files.length > 1
+            ? 'Manager Approval Document uploaded (combined PDF)'
+            : 'Manager Approval Document uploaded'
+          : files.length > 1
+            ? 'Manager Review Document uploaded (combined PDF)'
+            : 'Manager Review Document uploaded',
       );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Document upload failed');
@@ -545,7 +780,13 @@ export default function TodayTaskReviewWizard({
       return;
     }
     if (planFinalized && !canRefinalize) return;
-    if (planHoursTowardMinimum < minPlannedHours) {
+    if (leaveKind === 'full') {
+      toast.error(
+        'This employee is on approved full-day leave for this date. Daily Planner tasks are not required and cannot be created.',
+      );
+      return;
+    }
+    if (minPlannedHours > 0 && planHoursTowardMinimum < minPlannedHours) {
       toast.error(
         `Final plan must total at least ${formatDurationLabel(minPlannedHours)} (currently ${formatDurationLabel(planHoursTowardMinimum)}).`,
       );
@@ -850,6 +1091,8 @@ export default function TodayTaskReviewWizard({
         forEmployeeCode={employee.employeeCode}
         skipPlanningWindowAssert
         enhancedEligible={showEnhancedTaskUi}
+        factoryEligible={isFactoryDailyPlannerEligible(employee.location)}
+        leaveKind={leaveKind}
         existingTasksForDate={sortedTasks.filter(
           (t) => String(t.date || '').trim().slice(0, 10) === reviewDate,
         )}
@@ -882,7 +1125,7 @@ export default function TodayTaskReviewWizard({
     <>
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
         <DialogContent
-          className="!flex !h-[92vh] !max-h-[92vh] !w-[min(96vw,1200px)] !max-w-[1200px] !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-[1200px]"
+          className="!flex !h-[92vh] !max-h-[92vh] !w-[min(96vw,1200px)] !max-w-[1200px] !flex-col !gap-0 overflow-hidden !p-0 sm:!max-w-[1200px] [&>button]:top-2.5 [&>button]:right-2.5"
           style={{
             width: 'min(96vw, 1200px)',
             maxWidth: '1200px',
@@ -890,28 +1133,31 @@ export default function TodayTaskReviewWizard({
             maxHeight: '92vh',
           }}
         >
-          <DialogHeader className="shrink-0 border-b border-gray-200 bg-white px-6 py-4 text-left">
-            <div className="flex w-full flex-row items-start justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <DialogTitle className="text-lg font-semibold text-[#212529]">
+          {/* Plain header — avoid DialogHeader's default flex-col gap-2 which inflates height */}
+          <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-1.5 pr-11 text-left sm:px-5">
+            <div className="flex w-full flex-row items-center gap-3">
+              <div className="min-w-0 flex-1 leading-none">
+                <DialogTitle className="text-base font-semibold leading-none text-[#212529]">
                   {completionReviewMode
                     ? 'Pending Completion Approval'
                     : 'Task Review'}
                 </DialogTitle>
-                <p className="mt-1 text-base font-medium text-[#212529]">{employee.employeeName}</p>
-                <p className="text-sm text-gray-600">
+                <p className="mt-0.5 text-sm font-medium leading-none text-[#212529]">
+                  {employee.employeeName}
+                </p>
+                <p className="mt-0.5 text-xs leading-none text-gray-600">
                   {employee.employeeCode}
                   {employee.department ? ` · ${employee.department}` : ''}
                   {employee.designation ? ` · ${employee.designation}` : ''}
                 </p>
               </div>
-              <div className="min-w-0 flex-1 text-center">
-                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+              <div className="min-w-0 flex-1 text-center leading-none">
+                <p className="text-[9px] font-medium uppercase tracking-wide text-gray-500 leading-none">
                   Total Planned Hours
                 </p>
                 <p
                   className={cn(
-                    'text-sm font-medium',
+                    'mt-0.5 text-sm font-medium leading-none',
                     planTotalHours >= minPlannedHours
                       ? 'text-green-700'
                       : 'text-amber-700',
@@ -920,28 +1166,630 @@ export default function TodayTaskReviewWizard({
                   {formatDurationLabel(planTotalHours)} / {formatDurationLabel(minPlannedHours)}
                 </p>
               </div>
-              <div className="min-w-0 flex-1 space-y-2 text-right">
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Date</p>
-                  <p className="text-sm font-medium text-[#212529]">{formatReviewDate(reviewDate)}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                    Task {currentIndex + 1} of {total}
-                  </p>
-                  <p className="text-xs text-gray-600">Progress {progressPct}%</p>
-                  <Progress value={progressPct} className="mt-1 h-2" />
-                </div>
+              <div className="min-w-0 flex-1 text-right leading-none">
+                <p className="text-[9px] font-medium uppercase tracking-wide text-gray-500 leading-none">
+                  Date
+                </p>
+                <p className="mt-0.5 text-xs font-medium leading-none text-[#212529]">
+                  {formatReviewDate(reviewDate)}
+                </p>
+                <p className="mt-0.5 text-[9px] font-medium uppercase tracking-wide text-gray-500 leading-none">
+                  Task {currentIndex + 1} of {total}
+                </p>
+                <p className="mt-0.5 text-[10px] leading-none text-gray-600">
+                  Progress {progressPct}%
+                </p>
+                {/* Explicit track color: bg-primary/20 on white is nearly invisible at 0% */}
+                <Progress
+                  value={progressPct}
+                  className="mt-1 h-1.5 w-full bg-gray-200 [&>[data-slot=progress-indicator]]:bg-[#007BFF]"
+                />
               </div>
             </div>
             {savePhase === 'saved' ? (
-              <div className="mt-3 flex items-center gap-3 text-sm">
+              <div className="mt-1 flex items-center gap-3 text-xs">
                 <span className="font-medium text-green-700">Task Saved ✓</span>
               </div>
             ) : null}
-          </DialogHeader>
+          </div>
 
-          <div className="min-h-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto scroll-smooth bg-[#F8F9FA] px-6 py-5 overscroll-contain">
+          <div className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto scroll-smooth bg-[#F8F9FA] px-4 py-2 overscroll-contain sm:px-5">
+            {compactReview ? (
+              <>
+                <ViewSection
+                  title="Task Summary"
+                  className="px-2 py-1.5 [&_[data-slot=section-heading]]:mb-1.5 [&_[data-slot=section-heading]]:pb-1"
+                  headerRight={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!String(task.projectName || '').trim()}
+                      title={
+                        String(task.projectName || '').trim()
+                          ? 'View completed tasks for this project'
+                          : 'Not a project task'
+                      }
+                      onClick={() => setPastDataOpen(true)}
+                    >
+                      Past Data
+                    </Button>
+                  }
+                >
+                  <div className="grid grid-cols-1 items-start gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
+                    <ViewField
+                      compact
+                      label="Project Name"
+                      value={displayCell(task.projectName)}
+                    />
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                        Priority
+                      </p>
+                      <div className="flex items-center gap-2">
+                        {editingPriority ? (
+                          <Select
+                            value={stagedPriority}
+                            onValueChange={(v) => setStagedPriority(v as DailyPlannerPriority)}
+                            disabled={fieldsReadOnly || busy || completionReviewMode}
+                          >
+                            <SelectTrigger
+                              className="w-[140px]"
+                              disabled={fieldsReadOnly || busy || completionReviewMode}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Urgent">Urgent</SelectItem>
+                              <SelectItem value="High">High</SelectItem>
+                              <SelectItem value="Medium">Medium</SelectItem>
+                              <SelectItem value="Low">Low</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <div className="text-sm text-[#212529]">{displayPriority}</div>
+                        )}
+                        {!completionReviewMode ? (
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            title="Edit priority"
+                            className="h-8 w-8"
+                            disabled={busy || fieldsReadOnly}
+                            onClick={() => {
+                              if (fieldsReadOnly) return;
+                              setEditingPriority((v) => !v);
+                              setStagedPriority(currentPriority);
+                            }}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        ) : null}
+                      </div>
+                      {priorityChanged && !completionReviewMode ? (
+                        <p className="text-xs text-amber-700">
+                          Priority change will be saved when you click Approve Task.
+                        </p>
+                      ) : null}
+                    </div>
+                    <ViewField
+                      compact
+                      label="Actual Time"
+                      value={summaryActualTimeLabel}
+                    />
+                    <ViewField
+                      compact
+                      label="Task Name"
+                      value={displayCell(task.taskName)}
+                    />
+                  </div>
+                </ViewSection>
+
+                <ViewSection
+                  title="Steps"
+                  className="px-2 py-1.5 [&_[data-slot=section-heading]]:mb-1.5 [&_[data-slot=section-heading]]:pb-1"
+                >
+                  <input
+                    ref={managerDocInputRef}
+                    type="file"
+                    multiple
+                    accept=".doc,.docx,.pdf,.jpg,.jpeg,.png,.xls,.xlsx,.ppt,.pptx"
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files ?? []);
+                      void handleManagerDocumentSelected(files);
+                    }}
+                  />
+                  <div className="overflow-x-auto">
+                    <Table className="table-fixed w-full min-w-[640px]">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[28%]">Steps</TableHead>
+                          <TableHead className="w-[32%]">Work Done</TableHead>
+                          <TableHead className="w-[18%]">Action</TableHead>
+                          <TableHead className="w-[22%]">Comment</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {procedureSteps.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={4} className="text-sm text-gray-600">
+                              No steps recorded for this task.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          procedureSteps.map((step, idx) => {
+                            const editingDesc =
+                              !completionReviewMode &&
+                              editingStepId === step.stepId &&
+                              editingStepField === 'description';
+                            const editingDur =
+                              !completionReviewMode &&
+                              editingStepId === step.stepId &&
+                              editingStepField === 'duration';
+                            const isFirst = idx === 0;
+                            const rowSpan = procedureSteps.length;
+                            const workDoneText = String(step.workDone || '').trim();
+                            const startLabel = formatReviewTime12h(step.startTime);
+                            const endLabel = formatReviewTime12h(step.endTime);
+                            const stepActual =
+                              step.actualMinutes != null &&
+                              Number.isFinite(Number(step.actualMinutes)) &&
+                              Number(step.actualMinutes) > 0
+                                ? formatMinutesLabel(Number(step.actualMinutes))
+                                : '';
+                            return (
+                              <TableRow key={step.stepId} className="align-top">
+                                <TableCell className="whitespace-normal align-top">
+                                  {editingDesc ? (
+                                    <div className="space-y-2">
+                                      <Textarea
+                                        rows={2}
+                                        value={stepDescDraft}
+                                        disabled={busy}
+                                        onChange={(e) => setStepDescDraft(e.target.value)}
+                                        aria-label={`Step ${idx + 1} description`}
+                                      />
+                                      <div className="flex gap-1">
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          disabled={busy}
+                                          onClick={() =>
+                                            void handleSaveStepDescription(step.stepId)
+                                          }
+                                        >
+                                          Save
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          disabled={busy}
+                                          onClick={cancelStepEdit}
+                                        >
+                                          Cancel
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="space-y-1">
+                                      <div className="flex items-start gap-1">
+                                        <div className="flex min-w-0 flex-1 gap-2 text-sm text-[#212529]">
+                                          <span className="shrink-0 font-medium text-gray-500">
+                                            {idx + 1}.
+                                          </span>
+                                          <span className="break-words font-medium">
+                                            {step.description}
+                                          </span>
+                                        </div>
+                                        {!completionReviewMode ? (
+                                          <Button
+                                            type="button"
+                                            size="icon"
+                                            variant="ghost"
+                                            title="Edit step description"
+                                            className="h-7 w-7 shrink-0"
+                                            disabled={busy || fieldsReadOnly}
+                                            onClick={() => startEditStepDescription(step)}
+                                          >
+                                            <Pencil className="h-3.5 w-3.5" />
+                                          </Button>
+                                        ) : null}
+                                      </div>
+                                      {editingDur ? (
+                                        <div className="space-y-2">
+                                          <div className="flex items-center gap-1 text-xs text-gray-600">
+                                            <Input
+                                              type="number"
+                                              min={0}
+                                              step={1}
+                                              className="h-8 w-14 px-2"
+                                              value={stepHoursDraft}
+                                              disabled={busy}
+                                              aria-label="Step hours"
+                                              onChange={(e) => setStepHoursDraft(e.target.value)}
+                                            />
+                                            h
+                                            <Input
+                                              type="number"
+                                              min={0}
+                                              max={59}
+                                              step={1}
+                                              className="h-8 w-14 px-2"
+                                              value={stepMinutesDraft}
+                                              disabled={busy}
+                                              aria-label="Step minutes"
+                                              onChange={(e) => setStepMinutesDraft(e.target.value)}
+                                            />
+                                            m
+                                          </div>
+                                          <div className="flex gap-1">
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              disabled={busy}
+                                              onClick={() =>
+                                                void handleSaveStepDuration(step.stepId)
+                                              }
+                                            >
+                                              Save
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={busy}
+                                              onClick={cancelStepEdit}
+                                            >
+                                              Cancel
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="flex items-center gap-1">
+                                          <p className="text-xs text-gray-500">
+                                            Planned: {formatMinutesLabel(step.plannedMinutes)}
+                                          </p>
+                                          {!completionReviewMode ? (
+                                            <Button
+                                              type="button"
+                                              size="icon"
+                                              variant="ghost"
+                                              title="Edit step duration"
+                                              className="h-6 w-6 shrink-0"
+                                              disabled={busy || fieldsReadOnly}
+                                              onClick={() => startEditStepDuration(step)}
+                                            >
+                                              <Pencil className="h-3 w-3" />
+                                            </Button>
+                                          ) : null}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </TableCell>
+                                <TableCell className="align-top whitespace-normal">
+                                  <div className="space-y-1">
+                                    <p className="break-words text-sm text-[#212529]">
+                                      {workDoneText || '—'}
+                                    </p>
+                                    {startLabel || endLabel || stepActual ? (
+                                      <p className="text-xs text-gray-600">
+                                        {startLabel && endLabel
+                                          ? `${startLabel} – ${endLabel}`
+                                          : startLabel || endLabel || ''}
+                                        {stepActual
+                                          ? `${startLabel || endLabel ? ' · ' : ''}${stepActual}`
+                                          : ''}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                </TableCell>
+                                {isFirst ? (
+                                  <TableCell
+                                    rowSpan={rowSpan}
+                                    className="align-top whitespace-normal border-l border-gray-100 bg-white"
+                                  >
+                                    {readOnly ? (
+                                      <p className="text-sm text-gray-600">
+                                        Historical view (read only).
+                                      </p>
+                                    ) : (
+                                      <div className="flex flex-col gap-1.5 py-0.5">
+                                        {completionReviewMode ? (
+                                          <>
+                                            {awaitingVerification ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                disabled={
+                                                  busy || isTaskCompletionReviewed(task)
+                                                }
+                                                className="w-full justify-start bg-green-600 text-white hover:bg-green-700"
+                                                onClick={() => void handleVerify()}
+                                              >
+                                                Verify Completion
+                                              </Button>
+                                            ) : !isTaskCompletionReviewed(task) ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                disabled={busy}
+                                                className="w-full justify-start bg-green-600 text-white hover:bg-green-700"
+                                                onClick={() =>
+                                                  void handleReviewCompletionOutcome()
+                                                }
+                                              >
+                                                Mark Reviewed
+                                              </Button>
+                                            ) : null}
+                                            {showEnhancedTaskUi ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={
+                                                  busy ||
+                                                  String(task.flagStatus || '').trim() ===
+                                                    'Raised'
+                                                }
+                                                className="w-full justify-start"
+                                                onClick={() => {
+                                                  setFlagInstruction('');
+                                                  setFlagOpen(true);
+                                                }}
+                                              >
+                                                Raise Flag
+                                              </Button>
+                                            ) : null}
+                                            {showEnhancedTaskUi ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={busy || uploadingManagerDoc}
+                                                className="w-full justify-start"
+                                                onClick={() =>
+                                                  managerDocInputRef.current?.click()
+                                                }
+                                              >
+                                                {uploadingManagerDoc
+                                                  ? 'Uploading…'
+                                                  : 'Upload Document'}
+                                              </Button>
+                                            ) : null}
+                                            {showSuperAdminReschedule ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={busy}
+                                                className="w-full justify-start"
+                                                onClick={openRescheduleDialog}
+                                              >
+                                                Reschedule Task
+                                              </Button>
+                                            ) : null}
+                                            {isTaskCompletionReviewed(task) ? (
+                                              <p className="text-xs text-gray-600">
+                                                This completion result has been reviewed.
+                                              </p>
+                                            ) : null}
+                                          </>
+                                        ) : (
+                                          <>
+                                            {showApprove ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                disabled={busy}
+                                                className="w-full justify-start bg-green-600 text-white hover:bg-green-700"
+                                                onClick={() => void handleApprove()}
+                                              >
+                                                Approve Task
+                                              </Button>
+                                            ) : null}
+                                            {showRequestRevision ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="destructive"
+                                                disabled={busy}
+                                                className="w-full justify-start"
+                                                onClick={() => setRevisionOpen(true)}
+                                              >
+                                                Request Revision
+                                              </Button>
+                                            ) : null}
+                                            {showEnhancedTaskUi ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={busy || uploadingManagerDoc}
+                                                className="w-full justify-start"
+                                                onClick={() =>
+                                                  managerDocInputRef.current?.click()
+                                                }
+                                              >
+                                                {uploadingManagerDoc
+                                                  ? 'Uploading…'
+                                                  : 'Upload Document'}
+                                              </Button>
+                                            ) : null}
+                                            {showEnhancedTaskUi ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={
+                                                  busy ||
+                                                  String(task.flagStatus || '').trim() ===
+                                                    'Raised'
+                                                }
+                                                className="w-full justify-start"
+                                                onClick={() => {
+                                                  setFlagInstruction('');
+                                                  setFlagOpen(true);
+                                                }}
+                                              >
+                                                Raise Flag
+                                              </Button>
+                                            ) : null}
+                                            {showSuperAdminReschedule ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={busy}
+                                                className="w-full justify-start"
+                                                onClick={openRescheduleDialog}
+                                              >
+                                                Reschedule Task
+                                              </Button>
+                                            ) : null}
+                                            {showVerify ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                disabled={busy}
+                                                className="w-full justify-start bg-green-600 text-white hover:bg-green-700"
+                                                onClick={() => void handleVerify()}
+                                              >
+                                                Verify Completion
+                                              </Button>
+                                            ) : null}
+                                            {showReopenTask ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                disabled={busy}
+                                                className="w-full justify-start"
+                                                onClick={openReopenDialog}
+                                              >
+                                                Reopen Task
+                                              </Button>
+                                            ) : null}
+                                            {isTaskManagerReviewed(task) &&
+                                            !showApprove &&
+                                            !showVerify &&
+                                            !showRequestRevision &&
+                                            !showReopenTask &&
+                                            !showSuperAdminReschedule ? (
+                                              <p className="text-sm text-gray-600">
+                                                Already reviewed (
+                                                {getWizardReviewIndicator(task)}).
+                                              </p>
+                                            ) : null}
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+                                  </TableCell>
+                                ) : null}
+                                {isFirst ? (
+                                  <TableCell
+                                    rowSpan={rowSpan}
+                                    className="align-top whitespace-normal border-l border-gray-100 bg-white"
+                                  >
+                                    {outOfTeamReviewOnly ? (
+                                      <div className="space-y-1.5">
+                                        <Label
+                                          htmlFor="superadmin-out-of-team-comment-compact"
+                                          className="text-xs font-medium"
+                                        >
+                                          Review comment
+                                        </Label>
+                                        {savedOutOfTeamComments.length > 0 ? (
+                                          <div className="max-h-20 space-y-1 overflow-y-auto rounded border border-gray-200 bg-gray-50 p-1.5 text-[11px] text-gray-700">
+                                            {savedOutOfTeamComments.map((c) => (
+                                              <p key={c.commentId} className="whitespace-pre-wrap">
+                                                <span className="font-medium">
+                                                  {c.reviewerName || c.reviewerCode}:
+                                                </span>{' '}
+                                                {c.commentText}
+                                              </p>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                        <Textarea
+                                          id="superadmin-out-of-team-comment-compact"
+                                          rows={Math.max(3, rowSpan)}
+                                          value={outOfTeamCommentDraft}
+                                          disabled={busy}
+                                          onChange={(e) => {
+                                            if (!task) return;
+                                            const id = task.plannerTaskId;
+                                            const value = e.target.value;
+                                            setOutOfTeamCommentByTaskId((prev) => ({
+                                              ...prev,
+                                              [id]: value,
+                                            }));
+                                          }}
+                                          placeholder="Enter a review comment for this task / date"
+                                          className="min-h-[5rem] resize-y"
+                                        />
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          className="h-7 w-full bg-[#007BFF] hover:bg-[#0056b3]"
+                                          disabled={
+                                            busy || !String(outOfTeamCommentDraft || '').trim()
+                                          }
+                                          onClick={() => void handleSubmitOutOfTeamReviewComment()}
+                                        >
+                                          Submit review comment
+                                        </Button>
+                                      </div>
+                                    ) : (
+                                      <div className="space-y-1.5">
+                                        <Label
+                                          htmlFor="manager-comments-compact"
+                                          className="sr-only"
+                                        >
+                                          {completionReviewMode
+                                            ? 'Review Comment'
+                                            : 'Manager Comments'}
+                                        </Label>
+                                        <Textarea
+                                          id="manager-comments-compact"
+                                          rows={Math.max(4, rowSpan * 2)}
+                                          value={managerComments}
+                                          disabled={
+                                            busy ||
+                                            readOnly ||
+                                            (!completionReviewMode && fieldsReadOnly) ||
+                                            (completionReviewMode &&
+                                              isTaskCompletionReviewed(task))
+                                          }
+                                          onChange={(e) =>
+                                            setManagerCommentsForCurrentTask(e.target.value)
+                                          }
+                                          placeholder={
+                                            completionReviewMode
+                                              ? 'Add a review comment for this completion decision'
+                                              : 'Add comments for this review decision'
+                                          }
+                                          className="min-h-[6rem] resize-y"
+                                        />
+                                      </div>
+                                    )}
+                                  </TableCell>
+                                ) : null}
+                              </TableRow>
+                            );
+                          })
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </ViewSection>
+              </>
+            ) : (
+              <>
             <ViewSection title="Employee Information">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <ViewField label="Employee Name" value={displayCell(employee.employeeName)} />
@@ -1091,8 +1939,62 @@ export default function TodayTaskReviewWizard({
                       onChange={(e) => setStagedDescription(e.target.value)}
                     />
                   </div>
+                ) : editingDescription ? (
+                  <div className="space-y-2">
+                    <BulletPointEditor
+                      key={`review-desc-${task.plannerTaskId}`}
+                      ref={descriptionEditorRef}
+                      id="review-inline-description"
+                      label="Description *"
+                      required
+                      defaultValue={task.description || ''}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={busy || fieldsReadOnly}
+                        onClick={handleSaveDescription}
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={handleCancelDescription}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
                 ) : (
-                  <ViewBulletField label="Description" value={displayCell(task.description)} />
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                        Description
+                      </p>
+                      {!completionReviewMode ? (
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          title="Edit description"
+                          className="h-8 w-8"
+                          disabled={busy || fieldsReadOnly}
+                          onClick={() => {
+                            if (fieldsReadOnly) return;
+                            setEditingDescription(true);
+                            setStagedDescription(task.description || '');
+                          }}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
+                    </div>
+                    <BulletPointList text={displayCell(task.description)} />
+                  </div>
                 )}
               </div>
               {task.isProjectBased ? (
@@ -1147,99 +2049,15 @@ export default function TodayTaskReviewWizard({
               ) : null}
             </ViewSection>
 
-            <ViewSection title="Completion Information">
-              {completionReviewMode ? (
-                isEmployeeCompletedReport(task.status) ? (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <ViewField label="Employee Status" value="Completed" />
-                    <ViewField
-                      label="Start Time"
-                      value={formatClockDisplay(task.completionStartTime)}
-                    />
-                    <ViewField
-                      label="End Time"
-                      value={formatClockDisplay(task.completionEndTime)}
-                    />
-                    <ViewField
-                      label="Total Time"
-                      value={
-                        task.completionDurationHours != null &&
-                        Number.isFinite(Number(task.completionDurationHours))
-                          ? formatDurationLabel(task.completionDurationHours)
-                          : '—'
-                      }
-                    />
-                    <div className="sm:col-span-2">
-                      <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
-                    </div>
-                  </div>
-                ) : isEmployeeNotCompletedReport(task.status) ? (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <ViewField label="Employee Status" value="Not Completed" />
-                    <ViewField
-                      label="Task Action"
-                      value={
-                        task.status === 'Rescheduled'
-                          ? 'Rescheduled'
-                          : task.status === 'Terminated'
-                            ? 'Terminated'
-                            : '—'
-                      }
-                    />
-                    <div className="sm:col-span-2">
-                      <ViewBulletField
-                        label="Reason for Not Completing"
-                        value={displayCell(task.reason)}
-                      />
-                    </div>
-                    {task.status === 'Rescheduled' ? (
-                      <ViewField
-                        label="Rescheduled Date"
-                        value={
-                          task.rescheduledToDate
-                            ? formatReviewDate(task.rescheduledToDate)
-                            : '—'
-                        }
-                      />
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <ViewField label="Employee Status" value={statusBadge(task.status)} />
-                  </div>
-                )
-              ) : (
-                <>
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <ViewField label="Employee Status" value={statusBadge(task.status)} />
-                    <ViewField
-                      label="Completion Time"
-                      value={formatDateCell(getCompletionTime(task))}
-                    />
-                  </div>
-                  {awaitingVerification ? (
-                    <div className="mt-4 space-y-3">
-                      <p className="text-sm text-[#212529]">
-                        Employee marked this task as completed. Manager must verify.
-                      </p>
-                      <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
-                    </div>
-                  ) : null}
-                  {task.status === 'Verified Complete' ? (
-                    <div className="mt-4 space-y-3">
-                      <ViewBulletField label="Work Done" value={displayCell(task.reason)} />
-                      {task.managerComments ? (
-                        <ViewBulletField
-                          label="Manager Comments"
-                          value={displayCell(task.managerComments)}
-                        />
-                      ) : null}
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </ViewSection>
+              </>
+            )}
 
+            {/*
+              Compact review (plan + Pending Completion Approval): task-level actions +
+              comment live in the shared Action/Comment table cells (rowSpan). Keep this
+              Manager Review section for edit mode and tasks with no procedure steps.
+            */}
+            {(!compactReview || procedureSteps.length === 0) ? (
             <ViewSection title="Manager Review">
               <p className="mb-3 text-sm text-gray-600">
                 {completionReviewMode ? 'Completion Decision' : 'Manager Decision'}
@@ -1247,17 +2065,18 @@ export default function TodayTaskReviewWizard({
               <input
                 ref={managerDocInputRef}
                 type="file"
+                multiple
                 accept=".doc,.docx,.pdf,.jpg,.jpeg,.png,.xls,.xlsx,.ppt,.pptx"
                 className="hidden"
                 onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null;
-                  void handleManagerDocumentSelected(f);
+                  const files = Array.from(e.target.files ?? []);
+                  void handleManagerDocumentSelected(files);
                 }}
               />
               <div className="mb-4 flex flex-wrap gap-2">
                 {completionReviewMode ? (
                   <>
-                    {showEnhancedTaskUi ? (
+                    {showEnhancedTaskUi && !readOnly ? (
                       <Button
                         type="button"
                         variant="outline"
@@ -1267,7 +2086,20 @@ export default function TodayTaskReviewWizard({
                         {uploadingManagerDoc ? 'Uploading…' : 'Upload Document'}
                       </Button>
                     ) : null}
-                    {awaitingVerification ? (
+                    {showEnhancedTaskUi && !readOnly ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy || String(task.flagStatus || '').trim() === 'Raised'}
+                        onClick={() => {
+                          setFlagInstruction('');
+                          setFlagOpen(true);
+                        }}
+                      >
+                        Raise Flag
+                      </Button>
+                    ) : null}
+                    {!readOnly && awaitingVerification ? (
                       <Button
                         type="button"
                         disabled={busy || isTaskCompletionReviewed(task)}
@@ -1277,7 +2109,7 @@ export default function TodayTaskReviewWizard({
                         Verify Completion
                       </Button>
                     ) : null}
-                    {!awaitingVerification && !isTaskCompletionReviewed(task) ? (
+                    {!readOnly && !awaitingVerification && !isTaskCompletionReviewed(task) ? (
                       <Button
                         type="button"
                         disabled={busy}
@@ -1287,7 +2119,7 @@ export default function TodayTaskReviewWizard({
                         Mark Reviewed
                       </Button>
                     ) : null}
-                    {showSuperAdminReschedule ? (
+                    {!readOnly && showSuperAdminReschedule ? (
                       <Button
                         type="button"
                         variant="outline"
@@ -1303,6 +2135,10 @@ export default function TodayTaskReviewWizard({
                       </p>
                     ) : null}
                   </>
+                ) : readOnly ? (
+                  <p className="text-sm text-gray-600">
+                    Historical view (read only). Manager decisions cannot be changed for past dates.
+                  </p>
                 ) : (
                   <>
                     {editMode ? (
@@ -1401,88 +2237,160 @@ export default function TodayTaskReviewWizard({
                   </>
                 )}
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="manager-comments">Manager Comments (optional)</Label>
-                <Textarea
-                  id="manager-comments"
-                  rows={2}
-                  value={managerComments}
-                  disabled={busy || fieldsReadOnly}
-                  onChange={(e) => setManagerCommentsForCurrentTask(e.target.value)}
-                  placeholder="Add comments for this review decision"
-                />
-              </div>
+              {outOfTeamReviewOnly ? (
+                <div className="space-y-2">
+                  <Label htmlFor="superadmin-out-of-team-comment">Review comment</Label>
+                  {savedOutOfTeamComments.length > 0 ? (
+                    <div className="max-h-28 space-y-1.5 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700">
+                      {savedOutOfTeamComments.map((c) => (
+                        <div key={c.commentId} className="border-b border-gray-200 pb-1.5 last:border-b-0 last:pb-0">
+                          <p className="font-medium text-gray-800">
+                            {c.reviewerName || c.reviewerCode}
+                            {c.submittedAt
+                              ? ` · ${new Date(c.submittedAt).toLocaleString('en-GB')}`
+                              : ''}
+                          </p>
+                          <p className="whitespace-pre-wrap">{c.commentText}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <Textarea
+                    id="superadmin-out-of-team-comment"
+                    rows={2}
+                    value={outOfTeamCommentDraft}
+                    disabled={busy}
+                    onChange={(e) => {
+                      if (!task) return;
+                      const id = task.plannerTaskId;
+                      const value = e.target.value;
+                      setOutOfTeamCommentByTaskId((prev) => ({ ...prev, [id]: value }));
+                    }}
+                    placeholder="Enter a review comment for this task / date"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 bg-[#007BFF] hover:bg-[#0056b3]"
+                    disabled={busy || !String(outOfTeamCommentDraft || '').trim()}
+                    onClick={() => void handleSubmitOutOfTeamReviewComment()}
+                  >
+                    Submit review comment
+                  </Button>
+                  <p className="text-[11px] text-muted-foreground">
+                    Out-of-team access is view and comment only. Task create, edit, approve, and
+                    completion actions are disabled.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label htmlFor="manager-comments">
+                    {completionReviewMode ? 'Review Comment' : 'Manager Comments (optional)'}
+                  </Label>
+                  <Textarea
+                    id="manager-comments"
+                    rows={2}
+                    value={managerComments}
+                    disabled={
+                      busy ||
+                      readOnly ||
+                      (!completionReviewMode && fieldsReadOnly) ||
+                      (completionReviewMode && isTaskCompletionReviewed(task))
+                    }
+                    onChange={(e) => setManagerCommentsForCurrentTask(e.target.value)}
+                    placeholder={
+                      completionReviewMode
+                        ? 'Add a review comment for this completion decision'
+                        : 'Add comments for this review decision'
+                    }
+                  />
+                </div>
+              )}
             </ViewSection>
+            ) : null}
           </div>
 
-          <div className="shrink-0 border-t border-gray-200 bg-white px-6 py-4">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-              Jump To Task
-            </p>
-            <div className="mb-4 flex flex-wrap gap-1.5">
-              {sortedTasks.map((t, idx) => {
-                const completionChecked = isTaskCompletionReviewed(t);
-                const indicator = completionReviewMode
-                  ? completionChecked
-                    ? 'approved'
-                    : 'pending'
-                  : getWizardReviewIndicator(t);
-                const style = INDICATOR_STYLES[indicator];
-                return (
-                  <button
-                    key={t.plannerTaskId}
-                    type="button"
-                    title={
-                      completionReviewMode
-                        ? completionChecked
-                          ? 'Reviewed'
-                          : 'Pending review'
-                        : style.label
-                    }
-                    disabled={busy}
-                    onClick={() => setCurrentIndex(idx)}
-                    className={cn(
-                      'inline-flex h-8 min-w-[2rem] items-center justify-center gap-1 rounded-md border px-2 text-xs font-medium transition-colors',
-                      style.className,
-                      idx === currentIndex && 'ring-2 ring-[#007BFF] ring-offset-1',
-                    )}
-                  >
-                    {style.icon}
-                    <span>{idx + 1}</span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex gap-2">
+          {/* Compact footer: Jump To Task left; Prev/Next before Close on the right */}
+          <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-1.5 sm:px-5">
+            <div className="flex flex-wrap items-end justify-between gap-x-3 gap-y-1.5">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <p className="text-[9px] font-medium uppercase leading-none tracking-wide text-gray-500">
+                  Jump To Task
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {sortedTasks.map((t, idx) => {
+                    const completionChecked = isTaskCompletionReviewed(t);
+                    const indicator = completionReviewMode
+                      ? completionChecked
+                        ? 'approved'
+                        : 'pending'
+                      : getWizardReviewIndicator(t);
+                    const style = INDICATOR_STYLES[indicator];
+                    return (
+                      <button
+                        key={t.plannerTaskId}
+                        type="button"
+                        title={
+                          completionReviewMode
+                            ? completionChecked
+                              ? 'Reviewed'
+                              : 'Pending review'
+                            : style.label
+                        }
+                        disabled={busy}
+                        onClick={() => setCurrentIndex(idx)}
+                        className={cn(
+                          'inline-flex h-7 min-w-[1.75rem] items-center justify-center gap-0.5 rounded-md border px-1.5 text-xs font-medium transition-colors',
+                          style.className,
+                          idx === currentIndex && 'ring-2 ring-[#007BFF] ring-offset-1',
+                        )}
+                      >
+                        {style.icon}
+                        <span>{idx + 1}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
                 <Button
                   type="button"
+                  size="sm"
                   variant="outline"
+                  className="h-7"
                   disabled={busy || currentIndex <= 0}
                   onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
                 >
-                  <ChevronLeft className="mr-1 h-4 w-4" />
+                  <ChevronLeft className="mr-1 h-3.5 w-3.5" />
                   Previous
                 </Button>
                 <Button
                   type="button"
+                  size="sm"
                   variant="outline"
+                  className="h-7"
                   disabled={busy || currentIndex >= total - 1}
                   onClick={() => setCurrentIndex((i) => Math.min(total - 1, i + 1))}
                 >
                   Next
-                  <ChevronRight className="ml-1 h-4 w-4" />
+                  <ChevronRight className="ml-1 h-3.5 w-3.5" />
                 </Button>
-              </div>
-              <div className="flex gap-2">
-                <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  disabled={busy}
+                  onClick={onClose}
+                >
                   Close
                 </Button>
-                {!completionReviewMode && planFinalized ? (
+                {!readOnly && !completionReviewMode && planFinalized ? (
                   <Button
                     type="button"
+                    size="sm"
                     variant="outline"
+                    className="h-7"
                     disabled={busy || editMode}
                     onClick={() => {
                       setEditMode(true);
@@ -1496,36 +2404,41 @@ export default function TodayTaskReviewWizard({
                     Edit
                   </Button>
                 ) : null}
-                {!completionReviewMode ? (
+                {!readOnly && !completionReviewMode ? (
                   <Button
                     type="button"
+                    size="sm"
                     variant="outline"
+                    className="h-7"
                     disabled={busy || fieldsReadOnly}
                     onClick={() => setAddTaskOpen(true)}
                   >
-                    <Plus className="mr-1 h-4 w-4" />
+                    <Plus className="mr-1 h-3.5 w-3.5" />
                     Add Task
                   </Button>
                 ) : null}
-                <Button
-                  type="button"
-                  className="bg-[#007BFF] hover:bg-[#0056b3]"
-                  disabled={
-                    busy ||
-                    (completionReviewMode
-                      ? !allReviewed
-                      : canRefinalize
-                        ? false
-                        : !allReviewed || planFinalized)
-                  }
-                  onClick={() => void handleFinishReview()}
-                >
-                  {completionReviewMode
-                    ? 'Submit'
-                    : planFinalized && !canRefinalize
-                      ? 'Finalized'
-                      : 'Finalize Plan'}
-                </Button>
+                {!readOnly ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 bg-[#007BFF] hover:bg-[#0056b3]"
+                    disabled={
+                      busy ||
+                      (completionReviewMode
+                        ? !allReviewed
+                        : canRefinalize
+                          ? false
+                          : !allReviewed || planFinalized)
+                    }
+                    onClick={() => void handleFinishReview()}
+                  >
+                    {completionReviewMode
+                      ? 'Submit'
+                      : planFinalized && !canRefinalize
+                        ? 'Finalized'
+                        : 'Finalize Plan'}
+                  </Button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -1539,6 +2452,8 @@ export default function TodayTaskReviewWizard({
         forEmployeeCode={employee.employeeCode}
         skipPlanningWindowAssert
         enhancedEligible={showEnhancedTaskUi}
+        factoryEligible={isFactoryDailyPlannerEligible(employee.location)}
+        leaveKind={leaveKind}
         existingTasksForDate={sortedTasks.filter(
           (t) => String(t.date || '').trim().slice(0, 10) === reviewDate,
         )}
@@ -1563,6 +2478,12 @@ export default function TodayTaskReviewWizard({
           setAddTaskOpen(false);
           return created;
         }}
+      />
+
+      <ProjectPastDataDialog
+        open={pastDataOpen}
+        projectName={String(task.projectName || '')}
+        onClose={() => setPastDataOpen(false)}
       />
 
       <Dialog open={flagOpen} onOpenChange={(v) => !v && setFlagOpen(false)}>

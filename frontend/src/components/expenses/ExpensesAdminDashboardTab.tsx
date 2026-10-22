@@ -954,7 +954,7 @@ function MonthWaterfallChart({ data }: { data: MonthWaterfallData }) {
                   return (
                     <div className="border-border/50 bg-background grid min-w-[8rem] items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-xl">
                       <div className="font-medium">{title}</div>
-                      <div>
+      <div>
                         Change: {sign}
                         {formatInr(change)}
                       </div>
@@ -1394,7 +1394,7 @@ function AnalyticsErrorCard({
   return (
     <Card className="p-6 border border-red-200 bg-red-50/40">
       <p className="text-sm text-[#212529] font-medium">{title}</p>
-      <p className="text-sm text-gray-600 mt-1">
+        <p className="text-sm text-gray-600 mt-1">
         Please try again. Your My Expenses records were not affected.
       </p>
       <Button type="button" variant="outline" size="sm" className="mt-3" onClick={onRetry}>
@@ -1934,7 +1934,7 @@ export default function ExpensesAdminDashboardTab() {
                   icon={FileText}
                   loading={subcategoryLoading}
                 />
-              </div>
+      </div>
 
               {subcategoryLoading ? (
                 <ChartCardSkeleton title="Transaction Details" heightClass="h-[260px]" />
@@ -1984,7 +1984,7 @@ export default function ExpensesAdminDashboardTab() {
                   icon={FileText}
                   loading={headLoading}
                 />
-              </div>
+          </div>
 
               {headLoading ? (
                 <ChartCardSkeleton
@@ -1996,7 +1996,7 @@ export default function ExpensesAdminDashboardTab() {
                   <p className="text-sm text-gray-600">
                     No approved expenses available for {headLabel} in {headPeriodHint}.
                   </p>
-                </Card>
+        </Card>
               ) : headData ? (
                 <SubcategoryBarChart
                   data={headData.subcategories}
@@ -2041,7 +2041,7 @@ export default function ExpensesAdminDashboardTab() {
                   icon={PieChartIcon}
                   loading={locationLoading}
                 />
-              </div>
+          </div>
 
               {locationLoading ? (
                 <div className="space-y-4">
@@ -2059,7 +2059,7 @@ export default function ExpensesAdminDashboardTab() {
                   <p className="text-sm text-gray-600">
                     No approved expenses available for {locationLabel} in {analysisPeriodLabel}.
                   </p>
-                </Card>
+        </Card>
               ) : locationData ? (
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 items-start">
@@ -2075,7 +2075,7 @@ export default function ExpensesAdminDashboardTab() {
                       amountTickStep={10000}
                       plotHeight={340}
                     />
-                  </div>
+      </div>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 items-start">
                     <ServiceProviderBarChart
                       data={locationData.serviceProviders ?? []}
@@ -2137,7 +2137,7 @@ export default function ExpensesAdminDashboardTab() {
                   icon={MonthMomIcon}
                   loading={monthLoading}
                 />
-              </div>
+        </div>
 
               {monthLoading ? (
                 <div className="space-y-4">
@@ -2155,7 +2155,7 @@ export default function ExpensesAdminDashboardTab() {
                   <p className="text-sm text-gray-600">
                     No approved expenses available for {monthLabel}.
                   </p>
-                </Card>
+      </Card>
               ) : monthData ? (
                 <div className="space-y-4">
                   {monthData.waterfall ? (
