@@ -9,18 +9,20 @@ import { canAccessAllRecords } from '../utils/accessControl.js';
 import {
   HALF_DAY_PERIODS,
   LEAVE_TYPES,
+  countWorkingDaysInRange,
   dateRangesOverlap,
-  inclusiveCalendarDays,
   isActiveLeaveConflictStatus,
   rangesOverlapMonth,
   requiresAdvanceNoticeWarning,
 } from '../utils/payrollLeaveDates.js';
 import { todayIstDateKey, normalizeDateKey } from '../utils/salesQuotationDates.js';
+import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import { sendEmail } from './emailService.js';
 import {
   buildLeaveApprovedEmail,
   buildLeaveRejectedEmail,
 } from './payrollLeaveDecisionEmail.js';
+import { buildLeaveSubmittedToManagerEmail } from './payrollLeaveSubmittedEmail.js';
 import log from '../utils/logger.js';
 
 function employeeCodeOf(authUser) {
@@ -120,7 +122,97 @@ async function notifyLeaveDecisionEmail(decision, leaveRequest) {
   return result;
 }
 
-function normalizeLeavePayload(body, today) {
+/**
+ * Notify Active Payroll reporting manager(s) after a leave request is created.
+ * Never throws — email failure must not affect leave persistence.
+ */
+async function notifyLeaveSubmittedToManagers(leaveRequest) {
+  const employeeCode = String(leaveRequest?.employeeCode || '').trim();
+  if (!employeeCode) {
+    return { ok: false, skipped: true, reason: 'missing_employee_code' };
+  }
+
+  let mappings = [];
+  try {
+    mappings = await PayrollTeamMappingsModel.listActiveManagersForEmployee(employeeCode);
+  } catch (err) {
+    log.error('Leave submit email: failed to resolve reporting managers', {
+      employeeCode,
+      leaveRequestId: leaveRequest?.leaveRequestId,
+      error: err?.message || err,
+    });
+    return { ok: false, skipped: true, reason: 'manager_lookup_failed' };
+  }
+
+  if (!mappings.length) {
+    log.error('Leave submit email skipped — no Active reporting manager mapping', {
+      employeeCode,
+      leaveRequestId: leaveRequest?.leaveRequestId,
+    });
+    return { ok: false, skipped: true, reason: 'no_manager' };
+  }
+
+  const mail = buildLeaveSubmittedToManagerEmail(leaveRequest);
+  const seenEmails = new Set();
+  let sent = 0;
+  let failed = 0;
+
+  for (const mapping of mappings) {
+    const managerCode = String(mapping?.managerCode || '').trim();
+    if (!managerCode) continue;
+
+    let manager = null;
+    try {
+      manager = await EmployeeMasterModel.getEmployeeByCode(managerCode);
+    } catch (err) {
+      log.error('Leave submit email: failed to load manager', {
+        employeeCode,
+        managerCode,
+        error: err?.message || err,
+      });
+      failed += 1;
+      continue;
+    }
+
+    const to = officialEmailOfEmployee(manager);
+    if (!to) {
+      log.error('Leave submit email skipped — manager has no official email', {
+        employeeCode,
+        managerCode,
+        leaveRequestId: leaveRequest?.leaveRequestId,
+      });
+      failed += 1;
+      continue;
+    }
+
+    const emailKey = to.toLowerCase();
+    if (seenEmails.has(emailKey)) continue;
+    seenEmails.add(emailKey);
+
+    const result = await sendEmail({
+      to,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+    });
+
+    if (!result?.ok) {
+      log.error('Leave submit email send failed', {
+        employeeCode,
+        managerCode,
+        leaveRequestId: leaveRequest?.leaveRequestId,
+        error: result?.error,
+      });
+      failed += 1;
+    } else {
+      sent += 1;
+    }
+  }
+
+  return { ok: sent > 0, sent, failed };
+}
+
+function normalizeLeavePayload(body, today, location) {
   const leaveType = String(body?.leaveType || '').trim();
   const reason = String(body?.reason || '').trim();
 
@@ -155,9 +247,12 @@ function normalizeLeavePayload(body, today) {
     if (endDate < startDate) {
       throw badRequest('End Date must be the same as or later than Start Date');
     }
-    durationDays = inclusiveCalendarDays(startDate, endDate);
+    // Authoritative duration: working days only (location-specific holidays/Sundays excluded).
+    durationDays = countWorkingDaysInRange(startDate, endDate, location);
     if (durationDays == null || durationDays < 1) {
-      throw badRequest('Invalid date range');
+      throw badRequest(
+        'Selected dates do not include any working days. Adjust the leave date range.',
+      );
     }
   }
 
@@ -269,7 +364,8 @@ export const createLeaveRequest = async (body, authUser) => {
   if (!code) throw badRequest('Employee identity is required');
 
   const today = todayIstDateKey();
-  const normalized = normalizeLeavePayload(body, today);
+  const location = await getEmployeeLocation(code);
+  const normalized = normalizeLeavePayload(body, today, location);
 
   await assertNoDateOverlap({
     employeeCode: code,
@@ -285,6 +381,7 @@ export const createLeaveRequest = async (body, authUser) => {
     halfDayPeriod: normalized.halfDayPeriod,
   });
   if (duplicate) {
+    // Do not re-send manager email on duplicate / retry of the same pending request.
     return { leaveRequest: duplicate, duplicate: true };
   }
 
@@ -301,6 +398,9 @@ export const createLeaveRequest = async (body, authUser) => {
     createdBy: code,
   });
 
+  // Persist first, then notify — email failure must not create duplicates or roll back.
+  await notifyLeaveSubmittedToManagers(leaveRequest);
+
   return { leaveRequest, duplicate: false };
 };
 
@@ -309,8 +409,9 @@ export const updateLeaveRequest = async (leaveRequestId, body, authUser) => {
   assertOwnedPending(existing, authUser);
 
   const today = todayIstDateKey();
-  const normalized = normalizeLeavePayload(body, today);
   const code = employeeCodeOf(authUser);
+  const location = await getEmployeeLocation(code);
+  const normalized = normalizeLeavePayload(body, today, location);
 
   await assertNoDateOverlap({
     employeeCode: code,

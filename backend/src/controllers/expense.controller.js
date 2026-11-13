@@ -265,6 +265,28 @@ export const approveExpense = async (req, res, next) => {
 };
 
 /**
+ * All matching expenses for Export Data (ignores frontend Load More).
+ * GET /api/expenses/export/records?month=MM&year=YYYY&employeeCode=
+ */
+export const getExpensesForExport = async (req, res, next) => {
+  try {
+    const data = await ExpenseService.getExpensesForExport(
+      {
+        month: req.query.month,
+        year: req.query.year,
+        employeeCode: req.query.employeeCode || req.query.employeeId,
+      },
+      req.user,
+      req.effectiveRole
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Get expenses for export controller error:', error);
+    next(error);
+  }
+};
+
+/**
  * Pending previous-month expenses for Export Data workflow.
  * GET /api/expenses/export/pending-previous?month=MM&year=YYYY&employeeCode=
  */

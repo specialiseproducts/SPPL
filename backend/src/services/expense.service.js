@@ -11,6 +11,7 @@ import * as EmployeeModel from '../models/EmployeeMaster.js';
 import {
   isCanonicalExpenseHead,
   validateSubCategoryForHead,
+  showCompanyGstInField,
   EXPENSE_SUBCATEGORY_MAP,
 } from '../constants/expenseSubCategories.js';
 import { buildAuditFields } from '../utils/audit.js';
@@ -54,6 +55,8 @@ const OTHER_FORM_FIELDS = [
   'purpose',
   'serviceProvider',
   'billNumber',
+  'companyGstIn',
+  'currency',
   'date',
   'monthYear',
   'pnrNo',
@@ -424,10 +427,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (!purpose && legacyCombined) {
       purpose = legacyCombined;
     }
-    if (travelTicket) {
-      location = '';
-    }
-    if (!location && !travelOutstation && !travelTicket) {
+    if (!location && !travelOutstation) {
       throw new Error('location is required');
     }
     if (!purpose && !travelOutstation) {
@@ -590,6 +590,24 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       throw new Error('Departure datetime cannot be earlier than arrival datetime');
     }
 
+    const currencyRaw = trimText(raw.currency);
+    const currency =
+      currencyRaw === 'USD' ||
+      currencyRaw === 'GBP' ||
+      currencyRaw === 'EUR' ||
+      currencyRaw === 'INR'
+        ? currencyRaw
+        : undefined;
+
+    let companyGstIn;
+    if (showCompanyGstInField(expenseHead, subCategory || '')) {
+      const gst = trimText(raw.companyGstIn);
+      if (gst !== 'Yes' && gst !== 'No') {
+        throw new Error('companyGstIn is required (Yes or No)');
+      }
+      companyGstIn = gst;
+    }
+
     const basePayload = {
       expenseHead,
       ...(subCategory ? { subCategory } : {}),
@@ -607,6 +625,8 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       employeeEmail,
       amount: amountNum,
       supportingDocument,
+      ...(currency ? { currency } : {}),
+      ...(companyGstIn ? { companyGstIn } : {}),
       ...travelExtras,
       ...hotelExtras,
       ...(travelOutstation
@@ -832,12 +852,15 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       updatePayload.location = resolvedLp.location;
       updatePayload.purpose = resolvedLp.purpose;
     } else if (mergedIsTicket) {
+      if (!resolvedLp.location) {
+        throw new Error('location is required');
+      }
       if (!resolvedLp.purpose) {
         throw new Error('purpose is required');
       }
-      merged.location = '';
+      merged.location = resolvedLp.location;
       merged.purpose = resolvedLp.purpose;
-      updatePayload.location = '';
+      updatePayload.location = resolvedLp.location;
       updatePayload.purpose = resolvedLp.purpose;
     } else {
       merged.location = '';
@@ -862,6 +885,14 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     }
     if (!isTravelTicketTransport(merged.expenseHead, mergedSub)) {
       updatePayload.pnrNo = '';
+    }
+
+    if (showCompanyGstInField(merged.expenseHead, mergedSub)) {
+      const gst = trimText(updatePayload.companyGstIn ?? merged.companyGstIn);
+      if (gst !== 'Yes' && gst !== 'No') {
+        throw new Error('companyGstIn is required (Yes or No)');
+      }
+      updatePayload.companyGstIn = gst;
     }
 
     if (trimText(updatePayload.supportingDocument).toLowerCase() === 'yes') {
@@ -1072,6 +1103,45 @@ export const approveExpense = async (expenseId, authUser, effectiveRole) => {
  * Approved + Pending Export expenses from months before the selected MM-YYYY.
  * Scoped to a single employee (own records, or admin selecting one employee).
  */
+/**
+ * Fetch ALL expenses for an employee + month/year for Export Data.
+ * Does not rely on frontend pagination / Load More.
+ */
+export const getExpensesForExport = async (
+  { month, year, employeeCode: requestedCode } = {},
+  authUser,
+  effectiveRole
+) => {
+  const mm = String(month ?? '').trim().padStart(2, '0');
+  const yyyy = String(year ?? '').trim();
+  if (!/^\d{2}$/.test(mm) || Number(mm) < 1 || Number(mm) > 12 || !/^\d{4}$/.test(yyyy)) {
+    const err = new Error('month and year are required (MM and YYYY)');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const selfCode = String(authUser?.employeeCode || '').trim();
+  let targetCode = selfCode;
+  const requested = String(requestedCode || '').trim();
+
+  if (canAccessAllExpenseRecords(effectiveRole) && requested) {
+    targetCode = requested;
+  } else if (requested && requested !== selfCode) {
+    const err = new Error('Forbidden');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  if (!targetCode) {
+    const err = new Error('employeeCode is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const rows = await ExpenseModel.queryExpensesForExportMonthYear(targetCode, mm, yyyy);
+  return rows.map((row) => toExpenseListDto(row, enrichExpenseRow));
+};
+
 export const getPendingPreviousExportExpenses = async (
   { month, year, employeeCode: requestedCode } = {},
   authUser,

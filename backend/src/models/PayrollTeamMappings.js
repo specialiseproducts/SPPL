@@ -218,6 +218,14 @@ export async function findActiveManagerForEmployee(employeeCode) {
   return all.find((m) => m.employeeCode === emp && m.status === 'Active') || null;
 }
 
+/** All Active Payroll reporting managers mapped to this employee. */
+export async function listActiveManagersForEmployee(employeeCode) {
+  const emp = String(employeeCode || '').trim();
+  if (!emp) return [];
+  const all = await listAllMappings();
+  return (all || []).filter((m) => m.employeeCode === emp && m.status === 'Active');
+}
+
 export async function softDeleteMapping(mappingId) {
   return updateMapping(mappingId, { is_deleted: true, status: 'Removed' });
 }

@@ -16,7 +16,6 @@ import {
 import { Label } from '../ui/label';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
-import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
 import StepProcedureEditor from './StepProcedureEditor';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
@@ -36,9 +35,15 @@ import {
 } from '../../utils/planningRecognition';
 import {
   descriptionFromProcedureSteps,
+  draftToPlannedMinutes,
   newProcedureStepDraft,
+  partsFromPlannedMinutes,
+  resolveProcedureSteps,
   sumDraftDecimalHours,
+  sumDraftPlannedMinutes,
   validateProcedureDrafts,
+  workDoneFromProcedureSteps,
+  type DailyPlannerProcedureStep,
   type ProcedureStepDraft,
 } from '../../utils/dailyPlannerProcedureSteps';
 import { sumPlannedHoursForDate } from './dailyPlannerUtils';
@@ -54,29 +59,18 @@ import HoursMinutesFields from './HoursMinutesFields';
 import DailyPlannerEnhancedTaskFields, { resolveDocumentUploadPayload } from './DailyPlannerEnhancedTaskFields';
 import ProjectObservationsButton, { type ProjectObservationsCache } from './ProjectObservationsButton';
 import { normalizeProjectKey } from './ProjectPastDataDialog';
-import TwelveHourTimeInput from './TwelveHourTimeInput';
 import { isFactoryDailyPlannerEligible } from '../../utils/dailyPlannerFactoryEligibility';
-
-/** Same duration helper as Mark Completed (Start/End → decimal hours). */
-function calcDurationFromTimes(startTime: string, endTime: string): number | null {
-  const start = String(startTime || '').trim();
-  const end = String(endTime || '').trim();
-  if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return null;
-  const [sh, sm] = start.split(':').map(Number);
-  const [eh, em] = end.split(':').map(Number);
-  if (![sh, sm, eh, em].every((n) => Number.isFinite(n))) return null;
-  const startMins = sh * 60 + sm;
-  const endMins = eh * 60 + em;
-  if (endMins < startMins) return null;
-  const diff = endMins - startMins;
-  return partsToDecimalHours(Math.floor(diff / 60), diff % 60);
-}
 
 type TaskSectionState = {
   id: string;
   taskName: string;
   /** Step By Step Procedure — source of truth for description + hoursRequired. */
   procedureSteps: ProcedureStepDraft[];
+  /**
+   * Extra Task only: Work Done rows locked 1:1 to procedureSteps (by stepId).
+   * description = work done text; hours/minutes = actual duration (not planned).
+   */
+  extraWorkDoneSteps: ProcedureStepDraft[];
   priority: DailyPlannerPriority;
   /** Read-only: always the sum of procedure step durations. */
   hoursRequired: number | null;
@@ -92,6 +86,19 @@ type TaskSectionState = {
   documentFiles?: File[];
 };
 
+/** Keep Extra Work Done rows aligned to procedure stepIds (preserve entered work/actuals). */
+function syncExtraWorkDoneSteps(
+  procedureSteps: ProcedureStepDraft[],
+  prevWork: ProcedureStepDraft[],
+): ProcedureStepDraft[] {
+  const byId = new Map(prevWork.map((w) => [w.stepId, w]));
+  return procedureSteps.map((p) => {
+    const existing = byId.get(p.stepId);
+    if (existing) return { ...existing, stepId: p.stepId };
+    return newProcedureStepDraft({ stepId: p.stepId });
+  });
+}
+
 type SectionErrors = Record<
   string,
   {
@@ -100,15 +107,18 @@ type SectionErrors = Record<
     procedureSteps?: string;
     projectName?: boolean;
     startEnd?: boolean;
-    workDone?: boolean;
+    /** Extra Task Work Done validation message. */
+    workDone?: string | boolean;
   }
 >;
 
 function createEmptySection(): TaskSectionState {
+  const firstStep = newProcedureStepDraft();
   return {
     id: crypto.randomUUID(),
     taskName: '',
-    procedureSteps: [newProcedureStepDraft()],
+    procedureSteps: [firstStep],
+    extraWorkDoneSteps: [newProcedureStepDraft({ stepId: firstStep.stepId })],
     priority: 'Medium',
     hoursRequired: null,
     isProjectBased: 'No',
@@ -244,7 +254,7 @@ function TaskSectionRow({
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <p className="text-sm font-semibold text-[#212529]">Task {index + 1}</p>
+        <p className="text-sm font-semibold text-[#212529]">{index + 1}</p>
         {canRemove ? (
           <Button
             type="button"
@@ -440,13 +450,16 @@ interface ExtraTaskSectionFieldsProps {
   observationCacheRef: MutableRefObject<ProjectObservationsCache>;
   showTaskNameError: boolean;
   showProjectNameError: boolean;
-  showStartEndError: boolean;
   showWorkDoneError: boolean;
+  procedureError?: string;
+  workDoneError?: string;
   onChange: (patch: Partial<TaskSectionState>) => void;
-  onWorkDoneRef: (handle: BulletPointEditorHandle | null) => void;
 }
 
-/** Extra Task field set — reuses existing Daily Planner field components / Mark Completed time + Work Done. */
+/**
+ * Extra Task form: description-only procedure steps + per-step Work Done (text + actual H/M).
+ * Planned hours remain 0; actual duration is the sum of Work Done step actuals.
+ */
 function ExtraTaskSectionFields({
   section,
   factoryMode = false,
@@ -456,12 +469,11 @@ function ExtraTaskSectionFields({
   observationCacheRef,
   showTaskNameError,
   showProjectNameError,
-  showStartEndError,
   showWorkDoneError,
+  procedureError,
+  workDoneError,
   onChange,
-  onWorkDoneRef,
 }: ExtraTaskSectionFieldsProps) {
-  const durationPreview = calcDurationFromTimes(section.startTime, section.endTime);
   const showProjectName = factoryMode || section.isProjectBased === 'Yes';
   const selectedManaged = managedProjects.find(
     (p) => normalizeProjectKey(p.projectName) === normalizeProjectKey(section.projectName),
@@ -564,6 +576,28 @@ function ExtraTaskSectionFields({
         ) : null}
       </div>
 
+      <div className="space-y-1">
+        <StepProcedureEditor
+          id={`extra-procedure-${section.id}`}
+          label="Step By Step Procedure"
+          required
+          descriptionOnly
+          descriptionPlaceholder="Enter step…"
+          steps={section.procedureSteps}
+          onChange={(procedureSteps) =>
+            onChange({
+              procedureSteps,
+              extraWorkDoneSteps: syncExtraWorkDoneSteps(
+                procedureSteps,
+                section.extraWorkDoneSteps,
+              ),
+            })
+          }
+          error={Boolean(procedureError)}
+        />
+        {procedureError ? <p className="text-xs text-red-600">{procedureError}</p> : null}
+      </div>
+
       <div className="space-y-2">
         <Label>Priority *</Label>
         <Select
@@ -621,74 +655,20 @@ function ExtraTaskSectionFields({
         />
       ) : null}
 
-      {factoryMode ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <TwelveHourTimeInput
-            id={`extra-start-time-${section.id}`}
-            label="Start Time"
-            required
-            value={section.startTime}
-            onChange={(hhmm) => onChange({ startTime: hhmm })}
-            error={showStartEndError}
-          />
-          <TwelveHourTimeInput
-            id={`extra-end-time-${section.id}`}
-            label="End Time"
-            required
-            value={section.endTime}
-            onChange={(hhmm) => onChange({ endTime: hhmm })}
-            error={showStartEndError}
-          />
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <Label htmlFor={`extra-start-time-${section.id}`}>Start Time *</Label>
-            <Input
-              id={`extra-start-time-${section.id}`}
-              type="time"
-              value={section.startTime}
-              onChange={(e) => onChange({ startTime: e.target.value })}
-              className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
-              aria-invalid={showStartEndError}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={`extra-end-time-${section.id}`}>End Time *</Label>
-            <Input
-              id={`extra-end-time-${section.id}`}
-              type="time"
-              value={section.endTime}
-              onChange={(e) => onChange({ endTime: e.target.value })}
-              className={cn(showStartEndError && 'border-red-500 focus-visible:ring-red-500/30')}
-              aria-invalid={showStartEndError}
-            />
-          </div>
-        </div>
-      )}
-      {durationPreview != null && durationPreview > 0 ? (
-        <p className="text-sm text-gray-600">Duration: {formatDurationLabel(durationPreview)}</p>
-      ) : section.startTime && section.endTime ? (
-        <p className="text-sm text-red-600">
-          {durationPreview === 0
-            ? 'Duration must be greater than 0.'
-            : 'End Time must be on or after Start Time.'}
-        </p>
-      ) : showStartEndError ? (
-        <p className="text-xs text-red-600">Start Time and End Time are required.</p>
-      ) : null}
-
-      {/* Same Work Done control as Mark Completed (DailyPlannerDayTasksModal). */}
-      <BulletPointEditor
-        key={`${section.id}-work-done`}
-        ref={onWorkDoneRef}
-        id={`work-done-${section.id}`}
-        label="Work Done"
-        required
-      />
-      {showWorkDoneError ? (
-        <p className="text-xs text-red-600">Work done is required.</p>
-      ) : null}
+      <div className="space-y-1">
+        <StepProcedureEditor
+          id={`extra-work-done-${section.id}`}
+          label="Work Done"
+          required
+          durationMode="actual"
+          lockStepCount
+          descriptionPlaceholder="Enter work done…"
+          steps={section.extraWorkDoneSteps}
+          onChange={(extraWorkDoneSteps) => onChange({ extraWorkDoneSteps })}
+          error={showWorkDoneError}
+        />
+        {workDoneError ? <p className="text-xs text-red-600">{workDoneError}</p> : null}
+      </div>
     </div>
   );
 }
@@ -717,12 +697,28 @@ interface DailyPlannerCreateTaskModalProps {
    * saved as Completed + self-approved (no min-hours / plan-summary).
    */
   isExtraTask?: boolean;
+  /** When set, form opens in Edit Mode for this existing task (Create Task UI). */
+  editingTask?: DailyPlannerTask | null;
   /** Existing tasks already planned for `date` (same set the calendar uses for that day). */
   existingTasksForDate?: DailyPlannerTask[];
   /** Approved leave kind for `date` (full/half/none) — drives minimum hours. */
   leaveKind?: 'none' | 'full' | 'half';
   onClose: () => void;
   onSave: (drafts: DailyPlannerTaskDraft[]) => Promise<DailyPlannerTask[] | void>;
+  /** Edit Mode save — updates the existing task identity. */
+  onUpdate?: (
+    taskId: string,
+    patch: {
+      taskName: string;
+      description: string;
+      priority: DailyPlannerPriority;
+      hoursRequired: number;
+      procedureSteps: DailyPlannerProcedureStep[];
+      isProjectBased?: boolean;
+      projectName?: string;
+      projectTaskId?: string;
+    },
+  ) => Promise<DailyPlannerTask | void>;
 }
 
 function createEmptySectionForMode(factoryMode: boolean): TaskSectionState {
@@ -742,11 +738,14 @@ export default function DailyPlannerCreateTaskModal({
   enhancedEligible = false,
   factoryEligible,
   isExtraTask = false,
+  editingTask = null,
   existingTasksForDate = [],
   leaveKind = 'none',
   onClose,
   onSave,
+  onUpdate,
 }: DailyPlannerCreateTaskModalProps) {
+  const isEditMode = Boolean(editingTask?.plannerTaskId);
   const factoryMode = useMemo(() => {
     if (typeof factoryEligible === 'boolean') return factoryEligible;
     if (typeof planningConfig?.factoryEligible === 'boolean') return planningConfig.factoryEligible;
@@ -764,7 +763,6 @@ export default function DailyPlannerCreateTaskModal({
   const [hoursAlert, setHoursAlert] = useState<string | null>(null);
   const [summaryDrafts, setSummaryDrafts] = useState<DailyPlannerTaskDraft[] | null>(null);
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
-  const workDoneRefs = useRef<Record<string, BulletPointEditorHandle | null>>({});
   const formScrollRef = useRef<HTMLDivElement | null>(null);
   /** Scroll target after + New Task (or nav click) — applied after the section is in the DOM. */
   const pendingScrollSectionIdRef = useRef<string | null>(null);
@@ -801,14 +799,51 @@ export default function DailyPlannerCreateTaskModal({
       submitLockRef.current = false;
       clientBatchIdRef.current = '';
       observationCacheRef.current = new Map();
-      const initial = createEmptySectionForMode(factoryMode);
-      setSections([initial]);
-      setActiveSectionId(initial.id);
       setErrors({});
       setManualOutsideWindowMode(false);
       setHoursAlert(null);
       setSummaryDrafts(null);
-      workDoneRefs.current = {};
+
+      if (editingTask?.plannerTaskId) {
+        const resolved = resolveProcedureSteps(editingTask);
+        const drafts: ProcedureStepDraft[] =
+          resolved.length > 0
+            ? resolved.map((s) => {
+                const parts = partsFromPlannedMinutes(Number(s.plannedMinutes) || 0);
+                return newProcedureStepDraft({
+                  stepId: s.stepId,
+                  description: s.description,
+                  hours: parts.hours,
+                  minutes: parts.minutes,
+                });
+              })
+            : [newProcedureStepDraft()];
+        const projectName = String(editingTask.projectName || '').trim();
+        const hydrated: TaskSectionState = {
+          ...createEmptySectionForMode(factoryMode),
+          taskName: String(editingTask.taskName || '').trim(),
+          procedureSteps: drafts,
+          extraWorkDoneSteps: syncExtraWorkDoneSteps(drafts, []),
+          priority: (editingTask.currentPriority ||
+            editingTask.priority ||
+            'Medium') as DailyPlannerPriority,
+          hoursRequired: stepsTotalHours(drafts),
+          isProjectBased: factoryMode || Boolean(projectName) ? 'Yes' : 'No',
+          projectName,
+          projectTaskId: String(editingTask.projectTaskId || '').trim(),
+          managerInstructions: String(editingTask.managerInstructions || '').trim(),
+          needsDocument: editingTask.needsDocument ? 'Yes' : 'No',
+          progressDone:
+            typeof editingTask.progressDone === 'number' ? editingTask.progressDone : null,
+        };
+        setSections([hydrated]);
+        setActiveSectionId(hydrated.id);
+      } else {
+        const initial = createEmptySectionForMode(factoryMode);
+        setSections([initial]);
+        setActiveSectionId(initial.id);
+      }
+
       void fetchProjectFormOptions()
         .then((opts) => {
           setManagedProjects(opts.projects || []);
@@ -827,32 +862,40 @@ export default function DailyPlannerCreateTaskModal({
           setManagedProjects([]);
         });
     }
-  }, [open, date, elevated, isExtraTask, factoryMode]);
+  }, [open, date, elevated, isExtraTask, factoryMode, editingTask]);
 
   const existingPlannedHours = useMemo(
     () => sumPlannedHoursForDate(existingTasksForDate, date),
     [existingTasksForDate, date],
   );
 
+  /**
+   * Sum planned duration from step minutes (integer) across all draft tasks, then convert
+   * once — avoids per-task decimal rounding drift in Total Planned Hours.
+   */
   const liveFormHours = useMemo(() => {
-    return sections.reduce((sum, section) => {
+    const totalMinutes = sections.reduce((sum, section) => {
+      if (Array.isArray(section.procedureSteps) && section.procedureSteps.length > 0) {
+        return sum + sumDraftPlannedMinutes(section.procedureSteps);
+      }
       const h = Number(section.hoursRequired);
-      return sum + (Number.isFinite(h) && h > 0 ? h : 0);
+      if (Number.isFinite(h) && h > 0) return sum + Math.round(h * 60);
+      return sum;
     }, 0);
+    if (totalMinutes <= 0) return 0;
+    return partsToDecimalHours(Math.floor(totalMinutes / 60), totalMinutes % 60);
   }, [sections]);
 
   const liveTotalHours = Math.round((existingPlannedHours + liveFormHours) * 100) / 100;
 
-  /** Extra Task: Planned Hours from Start → End (same duration helper as Mark Completed). */
-  const extraPlannedHours = useMemo(() => {
+  /** Extra Task: Actual Hours from per-step Work Done durations (planned stays 0). */
+  const extraActualHours = useMemo(() => {
     if (!isExtraTask) return null;
     const section = sections[0];
     if (!section) return null;
-    const stepsHours = stepsTotalHours(section.procedureSteps);
-    if (stepsHours != null) return Math.round(stepsHours * 100) / 100;
-    const duration = calcDurationFromTimes(section.startTime, section.endTime);
-    if (duration == null || duration <= 0) return null;
-    return Math.round(duration * 100) / 100;
+    const totalMinutes = sumDraftPlannedMinutes(section.extraWorkDoneSteps || []);
+    if (totalMinutes <= 0) return null;
+    return partsToDecimalHours(Math.floor(totalMinutes / 60), totalMinutes % 60);
   }, [isExtraTask, sections]);
 
   const handleClose = () => {
@@ -864,8 +907,17 @@ export default function DailyPlannerCreateTaskModal({
       prev.map((s) => {
         if (s.id !== id) return s;
         const next = { ...s, ...patch };
-        // Hours Required always follows the step sum (never independently editable).
-        if (patch.procedureSteps) next.hoursRequired = stepsTotalHours(patch.procedureSteps);
+        // Regular Create: Hours Required follows the step sum.
+        // Extra Task: planned hours stay 0; actuals live on extraWorkDoneSteps.
+        if (patch.procedureSteps && !isExtraTask) {
+          next.hoursRequired = stepsTotalHours(patch.procedureSteps);
+        }
+        if (isExtraTask && patch.procedureSteps && !patch.extraWorkDoneSteps) {
+          next.extraWorkDoneSteps = syncExtraWorkDoneSteps(
+            patch.procedureSteps,
+            s.extraWorkDoneSteps || [],
+          );
+        }
         return next;
       }),
     );
@@ -979,41 +1031,64 @@ export default function DailyPlannerCreateTaskModal({
             projectName: true,
           };
         }
-        const duration = calcDurationFromTimes(section.startTime, section.endTime);
-        if (
-          !section.startTime.trim() ||
-          !section.endTime.trim() ||
-          duration == null ||
-          duration <= 0
-        ) {
+        const descriptionSteps = section.procedureSteps.filter(
+          (d) => String(d.description || '').trim().length > 0,
+        );
+        if (descriptionSteps.length === 0) {
           validationErrors[section.id] = {
             ...(validationErrors[section.id] || {}),
-            startEnd: true,
+            procedureSteps: 'Add at least one step with a description',
           };
         }
-        const workDoneEditor = workDoneRefs.current[section.id];
-        const workDone = workDoneEditor?.getFormattedValue() ?? '';
-        if (!workDoneEditor?.hasContent()) {
+        const workById = new Map(
+          (section.extraWorkDoneSteps || []).map((w) => [w.stepId, w]),
+        );
+        let workDoneInvalid = false;
+        for (const d of descriptionSteps) {
+          const work = workById.get(d.stepId);
+          const workText = String(work?.description || '').trim();
+          const actualMins = work ? draftToPlannedMinutes(work) : 0;
+          if (!workText || actualMins <= 0) {
+            workDoneInvalid = true;
+            break;
+          }
+        }
+        if (workDoneInvalid) {
           validationErrors[section.id] = {
             ...(validationErrors[section.id] || {}),
-            workDone: true,
+            workDone: 'Each step needs Work Done text and actual time greater than 0',
           };
         }
         if (validationErrors[section.id]) {
           continue;
         }
 
+        // Extra Task: procedure descriptions + per-step Work Done / actualMinutes.
+        // plannedMinutes stay 0; hoursRequired stays 0.
+        const procedureSteps: DailyPlannerProcedureStep[] = descriptionSteps.map((d) => {
+          const work = workById.get(d.stepId);
+          const workText = String(work?.description || '').trim();
+          const actualMins = work ? draftToPlannedMinutes(work) : 0;
+          return {
+            stepId: d.stepId || crypto.randomUUID(),
+            description: String(d.description || '').trim(),
+            plannedMinutes: 0,
+            actualMinutes: actualMins,
+            workDone: workText,
+            status: 'completed' as const,
+            completed: true,
+          };
+        });
+        const workDone = workDoneFromProcedureSteps(procedureSteps);
         const category =
           section.priority === 'Urgent' ? PLANNING_CATEGORY_URGENT : PLANNING_CATEGORY_REGULAR;
         const projectBased = factoryMode || section.isProjectBased === 'Yes';
-        // Extra Task: no Step By Step Procedure / Hours Required — hours from Start→End.
-        // Omit procedureSteps so the backend uses durationHoursFromStartEnd.
         drafts.push({
           date,
           taskName: section.taskName.trim(),
-          description: '',
+          description: descriptionFromProcedureSteps(procedureSteps),
           priority: section.priority,
-          hoursRequired: duration as number,
+          hoursRequired: 0,
           planningCategory: category,
           urgentReason: '',
           isProjectBased: projectBased,
@@ -1025,8 +1100,7 @@ export default function DailyPlannerCreateTaskModal({
           managerInstructions: '',
           employeeCode: forEmployeeCode || undefined,
           isExtraTask: true,
-          startTime: section.startTime.trim(),
-          endTime: section.endTime.trim(),
+          procedureSteps,
           workDone,
         });
         continue;
@@ -1140,6 +1214,42 @@ export default function DailyPlannerCreateTaskModal({
   };
 
   const saveTasks = async () => {
+    if (isEditMode && editingTask?.plannerTaskId && onUpdate) {
+      const { drafts, validationErrors } = collectDrafts();
+      if (Object.keys(validationErrors).length > 0) {
+        setErrors(validationErrors);
+        toast.error('Please fix the highlighted fields before saving');
+        return;
+      }
+      const draft = drafts[0];
+      if (!draft) {
+        toast.error('Task name and steps are required');
+        return;
+      }
+      if (submitLockRef.current) return;
+      submitLockRef.current = true;
+      setSaving(true);
+      try {
+        await onUpdate(editingTask.plannerTaskId, {
+          taskName: draft.taskName,
+          description: draft.description || '',
+          priority: draft.priority,
+          hoursRequired: Number(draft.hoursRequired) || 0,
+          procedureSteps: draft.procedureSteps || [],
+          isProjectBased: Boolean(draft.isProjectBased),
+          projectName: draft.projectName || '',
+          projectTaskId: draft.projectTaskId || '',
+        });
+        handleClose();
+      } catch (err) {
+        submitLockRef.current = false;
+        toast.error(err instanceof Error ? err.message : 'Update failed');
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     if (!skipPlanningWindowAssert && !planningConfig) {
       toast.error('Planning window information is loading. Please try again.');
       return;
@@ -1162,9 +1272,24 @@ export default function DailyPlannerCreateTaskModal({
       return;
     }
 
-    const draftHours = Math.round(
-      drafts.reduce((sum, d) => sum + (Number(d.hoursRequired) || 0), 0) * 100,
-    ) / 100;
+    // Match liveTotalHours: sum minutes across drafts then convert once.
+    const draftMinutes = drafts.reduce((sum, d) => {
+      if (Array.isArray(d.procedureSteps) && d.procedureSteps.length > 0) {
+        return (
+          sum +
+          d.procedureSteps.reduce(
+            (s, step) => s + (Number(step.plannedMinutes) > 0 ? Number(step.plannedMinutes) : 0),
+            0,
+          )
+        );
+      }
+      const h = Number(d.hoursRequired);
+      return sum + (Number.isFinite(h) && h > 0 ? Math.round(h * 60) : 0);
+    }, 0);
+    const draftHours =
+      draftMinutes > 0
+        ? partsToDecimalHours(Math.floor(draftMinutes / 60), draftMinutes % 60)
+        : 0;
     const total = Math.round((existingPlannedHours + draftHours) * 100) / 100;
 
     if (requireMinHours && total < minPlannedHours) {
@@ -1218,7 +1343,9 @@ export default function DailyPlannerCreateTaskModal({
   };
 
   const multipleSections = sections.length > 1;
-  const showTaskNavigator = factoryMode && !isExtraTask && !planningClosed && sections.length > 0;
+  const showTaskNavigator =
+    factoryMode && !isExtraTask && !isEditMode && !planningClosed && sections.length > 0;
+  const formPlanningClosed = isEditMode ? false : planningClosed;
 
   const navigatorLabel = (section: TaskSectionState, index: number) => {
     const project = section.projectName.trim();
@@ -1250,13 +1377,11 @@ export default function DailyPlannerCreateTaskModal({
         'rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-[#212529] shrink-0 text-right',
       )}
     >
-      Planned Hours:{' '}
-      {extraPlannedHours != null ? formatDurationLabel(extraPlannedHours) : '—'}
-      {existingPlannedHours > 0 ? (
-        <span className="mt-0.5 block text-xs font-normal text-gray-500">
-          Existing: {formatDurationLabel(existingPlannedHours)}
-        </span>
-      ) : null}
+      Planned Hours: {formatDurationLabel(0)}
+      <span className="mt-0.5 block text-xs font-normal text-gray-500">
+        Actual:{' '}
+        {extraActualHours != null ? formatDurationLabel(extraActualHours) : '—'}
+      </span>
     </div>
   );
 
@@ -1283,9 +1408,9 @@ export default function DailyPlannerCreateTaskModal({
           */}
           <div className="flex w-full shrink-0 flex-nowrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-3 pr-12">
             <DialogTitle className="shrink-0 text-left text-lg font-semibold leading-none">
-              {isExtraTask ? 'Extra Task' : 'Create Task'}
+              {isEditMode ? 'Edit Task' : isExtraTask ? 'Extra Task' : 'Create Task'}
             </DialogTitle>
-            {!isExtraTask ? (
+            {!isExtraTask || isEditMode ? (
               <div className="flex shrink-0 items-center gap-2">
                 <Label htmlFor="create-task-date" className="shrink-0 text-sm font-medium">
                   Date
@@ -1385,7 +1510,7 @@ export default function DailyPlannerCreateTaskModal({
                 className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto scroll-smooth overscroll-contain px-6 py-4"
               >
                 <div className="space-y-4">
-                  {planningClosed ? (
+                  {formPlanningClosed ? (
                     <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 whitespace-pre-wrap">
                       {closedMessage}
                       {elevated ? (
@@ -1403,7 +1528,7 @@ export default function DailyPlannerCreateTaskModal({
                     </div>
                   ) : null}
 
-                  {!planningClosed && isExtraTask
+                  {!formPlanningClosed && isExtraTask && !isEditMode
                     ? sections.slice(0, 1).map((section) => (
                         <ExtraTaskSectionFields
                           key={section.id}
@@ -1415,23 +1540,25 @@ export default function DailyPlannerCreateTaskModal({
                           observationCacheRef={observationCacheRef}
                           showTaskNameError={Boolean(errors[section.id]?.taskName)}
                           showProjectNameError={Boolean(errors[section.id]?.projectName)}
-                          showStartEndError={Boolean(errors[section.id]?.startEnd)}
                           showWorkDoneError={Boolean(errors[section.id]?.workDone)}
+                          procedureError={errors[section.id]?.procedureSteps}
+                          workDoneError={
+                            typeof errors[section.id]?.workDone === 'string'
+                              ? String(errors[section.id]?.workDone)
+                              : undefined
+                          }
                           onChange={(patch) => updateSection(section.id, patch)}
-                          onWorkDoneRef={(handle) => {
-                            workDoneRefs.current[section.id] = handle;
-                          }}
                         />
                       ))
                     : null}
 
-                  {!planningClosed && !isExtraTask
+                  {!formPlanningClosed && (!isExtraTask || isEditMode)
                     ? sections.map((section, index) => (
                         <TaskSectionRow
                           key={section.id}
                           index={index}
                           section={section}
-                          canRemove={sections.length > 1}
+                          canRemove={!isEditMode && sections.length > 1}
                           elevated={elevated}
                           enhancedEligible={enhancedEligible}
                           factoryMode={factoryMode}
@@ -1452,7 +1579,7 @@ export default function DailyPlannerCreateTaskModal({
             </div>
 
             <div className="shrink-0 space-y-3 border-t border-gray-200 bg-white px-6 py-4">
-              {!planningClosed && !isExtraTask ? (
+              {!formPlanningClosed && !isExtraTask && !isEditMode ? (
                 <Button
                   type="button"
                   variant="outline"
@@ -1468,8 +1595,8 @@ export default function DailyPlannerCreateTaskModal({
                 <p className="text-sm text-red-600 whitespace-pre-wrap">{hoursAlert}</p>
               ) : null}
               <div className="flex flex-wrap items-center justify-end gap-2">
-                {!planningClosed && !isExtraTask ? totalHoursIndicator : null}
-                {!planningClosed && isExtraTask ? extraHoursIndicator : null}
+                {!formPlanningClosed && !isExtraTask && !isEditMode ? totalHoursIndicator : null}
+                {!formPlanningClosed && isExtraTask && !isEditMode ? extraHoursIndicator : null}
                 <Button
                   type="button"
                   variant="outline"
@@ -1478,8 +1605,14 @@ export default function DailyPlannerCreateTaskModal({
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={saving || planningClosed}>
-                  {saving ? 'Saving…' : !isExtraTask && multipleSections ? 'Save Tasks' : 'Save Task'}
+                <Button type="submit" disabled={saving || formPlanningClosed}>
+                  {saving
+                    ? 'Saving…'
+                    : isEditMode
+                      ? 'Save Changes'
+                      : !isExtraTask && multipleSections
+                        ? 'Save Tasks'
+                        : 'Save Task'}
                 </Button>
               </div>
             </div>

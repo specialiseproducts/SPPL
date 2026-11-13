@@ -1,4 +1,5 @@
 import type { ExpenseRecord } from '../types/expenses';
+import { showCompanyGstInField } from '../constants/expenseSubCategories';
 
 export type ExpenseEditFieldOption = {
   key: string;
@@ -16,7 +17,9 @@ const FIELD_LABELS: Record<string, string> = {
   outStation: 'OutStation (more than 100km)',
   date: 'Date',
   amount: 'Amount',
-  location: 'Location',
+  location: 'City',
+  companyGstIn: 'Did you give Company GSTIN?',
+  currency: 'Currency',
   purpose: 'Purpose',
   serviceProvider: 'Service Provider Name',
   billNumber: 'Bill Number',
@@ -57,20 +60,35 @@ function isOutstationRecord(record: ExpenseRecord): boolean {
 }
 
 function isTravelCarOrBikeRecord(record: ExpenseRecord): boolean {
+  const head = String(record.expenseHead || '').trim();
   const sub = String(record.subCategory || '').trim();
-  return record.expenseHead === 'Travel' && (sub === 'Car' || sub === 'Bike');
+  return (head === 'Travel' || head === 'Transport') && (sub === 'Car' || sub === 'Bike');
 }
 
 function isTravelTicketTransportRecord(record: ExpenseRecord): boolean {
+  const head = String(record.expenseHead || '').trim();
   const sub = String(record.subCategory || '').trim();
-  return (
-    record.expenseHead === 'Travel' &&
-    (sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train')
-  );
+  if (head === 'Travel') {
+    return sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train';
+  }
+  if (head === 'Transport') {
+    return (
+      sub === 'Flight' ||
+      sub === 'Bus Ticket' ||
+      sub === 'Taxi' ||
+      sub === 'Train Ticket'
+    );
+  }
+  return false;
 }
 
 function isHotelSelfRecord(record: ExpenseRecord): boolean {
-  return record.expenseHead === 'Hotel_Booking' && String(record.subCategory || '').trim() === 'Self';
+  const head = String(record.expenseHead || '').trim();
+  const sub = String(record.subCategory || '').trim();
+  return (
+    (head === 'Hotel_Booking' && sub === 'Self') ||
+    (head === 'Hotel Booking' && sub === 'Self Booking')
+  );
 }
 
 export function getExpenseFieldLabel(keyOrLabel: string): string {
@@ -181,16 +199,16 @@ export function getExpenseDisplayFields(record: ExpenseRecord): ExpenseDisplayFi
     add('Sub Category', record.subCategory);
     add('Date', record.date);
     add('Amount', record.amount);
-    add('Location', record.location);
+    add('City', record.location);
     add('Purpose', record.purpose);
   } else {
     add('Sub Category', record.subCategory);
     add('PNR No.', record.pnrNo, isTravelTicketTransportRecord(record));
     add('Date', record.date, true);
     add('Amount', record.amount, true);
-    if (!isTravelTicketTransportRecord(record)) {
-      add('Location', record.location, true);
-    }
+    add('Currency', record.currency);
+    add('Did you give Company GSTIN?', record.companyGstIn);
+    add('City', record.location, true);
     add('Purpose', record.purpose, true);
     add('From', record.fromLocation, isTravelTicketTransportRecord(record) || isTravelCarOrBikeRecord(record));
     add('To', record.toLocation, isTravelTicketTransportRecord(record) || isTravelCarOrBikeRecord(record));
@@ -276,9 +294,7 @@ export function getApplicableExpenseFormFieldKeys(record: ExpenseFormShape): str
   }
   push('date');
   push('amount');
-  if (!isTravelTicketTransportRecord(asRecord)) {
-    push('location');
-  }
+  push('location');
   push('purpose');
   if (isTravelTicketTransportRecord(asRecord) || isTravelCarOrBikeRecord(asRecord)) {
     push('fromLocation');
@@ -291,9 +307,13 @@ export function getApplicableExpenseFormFieldKeys(record: ExpenseFormShape): str
   } else {
     push('serviceProvider');
     push('billNumber');
+    if (showCompanyGstInField(head, sub)) {
+      push('companyGstIn');
+    }
     push('supportingDocument');
     push('documentFileName');
   }
+  push('currency');
   if (isHotelSelfRecord(asRecord)) {
     push('stayDateFrom');
     push('stayDateTo');

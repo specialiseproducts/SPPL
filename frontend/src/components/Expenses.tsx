@@ -29,7 +29,7 @@ function ExpensesIntro({ moduleRole }: { moduleRole: UserRole }) {
 
   return (
     <div>
-      <h1 className="text-[#212529] mb-2">Expenses</h1>
+      <h1 className="text-[#212529] mb-2">Monthly Expenses</h1>
       {blurb ? <p className="text-gray-600">{blurb}</p> : null}
     </div>
   );

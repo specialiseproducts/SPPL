@@ -33,7 +33,33 @@ export function ExpenseDetailsViewFields({ expense }: { expense: ExpenseRecord }
       <ExpenseReadField label="Employee Name" value={expense.employeeName} />
       <ExpenseReadField label="Date" value={expense.date} />
       <ExpenseReadField label="Bill Number" value={expense.billNumber} />
-      <ExpenseReadField label="Amount" value={expense.amount} />
+      {expense.companyGstIn === 'Yes' || expense.companyGstIn === 'No' ? (
+        <ExpenseReadField label="Did you give Company GSTIN?" value={expense.companyGstIn} />
+      ) : null}
+      <ExpenseReadField
+        label={
+          expense.currency === 'USD'
+            ? 'Amount (USD $)'
+            : expense.currency === 'GBP'
+              ? 'Amount (GBP £)'
+              : expense.currency === 'EUR'
+                ? 'Amount (EUR €)'
+                : 'Amount'
+        }
+        value={
+          Number.isFinite(Number(expense.amount))
+            ? Number(expense.amount).toLocaleString('en-IN', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })
+            : expense.amount
+        }
+      />
+      {expense.currency === 'USD' ||
+      expense.currency === 'GBP' ||
+      expense.currency === 'EUR' ? (
+        <ExpenseReadField label="Currency" value={expense.currency} />
+      ) : null}
       <ExpenseReadField label="Supporting Doc." value={expense.supportingDocument} />
       <ExpenseReadField label="Month-Year" value={expense.monthYear} />
     </>

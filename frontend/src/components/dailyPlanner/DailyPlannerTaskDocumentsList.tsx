@@ -13,20 +13,20 @@ function buildRows(task: DailyPlannerTask): DocRow[] {
   const rows: DocRow[] = [
     {
       type: 'employee',
-      label: 'Employee Document',
-      title: 'View Employee Document',
+      label: 'Uploaded by Employee',
+      title: 'View employee document',
       hasDocument: Boolean(String(task.documentFileKey || '').trim()),
     },
     {
       type: 'managerReview',
-      label: 'Manager Review Document',
-      title: 'View Manager Review Document',
+      label: 'Uploaded by Reporting Person',
+      title: 'View reporting person document',
       hasDocument: Boolean(String(task.managerReviewDocumentFileKey || '').trim()),
     },
     {
       type: 'managerApproval',
-      label: 'Manager Approval Document',
-      title: 'View Manager Approval Document',
+      label: 'Uploaded by Admin',
+      title: 'View admin document',
       hasDocument: Boolean(String(task.managerApprovalDocumentFileKey || '').trim()),
     },
   ];
@@ -36,26 +36,39 @@ function buildRows(task: DailyPlannerTask): DocRow[] {
 interface DailyPlannerTaskDocumentsListProps {
   task: DailyPlannerTask;
   className?: string;
+  /** Compact task-level column (Task Review Steps table) — no section heading. */
+  compact?: boolean;
 }
 
 /** Compact labeled document rows (no filenames) for view / review UIs. */
 export default function DailyPlannerTaskDocumentsList({
   task,
   className,
+  compact = false,
 }: DailyPlannerTaskDocumentsListProps) {
   const rows = buildRows(task);
-  if (rows.length === 0) return null;
+
+  if (rows.length === 0) {
+    if (!compact) return null;
+    return <p className={className || 'text-sm text-gray-500'}>—</p>;
+  }
 
   return (
     <div className={className || 'space-y-2'}>
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Documents</p>
+      {compact ? null : (
+        <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Documents</p>
+      )}
       <div className="space-y-1.5">
         {rows.map((row) => (
           <div
             key={row.type}
-            className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-white px-3 py-2"
+            className={
+              compact
+                ? 'flex flex-col gap-1 rounded-md border border-gray-200 bg-white px-2 py-1.5'
+                : 'flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-white px-3 py-2'
+            }
           >
-            <span className="text-sm text-[#212529]">{row.label}</span>
+            <span className="text-xs text-[#212529] leading-snug">{row.label}</span>
             <DailyPlannerTaskDocumentEye
               taskId={task.plannerTaskId}
               hasDocument

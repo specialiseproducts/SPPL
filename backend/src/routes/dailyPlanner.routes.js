@@ -50,6 +50,10 @@ router.post('/tasks/batch-complete', DailyPlannerController.batchCompleteTasks);
 router.post('/tasks/for-employee', DailyPlannerController.createTaskForEmployee);
 router.post('/tasks/day/submit-completion', DailyPlannerController.submitDayCompletion);
 router.post('/tasks/day/submit-completion-review', DailyPlannerController.submitDayCompletionReview);
+router.post(
+  '/leave/half-day-task-selection',
+  DailyPlannerController.applyHalfDayLeaveTaskSelection,
+);
 router.post('/tasks', DailyPlannerController.createTask);
 router.put('/tasks/:id', DailyPlannerController.updateTask);
 router.put('/tasks/:id/for-employee', DailyPlannerController.updateTaskForEmployee);

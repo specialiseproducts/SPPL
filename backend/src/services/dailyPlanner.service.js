@@ -33,6 +33,7 @@ import {
   classifyApprovedLeaveForDate,
   getNextEligiblePlannerWorkingDayAfter,
   isFullDayLeaveType,
+  isHalfDayLeaveType,
   isOpenPlannerTaskForLeaveReschedule,
 } from '../utils/dailyPlannerLeaveRules.js';
 import { sendEmail } from './emailService.js';
@@ -59,6 +60,7 @@ import {
   descriptionFromSteps,
   evaluateStepTimings,
   mergeStepsForCompletion,
+  normalizeProcedureSteps,
   progressFromProcedureSteps,
   stepTimeBounds,
   sumActualMinutes,
@@ -143,6 +145,54 @@ function assertTaskNotAlreadyRescheduled(task) {
   if (String(task?.status || '').trim() === 'Rescheduled') {
     const err = new Error(
       'This task has been rescheduled and cannot be marked complete or incomplete',
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+/** Employee has already reported via Mark Completed / Mark Not Completed / Reschedule. */
+function hasEmployeeCompletionOutcomeStatus(task) {
+  const status = String(task?.status || '').trim();
+  return (
+    status === 'Awaiting Verification' ||
+    status === 'Completed' ||
+    status === 'Terminated' ||
+    status === 'Rescheduled' ||
+    status === 'Verified Complete' ||
+    status === 'Not Completed'
+  );
+}
+
+function isTaskPlanApprovedStatus(task) {
+  const status = String(task?.status || '').trim();
+  if (status === 'Approved') return true;
+  if (String(task?.approvalStatus || '').trim().toUpperCase() === 'APPROVED') return true;
+  if (task?.approved === true) return true;
+  return false;
+}
+
+/** Employee edit: only unapproved + unreported planned tasks. */
+function assertEmployeeCanEditManualTask(existing) {
+  assertTaskNotPermanentlyClosed(existing);
+  if (hasEmployeeCompletionOutcomeStatus(existing)) {
+    const err = new Error('This task has already been reported and cannot be edited');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (isTaskPlanApprovedStatus(existing) || existing.planFinalizedAt) {
+    const err = new Error('Approved tasks cannot be edited');
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+/** Employee delete / whole-task reschedule: allowed until reported. */
+function assertEmployeeCanDeleteOrRescheduleManualTask(existing) {
+  assertTaskNotPermanentlyClosed(existing);
+  if (hasEmployeeCompletionOutcomeStatus(existing)) {
+    const err = new Error(
+      'This task has already been reported and cannot be deleted or rescheduled',
     );
     err.statusCode = 400;
     throw err;
@@ -939,30 +989,26 @@ export const listDayTasks = async (authUser, dateParam) => {
 };
 
 export const createManualTask = async (rawBody, authUser, effectiveRole, options = {}) => {
-  const { body, procedure } = applyProcedurePayload(rawBody);
-  const procedureSteps = procedure?.procedureSteps ?? [];
-  const code = employeeCodeOf(authUser);
-  const date = String(body.date || '').trim();
-  const taskName = String(body.taskName || '').trim();
-  if (!code || !date || !taskName) {
-    const err = new Error('date and taskName are required');
-    err.statusCode = 400;
-    throw err;
-  }
+  const rawEarly = rawBody || {};
+  const isExtraEarly =
+    rawEarly.isExtraTask === true ||
+    rawEarly.isExtraTask === 'true' ||
+    String(rawEarly.source || '').trim() === PLANNING_SOURCE_EXTRA;
 
-  await assertEmployeeCodeActiveOnDate(code, date);
-  const leaveKindForDate = await assertDateAllowsPlannerTaskCreate(code, date);
+  // Extra Task skips planned-step validation — steps carry actual durations only.
+  if (isExtraEarly) {
+    const code = employeeCodeOf(authUser);
+    const date = String(rawEarly.date || '').trim();
+    const taskName = String(rawEarly.taskName || '').trim();
+    if (!code || !date || !taskName) {
+      const err = new Error('date and taskName are required');
+      err.statusCode = 400;
+      throw err;
+    }
 
-  const isExtraTask =
-    body.isExtraTask === true ||
-    body.isExtraTask === 'true' ||
-    String(body.source || '').trim() === PLANNING_SOURCE_EXTRA;
+    await assertEmployeeCodeActiveOnDate(code, date);
+    const leaveKindForDate = await assertDateAllowsPlannerTaskCreate(code, date);
 
-  // Extra Task: unplanned work already performed during today's completion flow.
-  // Completed + self-approved immediately; no planning score / min-hours.
-  // Must still be inside the employee planning window (5:30 PM → 11:00 AM),
-  // except approved half-day leave allows reporting anytime that day.
-  if (isExtraTask) {
     const now = new Date();
     if (!isEmployeePlanningWindow(now) && leaveKindForDate !== 'half') {
       const err = new Error(EMPLOYEE_EVENING_PLAN_ONLY_MESSAGE);
@@ -976,25 +1022,83 @@ export const createManualTask = async (rawBody, authUser, effectiveRole, options
       throw err;
     }
 
-    const priority = normalizePriorityValue(body.priority, 'Medium');
-    const description = String(body.description || '').trim();
-    const workDone = String(body.workDone || body.reason || '').trim();
-    if (!workDone) {
-      const err = new Error('Work done is required');
-      err.statusCode = 400;
-      throw err;
+    const priority = normalizePriorityValue(rawEarly.priority, 'Medium');
+    const incomingSteps = normalizeProcedureSteps(rawEarly.procedureSteps);
+    const actualSteps = incomingSteps
+      .map((s) => {
+        const actualMins = Math.max(0, Math.round(Number(s.actualMinutes) || 0));
+        const work = String(s.workDone || s.description || '').trim();
+        if (!work || actualMins <= 0) return null;
+        return {
+          ...s,
+          description: String(s.description || work).trim(),
+          // Extra tasks do not store planned step durations.
+          plannedMinutes: 0,
+          actualMinutes: actualMins,
+          workDone: work,
+          status: 'completed',
+          completed: true,
+          startTime: null,
+          endTime: null,
+        };
+      })
+      .filter(Boolean);
+
+    let workDone = String(rawEarly.workDone || rawEarly.reason || '').trim();
+    let completionDurationHours;
+    let completionStartTime = null;
+    let completionEndTime = null;
+    let procedureSteps = [];
+    let description = String(rawEarly.description || '').trim();
+
+    if (actualSteps.length > 0) {
+      procedureSteps = actualSteps;
+      const totalActual = sumActualMinutes(actualSteps);
+      completionDurationHours = assertValidHoursRequired(decimalHoursFromMinutes(totalActual), {
+        required: true,
+      });
+      if (!workDone) workDone = workDoneFromSteps(actualSteps);
+      if (!description) description = descriptionFromSteps(actualSteps);
+    } else {
+      if (!workDone) {
+        const err = new Error('Work done is required');
+        err.statusCode = 400;
+        throw err;
+      }
+      const startTimeRaw = rawEarly.startTime ?? rawEarly.completionStartTime;
+      const endTimeRaw = rawEarly.endTime ?? rawEarly.completionEndTime;
+      completionDurationHours = assertValidHoursRequired(
+        durationHoursFromStartEnd(startTimeRaw, endTimeRaw),
+        { required: true },
+      );
+      completionStartTime = normalizeClockTime(startTimeRaw);
+      completionEndTime = normalizeClockTime(endTimeRaw);
+      // Preserve description-only Extra procedure steps (no planned / actual step durations).
+      procedureSteps = incomingSteps
+        .map((s) => {
+          const desc = String(s.description || '').trim();
+          if (!desc) return null;
+          return {
+            ...s,
+            description: desc,
+            plannedMinutes: 0,
+            actualMinutes: null,
+            workDone: '',
+            status: 'pending',
+            completed: false,
+            startTime: null,
+            endTime: null,
+          };
+        })
+        .filter(Boolean);
+      if (!description && procedureSteps.length > 0) {
+        description = descriptionFromSteps(procedureSteps);
+      }
     }
-    const startTimeRaw = body.startTime ?? body.completionStartTime;
-    const endTimeRaw = body.endTime ?? body.completionEndTime;
-    const completionDurationHours = durationHoursFromStartEnd(startTimeRaw, endTimeRaw);
-    const completionStartTime = normalizeClockTime(startTimeRaw);
-    const completionEndTime = normalizeClockTime(endTimeRaw);
-    const completedDurationHours = assertValidHoursRequired(completionDurationHours, {
-      required: true,
-    });
-    // Planned hours follow the step sum when steps are provided; otherwise Start → End duration.
-    const hoursRequired = procedure ? procedure.hoursRequired : completedDurationHours;
-    const binding = await resolveProjectBindingForOwner(code, body);
+
+    // Extra Task: planned hours stay 0; actual duration is completionDurationHours only.
+    const hoursRequired = 0;
+    const binding = await resolveProjectBindingForOwner(code, rawEarly);
     const isProjectBased = binding.isProjectBased;
     const projectTaskId = binding.projectTaskId;
     const projectName = binding.projectName
@@ -1044,13 +1148,13 @@ export const createManualTask = async (rawBody, authUser, effectiveRole, options
       finalScore: planningScore + completionScore,
       completionStartTime,
       completionEndTime,
-      completionDurationHours: completedDurationHours,
+      completionDurationHours,
       procedureSteps,
       verificationStatus: 'VERIFIED_COMPLETED',
       verifiedBy: code,
       verifiedByName: employeeNameOf(authUser),
       verifiedAt: nowIso,
-      clientBatchId: String(body.clientBatchId || '').trim() || null,
+      clientBatchId: String(rawEarly.clientBatchId || '').trim() || null,
     });
 
     auditPlannerTask(authUser, AUDIT_ACTIONS.CREATE, task, 'Extra Task Created', {
@@ -1066,6 +1170,20 @@ export const createManualTask = async (rawBody, authUser, effectiveRole, options
 
     return { task, planningAward: null };
   }
+
+  const { body, procedure } = applyProcedurePayload(rawBody);
+  const procedureSteps = procedure?.procedureSteps ?? [];
+  const code = employeeCodeOf(authUser);
+  const date = String(body.date || '').trim();
+  const taskName = String(body.taskName || '').trim();
+  if (!code || !date || !taskName) {
+    const err = new Error('date and taskName are required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  await assertEmployeeCodeActiveOnDate(code, date);
+  await assertDateAllowsPlannerTaskCreate(code, date);
 
   const elevated = canAccessAllRecords(effectiveRole);
   const now = new Date();
@@ -1778,10 +1896,11 @@ export const submitDayCompletion = async (body, authUser) => {
   }
 
   const location = await getEmployeeLocation(code);
-  const minRequired = getMinPlannedHoursForLocation(location);
+  const { kind: leaveKindForCompletion } = await resolveLeaveKindForEmployeeDate(code, date);
+  const minRequired = getMinPlannedHoursForLocation(location, leaveKindForCompletion);
   const reportedHours = sumDayReportedHoursFromStartEnd(dayTasks);
   if (reportedHours < minRequired) {
-    const err = new Error(buildMinimumHoursRequirementMessage(location));
+    const err = new Error(buildMinimumHoursRequirementMessage(location, leaveKindForCompletion));
     err.statusCode = 400;
     throw err;
   }
@@ -2168,7 +2287,10 @@ async function notifyHoursShortfallForDate(employeeCode, dateKey, employeeName =
   );
 }
 
-export const updateManualTask = async (taskId, body, authUser) => {
+export const updateManualTask = async (taskId, rawBody, authUser) => {
+  // When procedureSteps are sent, description + hoursRequired are synced from the steps
+  // so Task Review (which prefers procedureSteps) shows the latest edited values.
+  const { body, procedure } = applyProcedurePayload(rawBody || {});
   const existing = await DailyPlannerTasksModel.getTaskById(taskId);
   if (!existing) {
     const err = new Error('Task not found');
@@ -2185,14 +2307,7 @@ export const updateManualTask = async (taskId, body, authUser) => {
     err.statusCode = 400;
     throw err;
   }
-  if (existing.planFinalizedAt) {
-    const err = new Error(
-      'This daily plan has been finalized. You cannot edit tasks for this date.',
-    );
-    err.statusCode = 400;
-    throw err;
-  }
-  assertTaskNotPermanentlyClosed(existing);
+  assertEmployeeCanEditManualTask(existing);
 
   const patch = {};
   if (body.taskName !== undefined) patch.taskName = String(body.taskName || '').trim();
@@ -2213,6 +2328,9 @@ export const updateManualTask = async (taskId, body, authUser) => {
     ) {
       patch.originalHoursRequired = patch.hoursRequired;
     }
+  }
+  if (procedure) {
+    patch.procedureSteps = procedure.procedureSteps;
   }
   if (body.date !== undefined) patch.date = String(body.date || '').trim();
   if (patch.date && patch.date !== existing.date) {
@@ -2276,6 +2394,7 @@ export const updateManualTask = async (taskId, body, authUser) => {
     'isProjectBased',
     'currentPriority',
     'hoursRequired',
+    'procedureSteps',
     'date',
     'status',
   ]);
@@ -2290,7 +2409,7 @@ export const updateManualTask = async (taskId, body, authUser) => {
     },
   );
 
-  if (body.hoursRequired !== undefined) {
+  if (body.hoursRequired !== undefined || procedure) {
     const location = await getEmployeeLocation(existing.employeeCode);
     await maybeNotifyMinimumHoursShortfall(
       existing.employeeCode,
@@ -2301,6 +2420,205 @@ export const updateManualTask = async (taskId, body, authUser) => {
   }
 
   return { task };
+};
+
+/**
+ * Employee selects which tasks to keep vs reschedule after approved half-day leave.
+ * Full-day leave continues to use automatic reschedule — this path is half-day only.
+ */
+export const applyHalfDayLeaveTaskSelection = async (body, authUser) => {
+  const code = employeeCodeOf(authUser);
+  const leaveRequestId = String(body?.leaveRequestId || '').trim();
+  const targetDate = String(body?.targetDate || '').trim().slice(0, 10);
+  const rescheduleTaskIds = [
+    ...new Set(
+      (Array.isArray(body?.rescheduleTaskIds) ? body.rescheduleTaskIds : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (!leaveRequestId) {
+    const err = new Error('leaveRequestId is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const approvedLeaves = await listApprovedLeaveForEmployee(code);
+  const leaveRequest =
+    approvedLeaves.find((r) => String(r.leaveRequestId || '').trim() === leaveRequestId) || null;
+  if (!leaveRequest || !isHalfDayLeaveType(leaveRequest.leaveType)) {
+    const err = new Error('Approved half-day leave request not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const leaveDate = String(leaveRequest.startDate || '').trim().slice(0, 10);
+  const location = await getEmployeeLocation(code);
+  const dayTasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+    code,
+    leaveDate,
+    leaveDate,
+  );
+  const openTasks = (dayTasks || []).filter((t) => isOpenPlannerTaskForLeaveReschedule(t));
+  const openById = new Map(openTasks.map((t) => [String(t.plannerTaskId || '').trim(), t]));
+
+  for (const id of rescheduleTaskIds) {
+    if (!openById.has(id)) {
+      const err = new Error('One or more selected tasks are not eligible to reschedule');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  const moved = [];
+  const kept = [];
+  const nowIso = new Date().toISOString();
+  const actorName = employeeNameOf(authUser) || code;
+
+  if (rescheduleTaskIds.length > 0) {
+    if (!targetDate) {
+      const err = new Error('Select a destination date for the tasks to reschedule');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (targetDate === leaveDate) {
+      const err = new Error('Destination date must be different from the half-day leave date');
+      err.statusCode = 400;
+      throw err;
+    }
+    await PlanningRecognitionService.validateRescheduleTargetDate(targetDate, new Date(), location);
+    await assertEmployeeCodeActiveOnDate(code, targetDate);
+    await assertDateAllowsPlannerTaskCreate(code, targetDate, approvedLeaves);
+
+    // Destination must satisfy its own minimum planned hours after the move.
+    const destTasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+      code,
+      targetDate,
+      targetDate,
+    );
+    const destHoursBefore = sumPlannedHoursForDate(
+      (destTasks || []).filter((t) => isTaskCountedTowardDailyMinimum(t)),
+      targetDate,
+    );
+    const movingHours = rescheduleTaskIds.reduce((sum, id) => {
+      const t = openById.get(id);
+      const h = Number(t?.hoursRequired);
+      return sum + (Number.isFinite(h) && h > 0 ? h : 0);
+    }, 0);
+    const { kind: destLeaveKind } = classifyApprovedLeaveForDate(approvedLeaves, targetDate);
+    const destMin = getMinPlannedHoursForLocation(location, destLeaveKind);
+    const destHoursAfter = Math.round((destHoursBefore + movingHours) * 100) / 100;
+    // If the destination already has countable planned work, the combined total must meet
+    // that date's minimum (do not leave an existing plan under-min via reschedule).
+    if (destMin > 0 && destHoursBefore > 0 && destHoursAfter < destMin) {
+      const err = new Error(
+        `Destination date must total at least ${formatDurationLabel(destMin)} after rescheduling (would be ${formatDurationLabel(destHoursAfter)}).`,
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    for (const id of rescheduleTaskIds) {
+      const existing = openById.get(id);
+      const reason = `Rescheduled due to approved half-day leave (${leaveDate})`;
+      const closed = await DailyPlannerTasksModel.updateTask(existing.plannerTaskId, {
+        status: 'Rescheduled',
+        reason,
+        rescheduledFromDate: existing.date,
+        rescheduledToDate: targetDate,
+        rescheduledBy: code,
+        rescheduledByName: actorName,
+        rescheduledAt: nowIso,
+        leaveAutoRescheduleLeaveRequestId: leaveRequestId,
+        leaveHalfDaySelectionAckLeaveRequestId: leaveRequestId,
+        completionScore: 0,
+        finalScore: 0,
+      });
+      const child = await DailyPlannerTasksModel.createTask({
+        employeeCode: existing.employeeCode,
+        employeeName: existing.employeeName,
+        date: targetDate,
+        taskName: existing.taskName,
+        description: existing.description,
+        procedureSteps: Array.isArray(existing.procedureSteps) ? existing.procedureSteps : [],
+        priority: existing.currentPriority || existing.priority,
+        originalPriority: existing.originalPriority || existing.priority,
+        currentPriority: existing.currentPriority || existing.priority,
+        priorityEdited: existing.priorityEdited,
+        hoursRequired: existing.hoursRequired,
+        originalHoursRequired: existing.originalHoursRequired ?? existing.hoursRequired,
+        hoursRequiredEdited: existing.hoursRequiredEdited,
+        taskType: existing.taskType,
+        source: PLANNING_SOURCE_RESCHEDULED,
+        salesPlannerId: existing.salesPlannerId,
+        status: existing.status === 'Needs Revision' ? 'Needs Revision' : existing.status || 'Pending',
+        approved: existing.approved,
+        approvalStatus: existing.approvalStatus,
+        approvedBy: existing.approvedBy,
+        approvedByName: existing.approvedByName,
+        approvedAt: existing.approvedAt,
+        approvedDate: existing.approvedDate,
+        managerComments: existing.managerComments,
+        managerInstructions: existing.managerInstructions,
+        planningCategory:
+          existing.planningCategory === PLANNING_CATEGORY_URGENT
+            ? PLANNING_CATEGORY_URGENT
+            : PLANNING_CATEGORY_REGULAR,
+        urgentReason: existing.urgentReason || '',
+        originalDate: existing.originalDate || existing.date,
+        rescheduledFrom: existing.date,
+        reason,
+        parentTaskId: existing.plannerTaskId,
+        planningWindowUsed: null,
+        planningTimestamp: nowIso,
+        planningScore: Number(existing.planningScore) || 0,
+        completionScore: 0,
+        finalScore: Number(existing.planningScore) || 0,
+        createdByRole: String(existing.createdByRole || '').trim(),
+        createdByEmployeeCode: String(existing.createdByEmployeeCode || '').trim(),
+        createdByName: String(existing.createdByName || '').trim(),
+        isProjectBased: Boolean(existing.isProjectBased),
+        projectName: String(existing.projectName || '').trim(),
+        projectTaskId: String(existing.projectTaskId || '').trim(),
+        leaveAutoRescheduleLeaveRequestId: leaveRequestId,
+      });
+      moved.push({ original: closed, rescheduled: child });
+    }
+  }
+
+  // Acknowledge remaining open tasks so the prompt does not reappear.
+  for (const existing of openTasks) {
+    const id = String(existing.plannerTaskId || '').trim();
+    if (rescheduleTaskIds.includes(id)) continue;
+    if (String(existing.leaveHalfDaySelectionAckLeaveRequestId || '').trim() === leaveRequestId) {
+      kept.push(existing);
+      continue;
+    }
+    const updated = await DailyPlannerTasksModel.updateTask(id, {
+      leaveHalfDaySelectionAckLeaveRequestId: leaveRequestId,
+    });
+    kept.push(updated);
+  }
+
+  await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+    employeeCode: code,
+    workingDayDateKey: leaveDate,
+  });
+  if (targetDate) {
+    await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+      employeeCode: code,
+      workingDayDateKey: targetDate,
+    });
+  }
+
+  return {
+    leaveRequestId,
+    leaveDate,
+    targetDate: targetDate || null,
+    moved,
+    kept,
+  };
 };
 
 /**
@@ -2815,7 +3133,7 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
     err.statusCode = 403;
     throw err;
   }
-  assertTaskNotPermanentlyClosed(existing);
+  assertEmployeeCanDeleteOrRescheduleManualTask(existing);
   assertTaskNotAlreadyRescheduled(existing);
 
   const now = new Date();
@@ -2877,6 +3195,16 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
       finalScore: 0,
     });
 
+    const preservedSteps = normalizeProcedureSteps(existing.procedureSteps).map((s) => ({
+      ...s,
+      startTime: null,
+      endTime: null,
+      actualMinutes: null,
+      workDone: '',
+      status: 'pending',
+      completed: false,
+      rescheduledToDate: null,
+    }));
     const rescheduledTask = await DailyPlannerTasksModel.createTask({
       employeeCode: existing.employeeCode,
       employeeName: existing.employeeName,
@@ -2914,6 +3242,8 @@ export const markTaskNotCompleted = async (taskId, body, authUser) => {
       createdByName: String(existing.createdByName || '').trim(),
       isProjectBased: Boolean(existing.isProjectBased),
       projectName: String(existing.projectName || '').trim(),
+      projectTaskId: String(existing.projectTaskId || '').trim(),
+      procedureSteps: preservedSteps,
     });
 
     if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
@@ -3194,7 +3524,12 @@ export const deleteManualTask = async (taskId, authUser) => {
     err.statusCode = 400;
     throw err;
   }
-  assertTaskNotPermanentlyClosed(existing);
+  if (String(existing.source || '').trim() === PLANNING_SOURCE_EXTRA) {
+    const err = new Error('Extra tasks cannot be deleted');
+    err.statusCode = 400;
+    throw err;
+  }
+  assertEmployeeCanDeleteOrRescheduleManualTask(existing);
   await DailyPlannerTasksModel.softDeleteTask(taskId);
   if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
     await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({

@@ -1,5 +1,7 @@
 /** Inclusive calendar-day leave helpers (YYYY-MM-DD, date-only). */
 
+import { isCompanyWorkingDay } from './companyWorkingDays';
+
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
 export type PayrollLeaveType = 'one_day' | 'multiple_day' | 'half_day';
@@ -37,6 +39,38 @@ export function inclusiveCalendarDays(startDateKey: string, endDateKey: string):
   if (!start || !end) return null;
   if (end.getTime() < start.getTime()) return null;
   return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+}
+
+/** Enumerate YYYY-MM-DD keys from start..end inclusive. */
+export function enumerateDateKeys(startDateKey: string, endDateKey: string): string[] {
+  const start = parseDateKey(startDateKey);
+  const end = parseDateKey(endDateKey);
+  if (!start || !end || end.getTime() < start.getTime()) return [];
+  const keys: string[] = [];
+  const cursor = new Date(start.getTime());
+  while (cursor.getTime() <= end.getTime()) {
+    keys.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return keys;
+}
+
+/**
+ * Count working days in an inclusive date range for the employee's location.
+ * Mirrors backend `countWorkingDaysInRange` (Sundays + location holidays excluded).
+ */
+export function countWorkingDaysInRange(
+  startDateKey: string,
+  endDateKey: string,
+  location?: string | null,
+): number | null {
+  const keys = enumerateDateKeys(startDateKey, endDateKey);
+  if (keys.length === 0) return null;
+  let count = 0;
+  for (const key of keys) {
+    if (isCompanyWorkingDay(key, location)) count += 1;
+  }
+  return count;
 }
 
 export function calendarDaysUntilStart(

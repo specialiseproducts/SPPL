@@ -219,6 +219,9 @@ export function toDailyPlannerTaskDto(row) {
     leaveAutoRescheduleLeaveRequestId: row.leaveAutoRescheduleLeaveRequestId
       ? String(row.leaveAutoRescheduleLeaveRequestId).trim()
       : null,
+    leaveHalfDaySelectionAckLeaveRequestId: row.leaveHalfDaySelectionAckLeaveRequestId
+      ? String(row.leaveHalfDaySelectionAckLeaveRequestId).trim()
+      : null,
     terminatedBy: String(row.terminatedBy || '').trim(),
     terminatedByName: String(row.terminatedByName || '').trim(),
     terminatedAt: row.terminatedAt || null,
@@ -474,6 +477,9 @@ export async function createTask(payload) {
     rescheduledAt: payload.rescheduledAt || null,
     leaveAutoRescheduleLeaveRequestId: payload.leaveAutoRescheduleLeaveRequestId
       ? String(payload.leaveAutoRescheduleLeaveRequestId).trim()
+      : null,
+    leaveHalfDaySelectionAckLeaveRequestId: payload.leaveHalfDaySelectionAckLeaveRequestId
+      ? String(payload.leaveHalfDaySelectionAckLeaveRequestId).trim()
       : null,
     terminatedBy: String(payload.terminatedBy || '').trim(),
     terminatedByName: String(payload.terminatedByName || '').trim(),

@@ -8,25 +8,30 @@ import { normalizeExpenseRow } from '../../utils/expenseRowNormalize';
 import { applyRecentAuditDecisions } from '../../utils/auditExpenseRecentDecisions';
 import type { ExpenseTravelRateSettings } from '../../components/ExpenseRateSettingsModal';
 import { parseTravelRatesApiData } from '../../utils/expenseTravelRatesFromApi';
-import { isTravelCarOrBike, isTravelTicketTransport } from '../../utils/expenseAmountCalculation';
+import { isTravelCarOrBike } from '../../utils/expenseAmountCalculation';
 import { apiFetch } from '../../services/api';
 
 export function buildExpenseFormData(expense: ExpenseRecord): FormData {
   const travelCarBike = isTravelCarOrBike(expense.expenseHead, expense.subCategory ?? '');
-  const travelTicket = isTravelTicketTransport(expense.expenseHead, expense.subCategory ?? '');
   const formData = new FormData();
   formData.append('expenseHead', expense.expenseHead);
   if (expense.subCategory) {
     formData.append('subCategory', expense.subCategory);
   }
-  formData.append('location', travelTicket ? '' : expense.location);
+  formData.append('location', expense.location ?? '');
   formData.append('purpose', expense.purpose);
   if (!travelCarBike) {
     formData.append('serviceProvider', expense.serviceProvider);
     formData.append('billNumber', expense.billNumber);
   }
+  if (expense.companyGstIn === 'Yes' || expense.companyGstIn === 'No') {
+    formData.append('companyGstIn', expense.companyGstIn);
+  }
   formData.append('date', expense.date);
   formData.append('amount', String(expense.amount));
+  if (expense.currency) {
+    formData.append('currency', expense.currency);
+  }
   formData.append('monthYear', expense.monthYear);
   if (expense.pnrNo) {
     formData.append('pnrNo', expense.pnrNo);
@@ -281,6 +286,29 @@ export async function approveExpenseAudit(expenseId: string): Promise<ExpenseRec
     throw new Error(res?.message || 'Failed to approve expense');
   }
   return normalizeExpenseRow(res.data);
+}
+
+export async function fetchExpensesForExport(options: {
+  month: string;
+  year: string;
+  employeeCode?: string;
+}): Promise<ExpenseRecord[]> {
+  const params = new URLSearchParams({
+    month: options.month,
+    year: options.year,
+  });
+  if (options.employeeCode) {
+    params.set('employeeCode', options.employeeCode);
+  }
+  const res = (await apiFetch(`/api/expenses/export/records?${params.toString()}`)) as {
+    success?: boolean;
+    data?: Record<string, unknown>[];
+    message?: string;
+  };
+  if (!res?.success || !Array.isArray(res.data)) {
+    throw new Error(res?.message || 'Failed to load expenses for export');
+  }
+  return res.data.map((row) => normalizeExpenseRow(row));
 }
 
 export async function fetchPendingPreviousExportExpenses(options: {

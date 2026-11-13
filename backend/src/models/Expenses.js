@@ -237,6 +237,44 @@ export const queryPendingExportPreviousMonths = async (employeeCode, beforeMonth
 };
 
 /**
+ * All non-deleted expenses for an employee in a given MM-YYYY.
+ * Uses employee GSI + monthYear filter; pages until LastEvaluatedKey is exhausted.
+ * No new Month-Year GSI — employee-scoped Query + Filter is sufficient and correct.
+ */
+export const queryExpensesForExportMonthYear = async (employeeCode, month, year) => {
+  const code = String(employeeCode ?? '').trim();
+  const monthYearFilter = buildAuditMonthYearFilter(month, year);
+  if (!code || !monthYearFilter || monthYearFilter.type !== 'eq') {
+    return [];
+  }
+
+  let params = applyNotDeletedFilter({
+    ...employeeExpenseQuery(code),
+  });
+  params = applyAuditMonthYearFilter(params, monthYearFilter);
+
+  let items;
+  try {
+    items = await queryAllPages(dynamoDB, params, notDeletedFilter);
+  } catch (err) {
+    if (!isGsiMissingError(err)) throw err;
+    warnGsiFallback('Expenses.queryExpensesForExportMonthYear', err);
+    const scanned = await scanExpensesFallback(code);
+    items = scanned.filter((row) => String(row?.monthYear || '').trim() === monthYearFilter.value);
+  }
+
+  return items
+    .filter((row) => String(row?.monthYear || '').trim() === monthYearFilter.value)
+    .sort((a, b) => {
+      const dateA = a?.date ? new Date(a.date).getTime() : Number.POSITIVE_INFINITY;
+      const dateB = b?.date ? new Date(b.date).getTime() : Number.POSITIVE_INFINITY;
+      const safeA = Number.isNaN(dateA) ? Number.POSITIVE_INFINITY : dateA;
+      const safeB = Number.isNaN(dateB) ? Number.POSITIVE_INFINITY : dateB;
+      return safeA - safeB;
+    });
+};
+
+/**
  * Admin / full-table list (scan — sort in memory before pagination).
  */
 export const getAllExpenses = async (filters = {}, options = {}) => {
@@ -544,6 +582,17 @@ export const createExpense = async (expenseData) => {
   if (expenseData.travelAllowanceAmount !== undefined) {
     item.travelAllowanceAmount =
       expenseData.travelAllowanceAmount === null ? null : Number(expenseData.travelAllowanceAmount);
+  }
+  if (expenseData.companyGstIn === 'Yes' || expenseData.companyGstIn === 'No') {
+    item.companyGstIn = expenseData.companyGstIn;
+  }
+  if (
+    expenseData.currency === 'USD' ||
+    expenseData.currency === 'GBP' ||
+    expenseData.currency === 'EUR' ||
+    expenseData.currency === 'INR'
+  ) {
+    item.currency = expenseData.currency;
   }
 
   await dynamoDB.put({

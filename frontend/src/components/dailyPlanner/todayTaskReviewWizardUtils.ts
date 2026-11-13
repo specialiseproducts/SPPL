@@ -86,6 +86,50 @@ export function hasEmployeeCompletionOutcome(task: DailyPlannerTask): boolean {
   );
 }
 
+/** Plan-level approval (manager approved / self-approved), independent of completion reporting. */
+export function isTaskPlanApproved(task: DailyPlannerTask): boolean {
+  const status = String(task.status || '').trim();
+  if (status === 'Approved') return true;
+  if (String(task.approvalStatus || '').trim().toUpperCase() === 'APPROVED') return true;
+  if (task.approved === true) return true;
+  return false;
+}
+
+function isEmployeeOwnedManualTask(task: DailyPlannerTask): boolean {
+  if (String(task.taskType || '').trim() === 'Sales Visit') return false;
+  if (String(task.source || '').trim() === 'SALES_FORECASTING') return false;
+  if (String(task.status || '').trim() === 'Terminated') return false;
+  if (String(task.status || '').trim() === 'Verified Complete' && task.source === 'EXTRA') {
+    return false;
+  }
+  return String(task.taskType || '').trim() === 'Manual' || !task.taskType;
+}
+
+/**
+ * Edit Task: only unapproved and not yet reported through Mark Completed / Not Completed.
+ */
+export function canShowEditTaskAction(task: DailyPlannerTask): boolean {
+  if (hasEmployeeCompletionOutcome(task)) return false;
+  if (isTaskPlanApproved(task)) return false;
+  if (String(task.status || '').trim() === 'Needs Revision' && !task.revisionOutcome) {
+    return false;
+  }
+  if (String(task.taskType || '').trim() === 'Sales Visit') return false;
+  if (String(task.source || '').trim() === 'SALES_FORECASTING') return false;
+  return isEmployeeOwnedManualTask(task);
+}
+
+/**
+ * Delete / Reschedule: visible before and after approval; hidden only after employee reporting.
+ */
+export function canShowDeleteOrRescheduleTaskAction(task: DailyPlannerTask): boolean {
+  if (hasEmployeeCompletionOutcome(task)) return false;
+  if (String(task.taskType || '').trim() === 'Sales Visit') return false;
+  if (String(task.source || '').trim() === 'SALES_FORECASTING') return false;
+  if (String(task.source || '').trim() === 'EXTRA') return false;
+  return isEmployeeOwnedManualTask(task);
+}
+
 /** Manager has reviewed this task's completion result. */
 export function isTaskCompletionReviewed(task: DailyPlannerTask): boolean {
   if (task.completionManagerReviewedAt) return true;

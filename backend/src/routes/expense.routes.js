@@ -74,6 +74,7 @@ router.get('/audit', ExpenseController.getExpensesForAudit);
 router.get('/edit-requests/pending', ExpenseController.listPendingExpenseEditRequests);
 router.post('/edit-requests/:requestId/approve', ExpenseController.approveExpenseEditRequest);
 router.post('/edit-requests/:requestId/reject', ExpenseController.rejectExpenseEditRequest);
+router.get('/export/records', ExpenseController.getExpensesForExport);
 router.get('/export/pending-previous', ExpenseController.getPendingPreviousExportExpenses);
 router.post('/export/mark-status', ExpenseController.markExpenseExportStatuses);
 router.post('/:id/approve', ExpenseController.approveExpense);

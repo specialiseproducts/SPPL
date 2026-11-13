@@ -1,30 +1,24 @@
 /**
  * Expense head → sub category options (must stay in sync with frontend).
+ * Historical heads (Travel, Hotel_Booking, Foreign_Travel, Misc., etc.) remain
+ * displayable; validation is skipped for non-canonical heads.
  */
 
 export const EXPENSE_SUBCATEGORY_MAP = {
-  Travel: [
-    'Bus',
-    'Cancellation Charges',
-    'Car',
-    'Bike',
-    'Driver Charges',
-    'Excess Baggage',
-    'Auto',
-    'Flight',
-    'Metro',
-    'Parking Charges',
-    'Railway Pass',
-    'Taxi',
-    'Train',
-    'Toll Tax',
+  'AI Subscription': ['AWS Console', 'Claude AI', 'Cursor', 'Railway'],
+  Communication: [
+    'Internet',
+    'Microsoft Exchange',
+    'Microsoft Office 365',
+    'Mobile Recharge: Annual',
+    'Mobile Recharge: Monthly',
   ],
-  Fuel: ['CNG', 'Diesel', 'EV', 'Petrol'],
-  Hotel_Booking: ['By Office', 'Self'],
   Food: [
     'Breakfast',
     'Cake',
+    'Chocolate',
     'Dinner',
+    'Fruits',
     'Ice-cream',
     'Lunch',
     'Snacks',
@@ -32,29 +26,85 @@ export const EXPENSE_SUBCATEGORY_MAP = {
     'Tea/Coffee',
     'Water',
   ],
-  Communication: ['Internet', 'Mobile'],
-  Foreign_Travel: [
-    'Advance from Office',
-    'City Tax',
-    'International Trip',
-    'Paid By Company',
+  Fuel: ['CNG', 'Diesel', 'EV', 'Petrol'],
+  'Hotel Booking': ['By Office', 'Self Booking'],
+  'International Travel': [
+    'Advance from Office in FE',
     'Return to Office',
+    'Travel Insurance',
     'Visa Fee',
-    'Chocolate',
   ],
-  'Misc.': [
+  'Office Expense': [
+    'Annual Gift',
+    'Annual Pooja : Pandit',
+    'Annual Pooja: Flowers',
+    'Annual Pooja: Fruits',
+    'Annual Pooja: Pooja Samagri',
+    'Annual Pooja: Sweets',
+    'Biscuits',
+    'Bouquet: Birthday / Visitors',
+    'Cloths: Dusting',
     'Courier',
     'EMD',
-    'Flower',
-    'Gift Item',
-    'Insurance',
+    'Gift Item for Exhibitions',
     'Labour Charges',
+    'Laptop Bag',
+    'Notary',
+    'Office Cleaning',
+    'Paper Plate & Cup',
+    'Party: Factory',
+    'Party: Office',
     'Photocopy',
-    'Refund',
+    'Photography',
+    'Printing: Catalogues',
+    'Printing: Identity Cards',
+    'Printing: Posters',
+    'Printing: Visiting Cards',
     'Speed Post',
     'Stamp Paper',
-    'Stationary',
-    'Tender Fee',
+    'Stationary: Diary',
+    'Stationary: Folder',
+    'Stationary: Paper',
+    'Stationary: Pen',
+    'Stationary: Printer Ink',
+    'Stationary: Spiral Binding',
+    'Stationary: Stapler Pin',
+    'Stationary: Tapes',
+    'Tea: Factory',
+    'Tea: Office',
+    'Toiletry Items: Factory',
+    'Toiletry Items: Office',
+    'Tools',
+    'Water',
+  ],
+  'Office Renovation': [
+    'Carpenter',
+    'Civil',
+    'Electrical',
+    'Hardware',
+    'Painter',
+    'Plumber',
+    'POP',
+  ],
+  Transport: [
+    'Agent: Ticket Booking',
+    'Auto',
+    'Bike',
+    'Bus Ticket',
+    'Cancellation Charges',
+    'Car',
+    'Driver Charges',
+    'Excess Baggage',
+    'Flight',
+    'Lounge / Waiting Room',
+    'Metro Pass / Ticket',
+    'Monthly Railway Pass',
+    'Parking Charges',
+    'Quarterly Railway Pass',
+    'Taxi',
+    'Toll Tax',
+    'Train Ticket',
+    'Tram',
   ],
 };
 
@@ -63,7 +113,8 @@ export function isCanonicalExpenseHead(head) {
 }
 
 /**
- * Enforces subCategory for canonical heads; skips legacy expense heads.
+ * Enforces subCategory for canonical heads; skips legacy expense heads
+ * (e.g. Travel outstation allowance) and historical values.
  */
 export function validateSubCategoryForHead(expenseHead, subCategory) {
   if (!isCanonicalExpenseHead(expenseHead)) {
@@ -77,4 +128,36 @@ export function validateSubCategoryForHead(expenseHead, subCategory) {
   if (!allowed.includes(value)) {
     throw new Error('subCategory does not match expense head');
   }
+}
+
+/** Exact Expense Head → Subcategory pairs that show Company GSTIN (Yes/No). */
+const COMPANY_GSTIN_SUBCATEGORIES = [
+  ['Transport', 'Agent: Ticket Booking'],
+  ['Transport', 'Driver Charges'],
+  ['Transport', 'Taxi'],
+  ['Hotel Booking', 'By Office'],
+  ['Hotel Booking', 'Self Booking'],
+  ['Communication', 'Mobile Recharge: Monthly'],
+  ['Communication', 'Mobile Recharge: Annual'],
+  ['Communication', 'Microsoft Office 365'],
+  ['Communication', 'Microsoft Exchange'],
+  ['Food', 'Dinner'],
+  ['Food', 'Lunch'],
+  ['Food', 'Breakfast'],
+  ['AI Subscription', 'Cursor'],
+  ['AI Subscription', 'AWS Console'],
+  ['AI Subscription', 'Railway'],
+  ['AI Subscription', 'Claude AI'],
+];
+
+const COMPANY_GSTIN_KEYS = new Set(
+  COMPANY_GSTIN_SUBCATEGORIES.map(([head, sub]) => `${head}\0${sub}`),
+);
+
+/** Company GSTIN Yes/No — only the approved Head/Subcategory combinations. */
+export function showCompanyGstInField(expenseHead, subCategory) {
+  const head = String(expenseHead ?? '').trim();
+  const sub = String(subCategory ?? '').trim();
+  if (!head || !sub) return false;
+  return COMPANY_GSTIN_KEYS.has(`${head}\0${sub}`);
 }

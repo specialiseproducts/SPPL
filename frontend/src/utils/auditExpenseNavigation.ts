@@ -75,11 +75,13 @@ export function navigateToAuditExpenseDetail(expenseId: string): void {
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
+/**
+ * Return to Audit Expenses tab in one click.
+ * Do not use history.back() — Next between records pushes multiple detail
+ * entries, so back would land on a prior detail instead of the audit list.
+ * Filter state is restored from sessionStorage by AuditExpensesTab.
+ */
 export function navigateBackToAuditExpenses(): void {
-  if (window.history.length > 1) {
-    window.history.back();
-    return;
-  }
   try {
     localStorage.setItem('sppl_selected_module', 'expenses');
   } catch {

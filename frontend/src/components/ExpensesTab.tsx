@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Download, Search, Edit, Trash2, Settings } from 'lucide-react';
+import { Plus, Download, Edit, Trash2, Settings, Eye } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
-import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
@@ -25,6 +24,7 @@ import { apiFetch } from '../services/api';
 import { parseTravelRatesApiData } from '../utils/expenseTravelRatesFromApi';
 import {
   fetchExpenseTravelRates,
+  fetchExpensesForExport,
   fetchPendingPreviousExportExpenses,
   markExpenseExportStatuses,
 } from '../hooks/expenses/expensesApi';
@@ -34,7 +34,6 @@ import {
   useInvalidateExpenseTravelRates,
   useInvalidateExpensesList,
 } from '../hooks/expenses/useExpensesQueries';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { isQueryColdLoading } from '../utils/queryLoading';
 import { useEmployeesListQuery } from '../hooks/employees/useEmployeesQuery';
 import { sanitizeSelectOptionsUnique } from '../utils/sanitizeSelectOptions';
@@ -52,9 +51,10 @@ import type { ExpenseRecord } from '../types/expenses';
 import { ExpenseAuditStatusBadge } from './expenses/expenseAuditStatusBadge';
 import {
   buildExpenseExportContext,
-  exportExpensesToPdf,
+  exportMonthExpensesAsSplitPdfs,
 } from '../utils/expenseExcelExport';
 import ExpenseEditRequestModal from './expenses/ExpenseEditRequestModal';
+import ExpenseMonthlyPreviewModal from './expenses/ExpenseMonthlyPreviewModal';
 
 export type { ExpenseRecord } from '../types/expenses';
 
@@ -66,8 +66,32 @@ interface ExpensesTabProps {
   currentEmployeeCode: string;
 }
 
-const months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
+const MONTH_FILTER_OPTIONS = [
+  { value: '01', label: 'January' },
+  { value: '02', label: 'February' },
+  { value: '03', label: 'March' },
+  { value: '04', label: 'April' },
+  { value: '05', label: 'May' },
+  { value: '06', label: 'June' },
+  { value: '07', label: 'July' },
+  { value: '08', label: 'August' },
+  { value: '09', label: 'September' },
+  { value: '10', label: 'October' },
+  { value: '11', label: 'November' },
+  { value: '12', label: 'December' },
+];
 const years = Array.from({ length: 11 }, (_, i) => (2020 + i).toString());
+
+function formatExpenseAmountDisplay(amount: number, currency?: string): string {
+  const formatted = Number(amount).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  if (currency === 'USD') return `$ ${formatted}`;
+  if (currency === 'GBP') return `£ ${formatted}`;
+  if (currency === 'EUR') return `€ ${formatted}`;
+  return `₹${formatted}`;
+}
 
 const DEFAULT_TRAVEL_RATES: ExpenseTravelRateSettings = {
   car: { petrolDieselRate: 0, electricRate: 0 },
@@ -168,7 +192,8 @@ export default function ExpensesTab({
   const [pendingPreviousExpenses, setPendingPreviousExpenses] = useState<ExpenseRecord[]>([]);
   const [pendingExportCurrentRows, setPendingExportCurrentRows] = useState<ExpenseRecord[]>([]);
   const [isExportSubmitting, setIsExportSubmitting] = useState(false);
-  const [searchTerm, setSearchTerm] = useState(() => peekMyExpenseViewState()?.searchTerm ?? '');
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewEmployeeCode, setPreviewEmployeeCode] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState<string>(
     () => peekMyExpenseViewState()?.selectedEmployee ?? 'all',
   );
@@ -178,8 +203,6 @@ export default function ExpensesTab({
   const [selectedYear, setSelectedYear] = useState<string>(
     () => peekMyExpenseViewState()?.selectedYear ?? 'all',
   );
-
-  const debouncedSearch = useDebouncedValue(searchTerm, 300);
 
   const privileged = !scopeSelfOnly && (isAdmin(userRole) || isDeveloper(userRole));
   const canCreateRecords = canCreate(userRole);
@@ -241,7 +264,7 @@ export default function ExpensesTab({
 
   const handleReviewCreateExpense = (expense: ExpenseRecord) => {
     saveMyExpenseViewState({
-      searchTerm,
+      searchTerm: '',
       selectedEmployee,
       selectedMonth,
       selectedYear,
@@ -255,7 +278,7 @@ export default function ExpensesTab({
 
   const handleOpenEditExpense = (expense: ExpenseRecord) => {
     saveMyExpenseViewState({
-      searchTerm,
+      searchTerm: '',
       selectedEmployee,
       selectedMonth,
       selectedYear,
@@ -315,37 +338,6 @@ export default function ExpensesTab({
         return false;
       }
 
-      if (debouncedSearch) {
-        const hay = [
-          expense.location,
-          expense.purpose,
-          expense.serviceProvider,
-          expense.billNumber,
-          expense.expenseHead,
-          expense.subCategory ?? '',
-          expense.fromLocation ?? '',
-          expense.toLocation ?? '',
-          expense.returnType ?? '',
-          expense.stayDateFrom ?? '',
-          expense.stayDateTo ?? '',
-          expense.kilometers !== undefined && expense.kilometers !== null
-            ? String(expense.kilometers)
-            : '',
-          expense.fuelType ?? '',
-          expense.supportingDocument ?? '',
-          expense.employeeName ?? '',
-          expense.monthYear ?? '',
-        ]
-          .join(' ')
-          .toLowerCase();
-        const tokens = debouncedSearch
-          .toLowerCase()
-          .trim()
-          .split(/\s+/)
-          .filter(Boolean);
-        return tokens.every((t) => hay.includes(t));
-      }
-
       return true;
     });
   }, [
@@ -355,7 +347,6 @@ export default function ExpensesTab({
     selectedEmployee,
     selectedMonth,
     selectedYear,
-    debouncedSearch,
   ]);
 
   const filteredTotalAmount = useMemo(
@@ -369,22 +360,6 @@ export default function ExpensesTab({
   );
 
   const handleExportData = async () => {
-    const rows = sortExpensesForExport(filteredExpenses);
-    if (rows.length === 0) {
-      toast.info('No expense rows to export for the current filters.');
-      return;
-    }
-
-    const allApproved = rows.every(
-      (expense) => (expense.auditStatus ?? 'Pending') === 'Approved'
-    );
-    if (!allApproved) {
-      toast.error(
-        'Export failed. Some records are not Approved. All visible records must be Approved before exporting.'
-      );
-      return;
-    }
-
     // 1) Resolve employee being exported — required; never guess or skip.
     let exportEmployeeCode = '';
     if (privileged) {
@@ -419,9 +394,32 @@ export default function ExpensesTab({
       return;
     }
 
-    // 3) Always check previous approved-but-not-exported expenses before PDF export.
+    // 3) Fetch ALL matching month/year records from backend (not Load More / FE pages).
+    let rows: ExpenseRecord[] = [];
     try {
       setIsExportSubmitting(true);
+      const allMatching = await fetchExpensesForExport({
+        month: exportMonth,
+        year: exportYear,
+        employeeCode: exportEmployeeCode,
+      });
+      rows = sortExpensesForExport(allMatching);
+      if (rows.length === 0) {
+        toast.info('No expense rows to export for the current filters.');
+        return;
+      }
+
+      const allApproved = rows.every(
+        (expense) => (expense.auditStatus ?? 'Pending') === 'Approved'
+      );
+      if (!allApproved) {
+        toast.error(
+          'Export failed. Some records are not Approved. All matching records must be Approved before exporting.'
+        );
+        return;
+      }
+
+      // 4) Always check previous approved-but-not-exported expenses before PDF export.
       const pending = await fetchPendingPreviousExportExpenses({
         month: exportMonth,
         year: exportYear,
@@ -434,7 +432,7 @@ export default function ExpensesTab({
         return;
       }
     } catch (error) {
-      console.error('Pending previous expenses fetch error:', error);
+      console.error('Expense export fetch error:', error);
       toast.error(getErrorMessage(error));
       return;
     } finally {
@@ -461,22 +459,11 @@ export default function ExpensesTab({
         selectedYear,
         currentUserName,
       });
-      const outstationRows = currentRows.filter(
-        (row) => row.expenseHead === 'Travel' && row.outStation === 'Yes',
-      );
-      const travelAllowanceSummary =
-        outstationRows.length > 0
-          ? {
-              recordCount: outstationRows.length,
-              totalAmount: outstationRows.reduce((sum, row) => {
-                const fromAllowance = Number(row.travelAllowanceAmount);
-                if (Number.isFinite(fromAllowance)) return sum + fromAllowance;
-                const fromAmount = Number(row.amount);
-                return sum + (Number.isFinite(fromAmount) ? fromAmount : 0);
-              }, 0),
-            }
-          : undefined;
-      await exportExpensesToPdf(exportRows, context, travelAllowanceSummary);
+      const splitResult = await exportMonthExpensesAsSplitPdfs(exportRows, context);
+      if (splitResult.pdfCount === 0) {
+        toast.info('No expense rows to export for the current filters.');
+        return;
+      }
 
       const idsToMarkExported = [
         ...new Set(
@@ -500,12 +487,16 @@ export default function ExpensesTab({
           toast.error(
             `PDF downloaded, but export status could not be updated: ${getErrorMessage(markError)}`,
           );
-          toast.success(`Exported ${exportRows.length} expense record(s)`);
+          toast.success(
+            `Exported ${exportRows.length} expense record(s) across ${splitResult.pdfCount} PDF(s)`,
+          );
           return;
         }
       }
 
-      toast.success(`Exported ${exportRows.length} expense record(s)`);
+      toast.success(
+        `Exported ${exportRows.length} expense record(s) across ${splitResult.pdfCount} PDF(s)`,
+      );
     } catch (error) {
       console.error('Expense export error:', error);
       toast.error(getErrorMessage(error));
@@ -600,86 +591,105 @@ export default function ExpensesTab({
       </div>
 
       {/* Filters */}
-      <div
-        className={`grid grid-cols-1 gap-4 mb-4 ${privileged ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}
-      >
-        {privileged && (
-          <div className="space-y-2">
-            <label className="text-sm">Employee Name</label>
-            <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
+      <div className="space-y-4 mb-4">
+        {privileged ? (
+          <div className="grid grid-cols-1 gap-4 md:max-w-xs">
+            <div className="space-y-2">
+              <label className="text-sm">Employee Name</label>
+              <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All Employees" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Employees</SelectItem>
+                  {employeeFilterOptions.map((name) => (
+                    <SelectItem key={name} value={name}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="space-y-2 min-w-0">
+            <label className="text-sm">Month</label>
+            <Select value={selectedMonth} onValueChange={setSelectedMonth}>
               <SelectTrigger>
-                <SelectValue placeholder="All Employees" />
+                <SelectValue placeholder="All Months" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Employees</SelectItem>
-                {employeeFilterOptions.map((name) => (
-                  <SelectItem key={name} value={name}>
-                    {name}
+                <SelectItem value="all">All Months</SelectItem>
+                {MONTH_FILTER_OPTIONS.map((month) => (
+                  <SelectItem key={month.value} value={month.value}>
+                    {month.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-        )}
-        
-        <div className="space-y-2">
-          <label className="text-sm">Month</label>
-          <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-            <SelectTrigger>
-              <SelectValue placeholder="All Months" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Months</SelectItem>
-              {months.map(month => (
-                <SelectItem key={month} value={month}>
-                  {month}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
 
-        <div className="space-y-2">
-          <label className="text-sm">Year</label>
-          <Select value={selectedYear} onValueChange={setSelectedYear}>
-            <SelectTrigger>
-              <SelectValue placeholder="All Years" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Years</SelectItem>
-              {years.map(year => (
-                <SelectItem key={year} value={year}>
-                  {year}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-sm">Search</label>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <Input
-              placeholder="Location, purpose, from, to, km, hotel dates, provider..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9"
-            />
+          <div className="space-y-2 min-w-0">
+            <label className="text-sm">Year</label>
+            <Select value={selectedYear} onValueChange={setSelectedYear}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Years" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Years</SelectItem>
+                {years.map((year) => (
+                  <SelectItem key={year} value={year}>
+                    {year}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-        </div>
 
-        <div className="space-y-2">
-          <label className="text-sm">Total Amount</label>
-          <Button
-            type="button"
-            variant="outline"
-            disabled
-            aria-readonly
-            className="w-full justify-start font-normal cursor-default opacity-100"
-          >
-            Total Amount ₹{filteredTotalAmount.toLocaleString('en-IN')}
-          </Button>
+          <div className="space-y-2 min-w-0">
+            <label className="text-sm">Total Amount</label>
+            <Button
+              type="button"
+              variant="outline"
+              disabled
+              aria-readonly
+              className="w-full justify-start font-normal cursor-default opacity-100 h-9"
+            >
+              Total Amount ₹{filteredTotalAmount.toLocaleString('en-IN')}
+            </Button>
+          </div>
+
+          <div className="space-y-2 min-w-0">
+            <label className="text-sm">Preview</label>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full gap-2 h-9"
+              disabled={selectedMonth === 'all' || selectedYear === 'all'}
+              onClick={() => {
+                let code = String(currentEmployeeCode || '').trim();
+                if (privileged) {
+                  if (selectedEmployee === 'all') {
+                    toast.error('Select an employee before previewing.');
+                    return;
+                  }
+                  const match = (employeesQuery.data ?? []).find((u) => u.name === selectedEmployee);
+                  code = String(match?.employee_code || match?.employeeCode || '').trim();
+                }
+                if (!code) {
+                  toast.error('Unable to determine the employee for this preview.');
+                  return;
+                }
+                setPreviewEmployeeCode(code);
+                setIsPreviewOpen(true);
+              }}
+            >
+              <Eye className="w-4 h-4" />
+              Preview
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -694,7 +704,7 @@ export default function ExpensesTab({
                 <TableHead className="whitespace-nowrap">Status</TableHead>
                 <TableHead className="whitespace-nowrap">Expense Head</TableHead>
                 <TableHead className="whitespace-nowrap">Sub Category</TableHead>
-                <TableHead className="whitespace-nowrap">Location</TableHead>
+                <TableHead className="whitespace-nowrap">City</TableHead>
                 <TableHead className="whitespace-nowrap">Purpose</TableHead>
                 <TableHead className="whitespace-nowrap">From</TableHead>
                 <TableHead className="whitespace-nowrap">To</TableHead>
@@ -705,7 +715,7 @@ export default function ExpensesTab({
                 <TableHead className="whitespace-nowrap">Service Provider</TableHead>
                 <TableHead className="whitespace-nowrap">Bill Number</TableHead>
                 <TableHead className="whitespace-nowrap">Date</TableHead>
-                <TableHead className="whitespace-nowrap">Amount (Rs)</TableHead>
+                <TableHead className="whitespace-nowrap text-right">Amount</TableHead>
                 <TableHead className="whitespace-nowrap">Document</TableHead>
                 <TableHead className="whitespace-nowrap">Supporting doc.</TableHead>
                 <TableHead className="whitespace-nowrap">Fuel type</TableHead>
@@ -800,7 +810,9 @@ export default function ExpensesTab({
                     <TableCell className="whitespace-nowrap">
                       {expense.date ? new Date(expense.date).toLocaleDateString('en-GB') : '—'}
                     </TableCell>
-                    <TableCell>₹{expense.amount.toLocaleString('en-IN')}</TableCell>
+                    <TableCell className="whitespace-nowrap text-right tabular-nums">
+                      {formatExpenseAmountDisplay(expense.amount, expense.currency)}
+                    </TableCell>
                     <TableCell>
                       {expense.documents && expense.documents.length > 0 ? (
                         <a
@@ -896,6 +908,14 @@ export default function ExpensesTab({
       </div>
 
       {/* Modals */}
+      <ExpenseMonthlyPreviewModal
+        isOpen={isPreviewOpen}
+        month={selectedMonth}
+        year={selectedYear}
+        employeeCode={previewEmployeeCode}
+        onClose={() => setIsPreviewOpen(false)}
+      />
+
       {canCreateRecords && <ExpenseFormModal
         isOpen={isFormModalOpen}
         onClose={() => setIsFormModalOpen(false)}

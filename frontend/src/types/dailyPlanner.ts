@@ -155,6 +155,9 @@ export interface DailyPlannerTask {
   rescheduledBy?: string;
   rescheduledByName?: string;
   rescheduledAt?: string | null;
+  leaveAutoRescheduleLeaveRequestId?: string | null;
+  /** Set when employee completed half-day leave keep/reschedule selection for this leave. */
+  leaveHalfDaySelectionAckLeaveRequestId?: string | null;
   terminatedBy?: string;
   terminatedByName?: string;
   terminatedAt?: string | null;

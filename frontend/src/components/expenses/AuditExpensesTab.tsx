@@ -394,8 +394,12 @@ export default function AuditExpensesTab() {
                       <TableCell className="font-medium">{index + 1}</TableCell>
                       <TableCell className="whitespace-nowrap">{formatDateCell(expense.date)}</TableCell>
                       <TableCell>{displayCell(expense.billNumber)}</TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        ₹{expense.amount.toLocaleString('en-IN')}
+                      <TableCell className="whitespace-nowrap text-right tabular-nums">
+                        ₹
+                        {Number(expense.amount).toLocaleString('en-IN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
                       </TableCell>
                       <TableCell>{displayCell(expense.supportingDocument)}</TableCell>
                       <TableCell className="whitespace-nowrap">{displayCell(expense.monthYear)}</TableCell>

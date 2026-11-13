@@ -4,32 +4,54 @@
  * `expenseTravelAmount.js` and stored global rates.
  */
 
-export function isTravelCarOrBike(expenseHead, subCategory) {
-  const sub = String(subCategory || '').trim();
-  return expenseHead === 'Travel' && (sub === 'Car' || sub === 'Bike');
+function isTransportLikeHead(expenseHead) {
+  const head = String(expenseHead || '').trim();
+  return head === 'Travel' || head === 'Transport';
 }
 
-/** Travel ticket modes: Flight / Bus / Taxi / Train (shared PNR + From/To form). */
-export function isTravelTicketTransport(expenseHead, subCategory) {
+export function isTravelCarOrBike(expenseHead, subCategory) {
   const sub = String(subCategory || '').trim();
-  return (
-    expenseHead === 'Travel' &&
-    (sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train')
-  );
+  return isTransportLikeHead(expenseHead) && (sub === 'Car' || sub === 'Bike');
+}
+
+/**
+ * Ticket modes sharing PNR + From/To form.
+ * Legacy Travel: Flight / Bus / Taxi / Train
+ * New Transport: Flight / Bus Ticket / Taxi / Train Ticket
+ */
+export function isTravelTicketTransport(expenseHead, subCategory) {
+  const head = String(expenseHead || '').trim();
+  const sub = String(subCategory || '').trim();
+  if (head === 'Travel') {
+    return sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train';
+  }
+  if (head === 'Transport') {
+    return (
+      sub === 'Flight' ||
+      sub === 'Bus Ticket' ||
+      sub === 'Taxi' ||
+      sub === 'Train Ticket'
+    );
+  }
+  return false;
 }
 
 export function isHotelBookingSelf(expenseHead, subCategory) {
+  const head = String(expenseHead || '').trim();
   const sub = String(subCategory || '').trim();
-  return expenseHead === 'Hotel_Booking' && sub === 'Self';
+  return (
+    (head === 'Hotel_Booking' && sub === 'Self') ||
+    (head === 'Hotel Booking' && sub === 'Self Booking')
+  );
 }
 
 export function assertTravelTicketTransportFields(data) {
   const pnr = String(data.pnrNo ?? '').trim();
   const from = String(data.fromLocation ?? '').trim();
   const to = String(data.toLocation ?? '').trim();
-  if (!pnr) throw new Error('pnrNo is required for Travel Flight/Bus/Taxi/Train');
-  if (!from) throw new Error('fromLocation is required for Travel Flight/Bus/Taxi/Train');
-  if (!to) throw new Error('toLocation is required for Travel Flight/Bus/Taxi/Train');
+  if (!pnr) throw new Error('pnrNo is required for ticket transport expenses');
+  if (!from) throw new Error('fromLocation is required for ticket transport expenses');
+  if (!to) throw new Error('toLocation is required for ticket transport expenses');
 }
 
 export function isTravelOutstationAllowance(data) {
@@ -99,8 +121,8 @@ export function assertFuelTypeForTravelCarBike(data) {
 export function assertHotelSelfStayDates(data) {
   const from = String(data.stayDateFrom ?? '').trim();
   const to = String(data.stayDateTo ?? '').trim();
-  if (!from) throw new Error('stayDateFrom is required for Hotel_Booking Self');
-  if (!to) throw new Error('stayDateTo is required for Hotel_Booking Self');
+  if (!from) throw new Error('stayDateFrom is required for Hotel Booking Self');
+  if (!to) throw new Error('stayDateTo is required for Hotel Booking Self');
   if (new Date(to) < new Date(from)) {
     throw new Error('stayDateTo cannot be earlier than stayDateFrom');
   }

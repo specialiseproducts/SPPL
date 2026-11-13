@@ -9,6 +9,7 @@ import {
   EXPENSE_HEADS,
   getSubcategoriesForHead,
   isCanonicalExpenseHead,
+  showCompanyGstInField,
 } from '../../constants/expenseSubCategories';
 import {
   isTravelCarOrBike,
@@ -53,6 +54,7 @@ const emptyForm = {
   purpose: '',
   serviceProvider: '',
   billNumber: '',
+  companyGstIn: '' as '' | 'Yes' | 'No',
   date: '',
   amount: '',
   monthYear: '',
@@ -71,6 +73,23 @@ const emptyForm = {
   departureDate: '',
   departureTime: '',
 };
+
+const AMOUNT_INPUT_PATTERN = /^\d*(\.\d{0,2})?$/;
+
+function isValidAmountText(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return false;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n > 0;
+}
+
+function amountFieldLabel(currency?: string): string {
+  if (currency === 'USD') return 'Amount (USD $) *';
+  if (currency === 'GBP') return 'Amount (GBP £) *';
+  if (currency === 'EUR') return 'Amount (EUR €) *';
+  return 'Amount (Rs) *';
+}
 
 interface ExpenseEditFormPanelProps {
   expense: ExpenseRecord;
@@ -122,6 +141,10 @@ export default function ExpenseEditFormPanel({
       purpose: expense.purpose || '',
       serviceProvider: expense.serviceProvider,
       billNumber: expense.billNumber,
+      companyGstIn:
+        expense.companyGstIn === 'Yes' || expense.companyGstIn === 'No'
+          ? expense.companyGstIn
+          : '',
       date: toDateInputValue(expense.date),
       amount: expense.amount.toString(),
       monthYear: expense.monthYear,
@@ -302,8 +325,8 @@ export default function ExpenseEditFormPanel({
       }
     }
 
-    if (!isOutstationTravel && !showTicketTransport && !formData.location.trim()) {
-      toast.error('Please enter location');
+    if (!isOutstationTravel && !formData.location.trim()) {
+      toast.error('Please enter city');
       return;
     }
     if (!isOutstationTravel && !formData.purpose.trim()) {
@@ -316,6 +339,14 @@ export default function ExpenseEditFormPanel({
     }
     if (!isOutstationTravel && !showTravelDetail && !formData.billNumber.trim()) {
       toast.error('Please enter bill number or "NA"');
+      return;
+    }
+    if (
+      showCompanyGstInField(formData.expenseHead, effectiveSubCategory) &&
+      formData.companyGstIn !== 'Yes' &&
+      formData.companyGstIn !== 'No'
+    ) {
+      toast.error('Please select whether you gave Company GSTIN');
       return;
     }
     if (!isOutstationTravel && !showHotelStay && !formData.date) {
@@ -447,7 +478,7 @@ export default function ExpenseEditFormPanel({
         return;
       }
     } else {
-      if (!formData.amount || parseFloat(formData.amount) <= 0) {
+      if (!isValidAmountText(formData.amount)) {
         toast.error('Please enter a valid amount');
         return;
       }
@@ -477,18 +508,22 @@ export default function ExpenseEditFormPanel({
       expenseId: expense.expenseId,
       expenseHead: formData.expenseHead,
       subCategory: subCategoryResolved || undefined,
-      location:
-        isOutstationTravel || showTicketTransport
-          ? ''
-          : resolveMasterDisplayValue(formData.location, locationOptions),
+      location: isOutstationTravel
+        ? ''
+        : resolveMasterDisplayValue(formData.location, locationOptions),
       purpose: isOutstationTravel ? '' : formData.purpose.trim(),
       serviceProvider:
         showTravelDetail || isOutstationTravel
           ? ''
           : resolveMasterDisplayValue(formData.serviceProvider, serviceProviderOptions),
       billNumber: showTravelDetail || isOutstationTravel ? '' : formData.billNumber.trim(),
+      ...(showCompanyGstInField(formData.expenseHead, effectiveSubCategory) &&
+      (formData.companyGstIn === 'Yes' || formData.companyGstIn === 'No')
+        ? { companyGstIn: formData.companyGstIn }
+        : {}),
       date: submissionDate,
       amount: amountNum,
+      ...(expense.currency ? { currency: expense.currency } : {}),
       employeeName: expense.employeeName || currentUserName,
       employeeId: expense.employeeId,
       employeeEmail: expense.employeeEmail,
@@ -511,14 +546,14 @@ export default function ExpenseEditFormPanel({
       ...(showTicketTransport && !isOutstationTravel
         ? {
             pnrNo: formData.pnrNo.trim(),
-            fromLocation: resolveMasterDisplayValue(formData.fromLocation, locationOptions),
-            toLocation: resolveMasterDisplayValue(formData.toLocation, locationOptions),
+            fromLocation: formData.fromLocation.trim(),
+            toLocation: formData.toLocation.trim(),
           }
         : {}),
       ...(showTravelDetail && !isOutstationTravel
         ? {
-            fromLocation: resolveMasterDisplayValue(formData.fromLocation, locationOptions),
-            toLocation: resolveMasterDisplayValue(formData.toLocation, locationOptions),
+            fromLocation: formData.fromLocation.trim(),
+            toLocation: formData.toLocation.trim(),
             returnType: formData.returnType.trim(),
             kilometers: parseFloat(formData.kilometers) || 0,
             fuelType: formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType : undefined,
@@ -827,14 +862,19 @@ export default function ExpenseEditFormPanel({
         ) : null}
 
         <div className="space-y-2">
-          <Label htmlFor="amount">Amount (Rs) *</Label>
+          <Label htmlFor="amount">{amountFieldLabel(expense.currency)}</Label>
           <Input
             id="amount"
-            type="number"
-            step="0.01"
+            type="text"
+            inputMode="decimal"
             placeholder={isOutstationTravel || isAutoAmount ? 'Auto calculated' : '0.00'}
             value={formData.amount}
-            onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+            onChange={(e) => {
+              const next = e.target.value;
+              if (next === '' || AMOUNT_INPUT_PATTERN.test(next)) {
+                setFormData({ ...formData, amount: next });
+              }
+            }}
             disabled={isAutoAmount || isOutstationTravel}
             readOnly={isAutoAmount || isOutstationTravel}
             className={isAutoAmount || isOutstationTravel ? 'bg-gray-50' : ''}
@@ -868,23 +908,21 @@ export default function ExpenseEditFormPanel({
           </Select>
         </div>
         <div className="space-y-2">
-          <ExpenseSearchableCombobox
+          <Label htmlFor="from_location">From *</Label>
+          <Input
             id="from_location"
-            label="From *"
             placeholder="Start location"
             value={formData.fromLocation}
-            options={locationOptions}
-            onChange={(value) => setFormData({ ...formData, fromLocation: value })}
+            onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
           />
         </div>
         <div className="space-y-2">
-          <ExpenseSearchableCombobox
+          <Label htmlFor="to_location">To *</Label>
+          <Input
             id="to_location"
-            label="To *"
             placeholder="Destination"
             value={formData.toLocation}
-            options={locationOptions}
-            onChange={(value) => setFormData({ ...formData, toLocation: value })}
+            onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
           />
         </div>
         <div className="space-y-2">
@@ -893,7 +931,7 @@ export default function ExpenseEditFormPanel({
             id="return_type"
             value={formData.returnType}
             onChange={(e) => setFormData({ ...formData, returnType: e.target.value })}
-            placeholder="e.g. Same day / Next day"
+            placeholder="e.g. Mumbai"
           />
         </div>
         <div className="space-y-2">
@@ -914,23 +952,21 @@ export default function ExpenseEditFormPanel({
       {showTicketTransport && !isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-2">
-          <ExpenseSearchableCombobox
+          <Label htmlFor="from_location_ticket">From *</Label>
+          <Input
             id="from_location_ticket"
-            label="From *"
             placeholder="From"
             value={formData.fromLocation}
-            options={locationOptions}
-            onChange={(value) => setFormData({ ...formData, fromLocation: value })}
+            onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
           />
         </div>
         <div className="space-y-2">
-          <ExpenseSearchableCombobox
+          <Label htmlFor="to_location_ticket">To *</Label>
+          <Input
             id="to_location_ticket"
-            label="To *"
             placeholder="To"
             value={formData.toLocation}
-            options={locationOptions}
-            onChange={(value) => setFormData({ ...formData, toLocation: value })}
+            onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
           />
         </div>
       </div>
@@ -961,18 +997,16 @@ export default function ExpenseEditFormPanel({
 
       {!isOutstationTravel ? (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {!showTicketTransport ? (
         <div className="space-y-2">
           <ExpenseSearchableCombobox
             id="location"
-            label="Location *"
-            placeholder="Enter location"
+            label="City *"
+            placeholder="Enter city"
             value={formData.location}
             options={locationOptions}
             onChange={(value) => setFormData({ ...formData, location: value })}
           />
         </div>
-        ) : null}
         <div className="space-y-2">
           <Label htmlFor="purpose">Purpose *</Label>
           <Input
@@ -1006,6 +1040,25 @@ export default function ExpenseEditFormPanel({
             onChange={(e) => setFormData({ ...formData, billNumber: e.target.value })}
           />
         </div>
+        {showCompanyGstInField(formData.expenseHead, effectiveSubCategory) ? (
+          <div className="space-y-2 sm:col-span-2">
+            <Label htmlFor="company_gst_in">Did you give Company GSTIN? *</Label>
+            <Select
+              value={formData.companyGstIn || undefined}
+              onValueChange={(value: 'Yes' | 'No') =>
+                setFormData({ ...formData, companyGstIn: value })
+              }
+            >
+              <SelectTrigger id="company_gst_in">
+                <SelectValue placeholder="Select" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Yes">Yes</SelectItem>
+                <SelectItem value="No">No</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
       </div>
       ) : null}
 

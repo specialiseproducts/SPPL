@@ -1,27 +1,49 @@
 /**
- * Travel → Car/Bike amount: kilometers × configured per-km rate.
+ * Travel/Transport → Car/Bike amount: kilometers × configured per-km rate.
  * Keep aligned with `backend/src/utils/expenseTravelAmount.js`.
  *
  * Future: city/surge, caps, employee policies — extend here and the backend module together.
  */
 
-export function isTravelCarOrBike(expenseHead: string, subCategory?: string): boolean {
-  const sub = String(subCategory ?? '').trim();
-  return expenseHead === 'Travel' && (sub === 'Car' || sub === 'Bike');
+function isTransportLikeHead(expenseHead: string): boolean {
+  const head = String(expenseHead || '').trim();
+  return head === 'Travel' || head === 'Transport';
 }
 
-/** Travel ticket modes: Flight / Bus / Taxi / Train (shared PNR + From/To form). */
-export function isTravelTicketTransport(expenseHead: string, subCategory?: string): boolean {
+export function isTravelCarOrBike(expenseHead: string, subCategory?: string): boolean {
   const sub = String(subCategory ?? '').trim();
-  return (
-    expenseHead === 'Travel' &&
-    (sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train')
-  );
+  return isTransportLikeHead(expenseHead) && (sub === 'Car' || sub === 'Bike');
+}
+
+/**
+ * Ticket modes sharing PNR + From/To form.
+ * Legacy Travel: Flight / Bus / Taxi / Train
+ * New Transport: Flight / Bus Ticket / Taxi / Train Ticket
+ */
+export function isTravelTicketTransport(expenseHead: string, subCategory?: string): boolean {
+  const head = String(expenseHead || '').trim();
+  const sub = String(subCategory ?? '').trim();
+  if (head === 'Travel') {
+    return sub === 'Flight' || sub === 'Bus' || sub === 'Taxi' || sub === 'Train';
+  }
+  if (head === 'Transport') {
+    return (
+      sub === 'Flight' ||
+      sub === 'Bus Ticket' ||
+      sub === 'Taxi' ||
+      sub === 'Train Ticket'
+    );
+  }
+  return false;
 }
 
 export function isHotelBookingSelf(expenseHead: string, subCategory?: string): boolean {
+  const head = String(expenseHead || '').trim();
   const sub = String(subCategory ?? '').trim();
-  return expenseHead === 'Hotel_Booking' && sub === 'Self';
+  return (
+    (head === 'Hotel_Booking' && sub === 'Self') ||
+    (head === 'Hotel Booking' && sub === 'Self Booking')
+  );
 }
 
 /** Vehicle buckets from GET /api/expenses/settings/travel-rates */
@@ -61,7 +83,7 @@ export function computeTravelCarBikeRupeeAmount({
 }: TravelCarBikeRupeeParams): number {
   const head = String(expenseHead || '').trim();
   const sub = String(subCategory || '').trim();
-  if (head !== 'Travel' || (sub !== 'Car' && sub !== 'Bike')) {
+  if (!isTransportLikeHead(head) || (sub !== 'Car' && sub !== 'Bike')) {
     return 0;
   }
 

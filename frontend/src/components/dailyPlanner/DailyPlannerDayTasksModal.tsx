@@ -16,7 +16,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from 'sonner';
 import type {
   DailyPlannerNotCompletedAction,
-  DailyPlannerPriority,
   DailyPlannerTask,
 } from '../../types/dailyPlanner';
 import type { PlanningConfig } from '../../utils/planningRecognition';
@@ -51,12 +50,11 @@ import {
   acceptDailyPlannerTaskFlag,
   batchCompleteDailyPlannerTasks,
   completeDailyPlannerTask,
-  fetchDailyPlannerProjects,
-  fetchProjectFormOptions,
+  deleteDailyPlannerTask,
   notCompletedDailyPlannerTask,
   rescheduleDailyPlannerTaskSteps,
+  rescheduleDailyPlannerTaskToDate,
   submitDayCompletion,
-  updateDailyPlannerTask,
   uploadDailyPlannerTaskDocument,
 } from '../../hooks/dailyPlanner/dailyPlannerApi';
 import BulletPointEditor, { type BulletPointEditorHandle } from './BulletPointEditor';
@@ -64,8 +62,11 @@ import BulletPointList from './BulletPointList';
 import { parseBulletPoints } from './bulletPointUtils';
 import { todayIso } from './dailyPlannerUtils';
 import { useAuth } from '../../context/AuthContext';
-import { hasEmployeeCompletionOutcome } from './todayTaskReviewWizardUtils';
-import HoursMinutesFields from './HoursMinutesFields';
+import {
+  canShowDeleteOrRescheduleTaskAction,
+  canShowEditTaskAction,
+  hasEmployeeCompletionOutcome,
+} from './todayTaskReviewWizardUtils';
 import DailyPlannerEnhancedTaskFields, {
   resolveDocumentFiles,
   resolveDocumentUploadPayload,
@@ -221,6 +222,8 @@ interface DailyPlannerDayTasksModalProps {
   onAddTask: (revisesTaskId?: string) => void;
   /** Log unplanned work already done during today's Mark Completed flow. */
   onExtraTask?: () => void;
+  /** Open Create Task form in edit mode for this task. */
+  onEditTask?: (task: DailyPlannerTask) => void;
   onViewFinalPlan?: () => void;
 }
 
@@ -234,6 +237,7 @@ export default function DailyPlannerDayTasksModal({
   onChanged,
   onAddTask,
   onExtraTask,
+  onEditTask,
   onViewFinalPlan,
 }: DailyPlannerDayTasksModalProps) {
   const { user } = useAuth();
@@ -278,23 +282,14 @@ export default function DailyPlannerDayTasksModal({
   const [notCompletedProgressDone, setNotCompletedProgressDone] = useState<number | null>(null);
   const [notCompletedDocumentFile, setNotCompletedDocumentFile] = useState<File | null>(null);
   const [notCompletedDocumentFiles, setNotCompletedDocumentFiles] = useState<File[]>([]);
-  const [editTaskId, setEditTaskId] = useState<string | null>(null);
-  const [editProjectName, setEditProjectName] = useState('');
-  const [editProjectTaskId, setEditProjectTaskId] = useState('');
-  const [editName, setEditName] = useState('');
-  const [editPriority, setEditPriority] = useState<DailyPlannerPriority>('Medium');
-  const [editHours, setEditHours] = useState<number | null>(null);
-  const [editProjectOptions, setEditProjectOptions] = useState<string[]>([]);
-  const [editManagedTasks, setEditManagedTasks] = useState<
-    Array<{ projectTaskId: string; taskName: string }>
-  >([]);
+  const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null);
+  const [rescheduleTaskId, setRescheduleTaskId] = useState<string | null>(null);
+  const [rescheduleOnlyDate, setRescheduleOnlyDate] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [submittingDay, setSubmittingDay] = useState(false);
   const workDoneEditorRef = useRef<BulletPointEditorHandle>(null);
   const observationEditorRef = useRef<BulletPointEditorHandle>(null);
   const reasonEditorRef = useRef<BulletPointEditorHandle>(null);
-  const editDescriptionRef = useRef<BulletPointEditorHandle>(null);
-
   const completionDrafts = draftsByDate[date] ?? EMPTY_DRAFTS;
   const draftsRef = useRef<Record<string, CompletionDraft>>(EMPTY_DRAFTS);
   draftsRef.current = completionDrafts;
@@ -317,14 +312,6 @@ export default function DailyPlannerDayTasksModal({
 
   const dateMode = useMemo(() => getDailyPlannerDateMode(date), [date]);
   const isPastDate = dateMode === 'past';
-  const dayPlanFinalized = useMemo(
-    () =>
-      visibleTasks.some(
-        (t) =>
-          Boolean(t.planFinalizedAt) && String(t.status || '').trim() !== 'Rescheduled',
-      ),
-    [visibleTasks],
-  );
   const leaveClassification = useMemo(
     () => classifyApprovedLeaveForDate(approvedLeavesForDate, date),
     [approvedLeavesForDate, date],
@@ -339,7 +326,7 @@ export default function DailyPlannerDayTasksModal({
     [canCompleteByDate, date, planningConfig, halfDayLeave],
   );
   const isReadOnlyWindow = canCompleteByDate && !canModifyTasks;
-  const canEditPlanTasks = !isPastDate && !dayPlanFinalized && !fullDayLeave;
+  // Past-date Edit/Delete/Reschedule are gated via allowPastDateActions + lifecycle helpers.
   /** Extra Task uses the same 5:30 PM → 11:00 AM employee planning window as other today updates. */
   const canCreateExtraTask = Boolean(
     canCompleteByDate && onExtraTask && canModifyTasks && !fullDayLeave,
@@ -642,86 +629,47 @@ export default function DailyPlannerDayTasksModal({
     meetsMinReportedHours &&
     (pendingDraftTasks.length === 0 || canModifyTasks);
 
-  const openEdit = (task: DailyPlannerTask) => {
-    setEditTaskId(task.plannerTaskId);
-    setEditProjectName(String(task.projectName || '').trim());
-    setEditProjectTaskId(String(task.projectTaskId || '').trim());
-    setEditName(task.taskName || '');
-    setEditPriority((task.currentPriority || task.priority || 'Medium') as DailyPlannerPriority);
-    setEditHours(
-      task.hoursRequired != null && Number.isFinite(Number(task.hoursRequired))
-        ? Number(task.hoursRequired)
-        : null,
-    );
-    void fetchProjectFormOptions()
-      .then((opts) => {
-        const names = [
-          ...(opts.projects || []).map((p) => p.projectName),
-          ...(opts.legacyProjectNames || []),
-        ];
-        setEditProjectOptions([...new Set(names.filter(Boolean))]);
-        const match = (opts.projects || []).find(
-          (p) => p.projectName === String(task.projectName || '').trim(),
-        );
-        setEditManagedTasks(match?.tasks || []);
-      })
-      .catch(() => {
-        void fetchDailyPlannerProjects()
-          .then((projects) =>
-            setEditProjectOptions(projects.map((p) => p.projectName).filter(Boolean)),
-          )
-          .catch(() => setEditProjectOptions([]));
-        setEditManagedTasks([]);
-      });
-  };
-
-  const closeEdit = () => {
-    setEditTaskId(null);
-    setEditProjectName('');
-    setEditProjectTaskId('');
-    setEditName('');
-    setEditPriority('Medium');
-    setEditHours(null);
-    setEditManagedTasks([]);
-  };
-
-  const submitEdit = async () => {
-    if (!editTaskId) return;
-    if (factoryMode && !editProjectName.trim()) {
-      toast.error('Project Name is required');
-      return;
-    }
-    if (!editName.trim()) {
-      toast.error('Task name is required');
-      return;
-    }
-    const hoursValue = Number(editHours);
-    if (editHours == null || !Number.isFinite(hoursValue) || hoursValue <= 0) {
-      toast.error('Hours Required to Complete must be greater than 0');
-      return;
-    }
-    const description = editDescriptionRef.current?.getFormattedValue() ?? '';
-    const projectName = editProjectName.trim();
-    setBusyId(editTaskId);
+  const confirmDeleteTask = async () => {
+    if (!deleteTaskId) return;
+    setBusyId(deleteTaskId);
     try {
-      const updated = await updateDailyPlannerTask(editTaskId, {
-        taskName: editName.trim(),
-        description,
-        priority: editPriority,
-        hoursRequired: Math.round(hoursValue * 100) / 100,
-        ...(factoryMode || projectName
-          ? {
-              isProjectBased: factoryMode || Boolean(projectName),
-              projectName: factoryMode || projectName ? projectName : '',
-              projectTaskId: editProjectTaskId.trim() || '',
-            }
-          : {}),
-      });
-      toast.success('Task updated');
-      closeEdit();
-      onChanged({ upsert: [updated] });
+      await deleteDailyPlannerTask(deleteTaskId);
+      toast.success('Task deleted');
+      onChanged({ removeIds: [deleteTaskId] });
+      setDeleteTaskId(null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Update failed');
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const confirmRescheduleOnly = async () => {
+    if (!rescheduleTaskId) return;
+    const target = String(rescheduleOnlyDate || '').trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) {
+      toast.error('Select a new date');
+      return;
+    }
+    if (target === date) {
+      toast.error('New date must be different from the current task date');
+      return;
+    }
+    setBusyId(rescheduleTaskId);
+    try {
+      const result = await rescheduleDailyPlannerTaskToDate(
+        rescheduleTaskId,
+        target,
+        'Rescheduled by employee',
+      );
+      toast.success(`Task rescheduled to ${target}`);
+      const upsert = [result.task];
+      if (result.rescheduledTask) upsert.push(result.rescheduledTask);
+      onChanged({ upsert });
+      setRescheduleTaskId(null);
+      setRescheduleOnlyDate('');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Reschedule failed');
     } finally {
       setBusyId(null);
     }
@@ -1395,17 +1343,19 @@ export default function DailyPlannerDayTasksModal({
     }
   };
 
-  const editingTask = editTaskId
-    ? visibleTasks.find((t) => t.plannerTaskId === editTaskId) ||
-      tasks.find((t) => t.plannerTaskId === editTaskId)
-    : null;
+  const allowPastDateActions = dateMode !== 'past';
 
   return (
     <>
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
         <DialogContent
-          className="!flex !h-[90vh] !max-h-[90vh] !w-[min(92vw,48rem)] !max-w-3xl !flex-col gap-0 overflow-hidden !p-0 sm:!max-w-3xl"
-          style={{ height: '90vh', maxHeight: '90vh' }}
+          className="!flex !h-[92vh] !max-h-[92vh] !w-[min(96vw,1200px)] !max-w-[1200px] !flex-col !gap-0 overflow-hidden !p-0 sm:!max-w-[1200px]"
+          style={{
+            width: 'min(96vw, 1200px)',
+            maxWidth: '1200px',
+            height: '92vh',
+            maxHeight: '92vh',
+          }}
         >
           <DialogHeader className="shrink-0 border-b border-gray-200 px-6 py-4 text-left">
             <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
@@ -1509,21 +1459,87 @@ export default function DailyPlannerDayTasksModal({
                     typeof task.progressDone === 'number' && Number.isFinite(task.progressDone)
                       ? task.progressDone
                       : null;
-                  const canEditThisTask =
-                    canEditPlanTasks &&
-                    !isClosed &&
-                    !isRescheduledTask(task) &&
-                    task.taskType === 'Manual' &&
-                    task.source !== 'SALES_FORECASTING' &&
-                    task.status !== 'Approved' &&
+                  const procedureSteps = resolveProcedureSteps(task);
+                  const isReportedTask = hasEmployeeCompletionOutcome(task);
+                  const isExtraTaskCard =
+                    String(task.source || '').trim().toUpperCase() === 'EXTRA';
+                  const reportedSteps = procedureSteps.filter(
+                    (s) => String(s.status || '').trim() !== 'rescheduled',
+                  );
+                  // After Mark Completed (draft or submitted), hide Edit / Delete / Reschedule.
+                  const showEdit =
+                    allowPastDateActions &&
+                    !draftCompleted &&
+                    canShowEditTaskAction(task);
+                  const showDeleteOrReschedule =
+                    allowPastDateActions &&
+                    !draftCompleted &&
+                    canShowDeleteOrRescheduleTaskAction(task);
+                  /** Prefer draft step completion data while Draft — not submitted. */
+                  const stepsForCard: DailyPlannerProcedureStep[] = (() => {
+                    if (draftCompleted && taskDraft?.procedureSteps?.length) {
+                      const byId = new Map(
+                        taskDraft.procedureSteps.map((s) => [String(s.stepId || ''), s]),
+                      );
+                      return reportedSteps.map((base) => {
+                        const draftStep = byId.get(String(base.stepId || ''));
+                        if (!draftStep) return base;
+                        return {
+                          ...base,
+                          description: base.description,
+                          plannedMinutes: base.plannedMinutes,
+                          workDone: draftStep.workDone ?? base.workDone,
+                          actualMinutes:
+                            draftStep.actualMinutes != null
+                              ? draftStep.actualMinutes
+                              : base.actualMinutes,
+                          startTime: draftStep.startTime ?? base.startTime,
+                          endTime: draftStep.endTime ?? base.endTime,
+                          status: draftStep.status ?? base.status,
+                          completed: draftStep.completed ?? base.completed,
+                        };
+                      });
+                    }
+                    return reportedSteps;
+                  })();
+                  const showPerStepCompletion =
+                    isExtraTaskCard ||
+                    draftCompleted ||
+                    (isReportedTask &&
+                      (task.status === 'Awaiting Verification' ||
+                        task.status === 'Completed' ||
+                        task.status === 'Verified Complete'));
+                  const hasPerStepWorkDone = stepsForCard.some((s) => {
+                    const work = String(s.workDone || '').trim();
+                    const actual = Number(s.actualMinutes) || 0;
+                    return work.length > 0 || actual > 0;
+                  });
+                  const showMarkNotCompleted =
+                    canModifyTasks &&
+                    !draftCompleted &&
                     task.status !== 'Awaiting Verification' &&
                     task.status !== 'Completed' &&
-                    task.status !== 'Verified Complete';
+                    task.status !== 'Verified Complete' &&
+                    task.status !== 'Not Completed' &&
+                    !(task.status === 'Needs Revision' && !task.revisionOutcome) &&
+                    task.status !== 'Terminated' &&
+                    task.status !== 'Rescheduled';
+                  const statusLabel = getDailyTaskStatusLabel(task.status);
+                  const taskNameChipStyle = getDailyTaskChipStyle(getDailyTaskVisualKey(task));
+                  const showActionRow =
+                    showMarkNotCompleted ||
+                    (showEdit && Boolean(onEditTask)) ||
+                    showDeleteOrReschedule ||
+                    (hasActiveDraft && canModifyTasks && !completionAlreadySubmitted);
                   return (
-                  <div key={task.plannerTaskId} className="rounded-lg border border-gray-200 p-3">
+                  <div
+                    key={task.plannerTaskId}
+                    className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+                  >
                     <div className="flex items-start gap-3">
                       {showCompletionCheckbox ? (
                       <Checkbox
+                        className="mt-1"
                         checked={
                           draftCompleted ||
                           task.status === 'Awaiting Verification' ||
@@ -1560,45 +1576,180 @@ export default function DailyPlannerDayTasksModal({
                         }}
                       />
                       ) : null}
-                      <div className="min-w-0 flex-1">
-                        <div
-                          style={getDailyTaskChipStyle(getDailyTaskVisualKey(task))}
-                          className="mb-2 w-fit max-w-full px-2"
-                        >
-                          {task.taskName}
+                      <div className="min-w-0 flex-1 space-y-3">
+                        {/* Top row: Task Name (left) + Status badge (right) */}
+                        <div className="flex items-start justify-between gap-3">
+                          <div
+                            style={taskNameChipStyle}
+                            className="min-w-0 max-w-[min(100%,28rem)] px-2 text-sm font-semibold"
+                          >
+                            {task.taskName}
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className="shrink-0 border-gray-300 bg-gray-50 font-medium text-gray-800"
+                            title={
+                              task.priorityEdited && task.approvedByName
+                                ? `Approved by ${task.approvedByName}`
+                                : undefined
+                            }
+                          >
+                            {statusLabel}
+                          </Badge>
                         </div>
-                        {task.description ? (
-                          <div className="text-xs text-gray-600">
+
+                        {stepsForCard.length > 0 ? (
+                          <div className="space-y-3">
+                            {stepsForCard.map((step, idx) => {
+                              const workText = String(step.workDone || '').trim();
+                              const actualMins = Number(step.actualMinutes);
+                              const hasActual =
+                                Number.isFinite(actualMins) && actualMins > 0;
+                              const fromTimes =
+                                !hasActual
+                                  ? minutesBetweenHhMm(
+                                      String(step.startTime || ''),
+                                      String(step.endTime || ''),
+                                    )
+                                  : null;
+                              const stepActualMins =
+                                hasActual
+                                  ? Math.round(actualMins)
+                                  : fromTimes != null && fromTimes > 0
+                                    ? fromTimes
+                                    : null;
+                              const showCompletionBlock =
+                                showPerStepCompletion &&
+                                (workText.length > 0 || stepActualMins != null);
+
+                              return (
+                                <div key={step.stepId || idx} className="space-y-1 text-sm">
+                                  <p className="text-gray-700">
+                                    <span className="font-medium text-gray-900">
+                                      Step {idx + 1}
+                                    </span>
+                                    {' – '}
+                                    {String(step.description || '').trim() || '—'}
+                                    {!isExtraTaskCard ? (
+                                      <>
+                                        {' – '}
+                                        <span className="text-gray-500">
+                                          {formatMinutesLabel(
+                                            Number(step.plannedMinutes) || 0,
+                                          )}
+                                        </span>
+                                      </>
+                                    ) : null}
+                                  </p>
+                                  {showCompletionBlock ? (
+                                    <p className="pl-3 text-gray-600">
+                                      <span className="font-medium text-gray-700">
+                                        Work Done
+                                      </span>
+                                      {' – '}
+                                      {workText || '—'}
+                                      {stepActualMins != null
+                                        ? ` – ${formatMinutesLabel(stepActualMins)}`
+                                        : ''}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : task.description ? (
+                          <div className="text-sm text-gray-600">
                             <BulletPointList text={task.description} />
                           </div>
                         ) : (
-                          <p className="text-xs text-gray-600">—</p>
+                          <p className="text-sm text-gray-500">No steps recorded.</p>
                         )}
-                        <p className="mt-1 text-xs text-gray-500">
-                          {String(task.projectName || '').trim() || task.taskType} ·{' '}
-                          {task.currentPriority || task.priority}
-                          {task.hoursRequired != null
-                            ? ` · ${formatDurationLabel(task.hoursRequired)}`
-                            : ''}{' '}
-                          · {getDailyTaskStatusLabel(task.status)}
-                          {task.priorityEdited && task.approvedByName
-                            ? ` · Approved by ${task.approvedByName}`
-                            : ''}
-                        </p>
+
+                        {/* Legacy Extra (task-level reason only, no per-step workDone): keep reason once */}
+                        {isExtraTaskCard &&
+                        !hasPerStepWorkDone &&
+                        task.reason ? (
+                          <div className="space-y-1 text-sm">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                              Work Done
+                            </p>
+                            <div className="text-gray-700">
+                              <BulletPointList text={task.reason} />
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {(() => {
+                          if (isExtraTaskCard) {
+                            const stepActualTotal = sumActualMinutes(stepsForCard);
+                            const actualTotalLabel =
+                              stepActualTotal > 0
+                                ? formatMinutesLabel(stepActualTotal)
+                                : task.completionDurationHours != null
+                                  ? formatDurationLabel(task.completionDurationHours)
+                                  : serverTaskReportedMinutes(task) > 0
+                                    ? formatMinutesLabel(serverTaskReportedMinutes(task))
+                                    : '';
+                            // Compact Extra meta: Task Name · Priority · Actual Time · Extra Task
+                            const metaParts = [
+                              String(task.taskName || '').trim(),
+                              String(task.currentPriority || task.priority || '').trim(),
+                              actualTotalLabel,
+                              'Extra Task',
+                            ].filter(Boolean);
+                            return (
+                              <p className="text-sm text-gray-500">{metaParts.join(' · ')}</p>
+                            );
+                          }
+
+                          const draftActualMinutes =
+                            draftCompleted && taskDraft
+                              ? draftReportedMinutes(taskDraft)
+                              : null;
+                          const reportedTotalMinutes = isReportedTask
+                            ? (() => {
+                                const stepActualTotal = sumActualMinutes(reportedSteps);
+                                return stepActualTotal > 0
+                                  ? stepActualTotal
+                                  : serverTaskReportedMinutes(task);
+                              })()
+                            : 0;
+
+                          let timeLabel = '';
+                          if (draftActualMinutes != null && draftActualMinutes > 0) {
+                            timeLabel = `${formatMinutesLabel(draftActualMinutes)} (Actual Time)`;
+                          } else if (reportedTotalMinutes > 0) {
+                            timeLabel = `${formatMinutesLabel(reportedTotalMinutes)} (Actual Time)`;
+                          } else if (isReportedTask && task.completionDurationHours != null) {
+                            timeLabel = `${formatDurationLabel(task.completionDurationHours)} (Actual Time)`;
+                          } else if (task.hoursRequired != null) {
+                            timeLabel = formatDurationLabel(task.hoursRequired);
+                          }
+
+                          const metaParts = [
+                            String(task.projectName || '').trim(),
+                            String(task.currentPriority || task.priority || '').trim(),
+                            timeLabel,
+                          ].filter(Boolean);
+                          if (metaParts.length === 0) return null;
+                          return (
+                            <p className="text-sm text-gray-500">{metaParts.join(' · ')}</p>
+                          );
+                        })()}
                         {task.createdByReportingPerson ? (
-                          <p className="mt-1 text-xs font-medium text-slate-600">
+                          <p className="text-xs font-medium text-slate-600">
                             {String(task.createdByName || '').trim()
                               ? `Created by ${String(task.createdByName).trim()}`
                               : 'Created by Reporting Person'}
                           </p>
                         ) : null}
                         {progressDoneValue != null ? (
-                          <p className="mt-1 text-xs text-gray-600">
+                          <p className="text-xs text-gray-600">
                             Progress Done: {progressDoneValue}%
                           </p>
                         ) : null}
                         {hasActiveDraft && taskDraft ? (
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
                             <Badge
                               variant="outline"
                               className="border-amber-300 bg-amber-50 font-normal text-amber-800"
@@ -1621,69 +1772,100 @@ export default function DailyPlannerDayTasksModal({
                           </div>
                         ) : null}
                         {enhancedEligible ? (
-                          <div className="mt-2">
-                            <DailyPlannerTaskDocumentsList task={task} />
-                          </div>
+                          <DailyPlannerTaskDocumentsList task={task} />
                         ) : null}
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {canEditThisTask ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={busyId === task.plannerTaskId}
-                              onClick={() => openEdit(task)}
-                            >
-                              Edit Task
-                            </Button>
-                          ) : null}
-                          {hasActiveDraft && canModifyTasks && !completionAlreadySubmitted ? (
-                            <>
+
+                        {/* Action buttons: one horizontal row, right-aligned, compact */}
+                        {showActionRow ? (
+                          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                            {showMarkNotCompleted ? (
                               <Button
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                disabled={submittingDay}
-                                onClick={() =>
-                                  taskDraft?.outcome === 'completed'
-                                    ? setCompleteTaskId(task.plannerTaskId)
-                                    : setReasonTaskId(task.plannerTaskId)
-                                }
+                                className="shrink-0"
+                                disabled={busyId === task.plannerTaskId}
+                                onClick={() => setReasonTaskId(task.plannerTaskId)}
                               >
-                                Edit Draft
+                                Mark Not Completed
                               </Button>
+                            ) : null}
+                            {showEdit && onEditTask ? (
                               <Button
                                 type="button"
-                                variant="ghost"
+                                variant="outline"
                                 size="sm"
-                                disabled={submittingDay}
-                                onClick={() => clearDrafts([task.plannerTaskId])}
+                                className="shrink-0"
+                                disabled={busyId === task.plannerTaskId}
+                                onClick={() => onEditTask(task)}
                               >
-                                Discard Draft
+                                Edit Task
                               </Button>
-                            </>
-                          ) : null}
-                          {canModifyTasks &&
-                          !draftCompleted &&
-                          task.status !== 'Awaiting Verification' &&
-                          task.status !== 'Completed' &&
-                          task.status !== 'Verified Complete' &&
-                          task.status !== 'Not Completed' &&
-                          !(task.status === 'Needs Revision' && !task.revisionOutcome) &&
-                          task.status !== 'Terminated' &&
-                          task.status !== 'Rescheduled' ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={busyId === task.plannerTaskId}
-                              onClick={() => setReasonTaskId(task.plannerTaskId)}
-                            >
-                              Mark Not Completed
-                            </Button>
-                          ) : null}
-                        </div>
-                        {(task.status === 'Awaiting Verification' ||
+                            ) : null}
+                            {showDeleteOrReschedule ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="shrink-0"
+                                disabled={busyId === task.plannerTaskId}
+                                onClick={() => setDeleteTaskId(task.plannerTaskId)}
+                              >
+                                Delete Task
+                              </Button>
+                            ) : null}
+                            {showDeleteOrReschedule ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="shrink-0"
+                                disabled={busyId === task.plannerTaskId}
+                                onClick={() => {
+                                  setRescheduleTaskId(task.plannerTaskId);
+                                  setRescheduleOnlyDate('');
+                                }}
+                              >
+                                Reschedule Task
+                              </Button>
+                            ) : null}
+                            {hasActiveDraft && canModifyTasks && !completionAlreadySubmitted ? (
+                              <>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="shrink-0"
+                                  disabled={submittingDay}
+                                  onClick={() =>
+                                    taskDraft?.outcome === 'completed'
+                                      ? setCompleteTaskId(task.plannerTaskId)
+                                      : setReasonTaskId(task.plannerTaskId)
+                                  }
+                                >
+                                  Edit Draft
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="shrink-0"
+                                  disabled={submittingDay}
+                                  onClick={() => clearDrafts([task.plannerTaskId])}
+                                >
+                                  Discard Draft
+                                </Button>
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                        {/* Per-step Work Done is shown under each step above when available. */}
+                        {!hasPerStepWorkDone &&
+                        !isExtraTaskCard &&
+                        (task.status === 'Awaiting Verification' ||
                           task.status === 'Completed' ||
                           task.status === 'Verified Complete') &&
                         task.reason ? (
@@ -1809,7 +1991,6 @@ export default function DailyPlannerDayTasksModal({
                             ) : null}
                           </div>
                         ) : null}
-                      </div>
                     </div>
                   </div>
                   );
@@ -2398,105 +2579,77 @@ export default function DailyPlannerDayTasksModal({
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={!!editTaskId && Boolean(editingTask)}
+      <AlertDialog
+        open={!!deleteTaskId}
         onOpenChange={(v) => {
-          if (!v) closeEdit();
+          if (!v) setDeleteTaskId(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Task</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete this planned task? This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={!!busyId}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!!busyId}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmDeleteTask();
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog
+        open={!!rescheduleTaskId}
+        onOpenChange={(v) => {
+          if (!v) {
+            setRescheduleTaskId(null);
+            setRescheduleOnlyDate('');
+          }
         }}
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Edit Task</DialogTitle>
+            <DialogTitle>Reschedule Task</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-project-name">
-                Project Name{factoryMode ? ' *' : ''}
-              </Label>
+              <Label htmlFor="reschedule-task-new-date">New Date</Label>
               <Input
-                id="edit-project-name"
-                list="edit-project-options"
-                value={editProjectName}
-                onChange={(e) => setEditProjectName(e.target.value)}
-                placeholder="Select or type a project name"
-              />
-              <datalist id="edit-project-options">
-                {editProjectOptions.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit-task-name">Task Name *</Label>
-              {editManagedTasks.length > 0 ? (
-                <select
-                  id="edit-task-name"
-                  className="border-input bg-background h-9 w-full rounded-md border px-2 text-sm"
-                  value={editProjectTaskId}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    const match = editManagedTasks.find((t) => t.projectTaskId === id);
-                    setEditProjectTaskId(id);
-                    setEditName(match?.taskName || '');
-                  }}
-                >
-                  <option value="">Select task</option>
-                  {editManagedTasks.map((t) => (
-                    <option key={t.projectTaskId} value={t.projectTaskId}>
-                      {t.taskName}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <Input
-                  id="edit-task-name"
-                  value={editName}
-                  onChange={(e) => {
-                    setEditName(e.target.value);
-                    setEditProjectTaskId('');
-                  }}
-                />
-              )}
-            </div>
-            <BulletPointEditor
-              key={editTaskId ?? 'edit-closed'}
-              ref={editDescriptionRef}
-              id="edit-task-description"
-              label="Task Description"
-              defaultValue={editingTask?.description || ''}
-            />
-            <div className="space-y-2">
-              <Label>Priority *</Label>
-              <Select
-                value={editPriority}
-                onValueChange={(v) => setEditPriority(v as DailyPlannerPriority)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Urgent">Urgent</SelectItem>
-                  <SelectItem value="High">High</SelectItem>
-                  <SelectItem value="Medium">Medium</SelectItem>
-                  <SelectItem value="Low">Low</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Hours Required to Complete *</Label>
-              <HoursMinutesFields
-                idPrefix="edit-hours"
-                value={editHours}
-                onChange={setEditHours}
+                id="reschedule-task-new-date"
+                type="date"
+                min={minRescheduleDate}
+                value={rescheduleOnlyDate}
+                onChange={(event) => setRescheduleOnlyDate(event.target.value)}
+                required
               />
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={closeEdit}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setRescheduleTaskId(null);
+                setRescheduleOnlyDate('');
+              }}
+            >
               Cancel
             </Button>
-            <Button type="button" onClick={() => void submitEdit()} disabled={!!busyId}>
-              Save
+            <Button
+              type="button"
+              onClick={() => void confirmRescheduleOnly()}
+              disabled={!!busyId}
+            >
+              Reschedule
             </Button>
           </DialogFooter>
         </DialogContent>

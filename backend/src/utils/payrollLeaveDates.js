@@ -3,6 +3,7 @@
  */
 
 import { parseDateKey, dateKeyFromDate } from './salesQuotationDates.js';
+import { isCompanyWorkingDayDateKey } from './companyWorkingDays.js';
 
 export const LEAVE_TYPES = Object.freeze({
   ONE_DAY: 'one_day',
@@ -23,6 +24,21 @@ export function inclusiveCalendarDays(startDateKey, endDateKey) {
   if (end.getTime() < start.getTime()) return null;
   const ms = end.getTime() - start.getTime();
   return Math.floor(ms / 86400000) + 1;
+}
+
+/**
+ * Count working days in an inclusive date range for the employee's location.
+ * Excludes Sundays, location weekly holidays (e.g. Office 3rd/4th Saturday),
+ * and declared company holidays via companyWorkingDays.
+ */
+export function countWorkingDaysInRange(startDateKey, endDateKey, location) {
+  const keys = enumerateDateKeys(startDateKey, endDateKey);
+  if (keys.length === 0) return null;
+  let count = 0;
+  for (const key of keys) {
+    if (isCompanyWorkingDayDateKey(key, location)) count += 1;
+  }
+  return count;
 }
 
 /** Calendar days from applicationDate to startDate (same day = 0). */

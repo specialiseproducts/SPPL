@@ -9,8 +9,9 @@ import { formatDurationLabel } from './planningRecognition';
 
 export const MIN_PLANNED_MINUTES_OFFICE = 450;
 export const MIN_PLANNED_MINUTES_FACTORY = 420;
-export const MIN_PLANNED_MINUTES_OFFICE_HALF = 225;
-export const MIN_PLANNED_MINUTES_FACTORY_HALF = 210;
+/** Approved first/second half leave: 4 hours for Office and Factory. */
+export const MIN_PLANNED_MINUTES_OFFICE_HALF = 240;
+export const MIN_PLANNED_MINUTES_FACTORY_HALF = 240;
 
 export const FULL_DAY_LEAVE_TASK_BLOCKED_MESSAGE =
   'Cannot create or reschedule tasks onto an approved full-day leave date. Choose the next working day after leave.';

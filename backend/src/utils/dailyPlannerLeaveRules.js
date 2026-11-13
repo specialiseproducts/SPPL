@@ -13,11 +13,11 @@ import {
   normalizeEmployeeLocation,
 } from './companyWorkingDays.js';
 
-/** Office half-day: 3h 45m = 225 minutes. Factory half-day: 3h 30m = 210 minutes. */
+/** Approved first/second half leave: 4 hours (240 minutes) for Office and Factory. */
 export const MIN_PLANNED_MINUTES_OFFICE = 450;
 export const MIN_PLANNED_MINUTES_FACTORY = 420;
-export const MIN_PLANNED_MINUTES_OFFICE_HALF = 225;
-export const MIN_PLANNED_MINUTES_FACTORY_HALF = 210;
+export const MIN_PLANNED_MINUTES_OFFICE_HALF = 240;
+export const MIN_PLANNED_MINUTES_FACTORY_HALF = 240;
 export const MIN_PLANNED_HOURS_OFFICE = 7.5;
 export const MIN_PLANNED_HOURS_FACTORY = 7;
 
@@ -101,7 +101,7 @@ export function getMinPlannedMinutesForLocation(location, leaveKind = 'none') {
   return loc === 'Factory' ? MIN_PLANNED_MINUTES_FACTORY : MIN_PLANNED_MINUTES_OFFICE;
 }
 
-/** Decimal hours from exact minutes (Office half = 3.75, Factory half = 3.5). */
+/** Decimal hours from exact minutes (half-day leave = 4.0 for Office and Factory). */
 export function getMinPlannedHoursForLeaveAwareLocation(location, leaveKind = 'none') {
   return getMinPlannedMinutesForLocation(location, leaveKind) / 60;
 }

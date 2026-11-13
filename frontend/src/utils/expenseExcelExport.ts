@@ -22,7 +22,7 @@ const EXPORT_COLUMNS = [
   'Date',
   'Expense Head',
   'Sub Category',
-  'Location',
+  'City',
   'Purpose',
   'From',
   'To',
@@ -32,9 +32,11 @@ const EXPORT_COLUMNS = [
   'Stay Date (To)',
   'Service Provider',
   'Bill Number',
+  'Company GSTIN',
+  'Currency',
   'Fuel Type',
   'Supporting Document',
-  'Amount (Rs)',
+  'Amount',
 ] as const;
 
 const COL_COUNT = EXPORT_COLUMNS.length;
@@ -45,23 +47,25 @@ const LOGO_PATH = '/sppl-expense-logo.png';
  * Purpose / Service Provider / Bill Number get more space; travel fields stay narrow.
  */
 const COL_WEIGHTS = [
-  0.028, // Sr. #
-  0.052, // Date
-  0.062, // Expense Head
-  0.068, // Sub Category
-  0.055, // Location
-  0.11, // Purpose
-  0.04, // From
-  0.04, // To
-  0.038, // Return
-  0.048, // Kilometers
-  0.05, // Stay From
-  0.05, // Stay To
-  0.075, // Service Provider
-  0.08, // Bill Number
-  0.042, // Fuel Type
-  0.055, // Supporting Document
-  0.057, // Amount
+  0.026, // Sr. #
+  0.048, // Date
+  0.058, // Expense Head
+  0.062, // Sub Category
+  0.05, // City
+  0.1, // Purpose
+  0.036, // From
+  0.036, // To
+  0.034, // Return
+  0.044, // Kilometers
+  0.046, // Stay From
+  0.046, // Stay To
+  0.068, // Service Provider
+  0.07, // Bill Number
+  0.048, // Company GSTIN
+  0.04, // Currency
+  0.038, // Fuel Type
+  0.05, // Supporting Document
+  0.054, // Amount
 ];
 
 export type ExpenseExportContext = {
@@ -111,6 +115,12 @@ function supportingDocumentLabel(expense: ExpenseRecord): string {
 /** Existing OutStation Travel records are Travel Allowance items, not normal expense rows. */
 function isTravelAllowanceRecord(expense: ExpenseRecord): boolean {
   return String(expense.expenseHead || '').trim() === 'Travel' && expense.outStation === 'Yes';
+}
+
+/** International creates persist currency as USD / GBP / EUR (never INR). */
+export function isInternationalExpenseRecord(expense: ExpenseRecord): boolean {
+  const currency = String(expense.currency || '').trim();
+  return currency === 'USD' || currency === 'GBP' || currency === 'EUR';
 }
 
 export function buildExpenseExportContext(
@@ -169,6 +179,14 @@ async function loadLogoDataUrl(): Promise<string | null> {
   }
 }
 
+function currencyLabel(currency?: string): string {
+  if (currency === 'USD') return 'USD';
+  if (currency === 'GBP') return 'GBP';
+  if (currency === 'EUR') return 'EUR';
+  if (currency === 'INR') return 'INR';
+  return 'INR';
+}
+
 function buildRowValues(expense: ExpenseRecord, index: number): string[] {
   const amount = Number.isFinite(Number(expense.amount)) ? Number(expense.amount) : 0;
   return [
@@ -186,20 +204,33 @@ function buildRowValues(expense: ExpenseRecord, index: number): string[] {
     formatDateCell(expense.stayDateTo),
     displayCell(expense.serviceProvider),
     displayCell(expense.billNumber),
+    displayCell(expense.companyGstIn),
+    currencyLabel(expense.currency),
     displayCell(expense.fuelType),
     supportingDocumentLabel(expense),
     formatAmount(amount),
   ];
 }
 
-function buildExportFileName(context: ExpenseExportContext): string {
+function buildExportFileName(context: ExpenseExportContext, suffix?: string): string {
   const employee = String(context.employeeName || 'Employee')
     .trim()
     .replace(/\.xlsx$/i, '')
     .replace(/\s+/g, '-');
   const month = String(context.monthLabel || '').trim().replace(/\.xlsx$/i, '');
   const year = String(context.yearLabel || '').trim().replace(/\.xlsx$/i, '');
-  return `SPPL-Expenses-${employee}-${month}-${year}.pdf`;
+  const kind = String(suffix || '')
+    .trim()
+    .replace(/\s+/g, '-');
+  return kind
+    ? `SPPL-Expenses-${kind}-${employee}-${month}-${year}.pdf`
+    : `SPPL-Expenses-${employee}-${month}-${year}.pdf`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function downloadPdfBlob(doc: jsPDF, fileName: string) {
@@ -218,6 +249,16 @@ function downloadPdfBlob(doc: jsPDF, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
+export type ExpensePdfExportOptions = {
+  /** Appended to download filename, e.g. International / Domestic-TravelAllowance */
+  fileNameSuffix?: string;
+  /**
+   * When true and table rows use more than one currency, Total shows per-currency
+   * amounts instead of a single summed figure (no FX conversion).
+   */
+  currencyAwareTotal?: boolean;
+};
+
 /**
  * PDF export that reproduces the existing Excel expense export layout.
  * Dataset / filters / columns unchanged — layout only.
@@ -226,6 +267,7 @@ export async function exportExpensesToPdf(
   rows: ExpenseRecord[],
   context: ExpenseExportContext,
   travelAllowanceSummary?: ExpenseTravelAllowanceSummary,
+  options?: ExpensePdfExportOptions,
 ): Promise<void> {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -239,9 +281,12 @@ export async function exportExpensesToPdf(
 
   const tableRows = rows.filter((expense) => !isTravelAllowanceRecord(expense));
   let totalAmount = 0;
+  const totalsByCurrency = new Map<string, number>();
   const bodyRows = tableRows.map((expense, index) => {
     const amount = Number.isFinite(Number(expense.amount)) ? Number(expense.amount) : 0;
     totalAmount += amount;
+    const label = currencyLabel(expense.currency);
+    totalsByCurrency.set(label, (totalsByCurrency.get(label) || 0) + amount);
     return buildRowValues(expense, index);
   });
 
@@ -250,6 +295,7 @@ export async function exportExpensesToPdf(
     totalAmount + (Number.isFinite(travelAllowanceTotal) ? travelAllowanceTotal : 0);
   const title = `SPPL : Expenses by ${context.employeeName} in ${context.monthLabel} ${context.yearLabel}`;
   const logoDataUrl = await loadLogoDataUrl();
+  const useCurrencyAwareTotal = Boolean(options?.currencyAwareTotal) && totalsByCurrency.size > 1;
 
   const headerFontSize = 7;
   const bodyFontSize = 7;
@@ -405,7 +451,11 @@ export async function exportExpensesToPdf(
     const amountColWidth = colWidths[COL_COUNT - 1];
     const amountColRight = marginX + usableWidth;
     const amountColLeft = amountColRight - amountColWidth;
-    const totalAmountText = formatAmount(finalTotal);
+    const totalAmountText = useCurrencyAwareTotal
+      ? [...totalsByCurrency.entries()]
+          .map(([code, amount]) => `${code} ${formatAmount(amount)}`)
+          .join('  |  ')
+      : formatAmount(finalTotal);
 
     doc.setTextColor(0, 0, 0);
     doc.setFont('helvetica', 'bold');
@@ -430,7 +480,61 @@ export async function exportExpensesToPdf(
   doc.text('Claimed by & Signature', marginX + half / 2, y + 12, { align: 'center' });
   doc.text('Approved by & Signature', marginX + half + half / 2, y + 12, { align: 'center' });
 
-  downloadPdfBlob(doc, buildExportFileName(context));
+  downloadPdfBlob(doc, buildExportFileName(context, options?.fileNameSuffix));
+}
+
+/**
+ * Month/Year Export Data: two PDFs —
+ * 1) International expenses only (USD / GBP / EUR)
+ * 2) Domestic expenses + all Traveling Allowance records for the period
+ */
+export async function exportMonthExpensesAsSplitPdfs(
+  rows: ExpenseRecord[],
+  context: ExpenseExportContext,
+): Promise<{ internationalCount: number; domesticTravelCount: number; pdfCount: number }> {
+  const internationalRows = rows.filter(
+    (row) => isInternationalExpenseRecord(row) && !isTravelAllowanceRecord(row),
+  );
+  const domesticTravelRows = rows.filter((row) => !isInternationalExpenseRecord(row));
+
+  let pdfCount = 0;
+
+  if (internationalRows.length > 0) {
+    await exportExpensesToPdf(internationalRows, context, undefined, {
+      fileNameSuffix: 'International',
+      currencyAwareTotal: true,
+    });
+    pdfCount += 1;
+  }
+
+  if (domesticTravelRows.length > 0) {
+    if (pdfCount > 0) {
+      await delay(400);
+    }
+    const outstationRows = domesticTravelRows.filter(isTravelAllowanceRecord);
+    const travelAllowanceSummary =
+      outstationRows.length > 0
+        ? {
+            recordCount: outstationRows.length,
+            totalAmount: outstationRows.reduce((sum, row) => {
+              const fromAllowance = Number(row.travelAllowanceAmount);
+              if (Number.isFinite(fromAllowance)) return sum + fromAllowance;
+              const fromAmount = Number(row.amount);
+              return sum + (Number.isFinite(fromAmount) ? fromAmount : 0);
+            }, 0),
+          }
+        : undefined;
+    await exportExpensesToPdf(domesticTravelRows, context, travelAllowanceSummary, {
+      fileNameSuffix: 'Domestic-TravelAllowance',
+    });
+    pdfCount += 1;
+  }
+
+  return {
+    internationalCount: internationalRows.length,
+    domesticTravelCount: domesticTravelRows.length,
+    pdfCount,
+  };
 }
 
 /** @deprecated Use exportExpensesToPdf */

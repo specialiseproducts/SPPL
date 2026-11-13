@@ -181,13 +181,13 @@ export function normalizeEmployeeLocationLabel(location) {
 
 /**
  * Location-based daily minimum planned hours (Office 7.5, Factory 7).
- * Optional leaveKind: 'full' → 0; 'half' → Office 3.75 / Factory 3.5 (exact minutes/60).
+ * Optional leaveKind: 'full' → 0; 'half' → 4 hours (Office and Factory).
  */
 export function getMinPlannedHoursForLocation(location, leaveKind = 'none') {
   const kind = String(leaveKind || 'none').trim();
   if (kind === 'full') return 0;
   if (kind === 'half') {
-    return normalizeEmployeeLocationLabel(location) === 'Factory' ? 3.5 : 3.75;
+    return 4;
   }
   return normalizeEmployeeLocationLabel(location) === 'Factory'
     ? MIN_PLANNED_HOURS_FACTORY

@@ -171,6 +171,12 @@ function normalizeTask(raw: DailyPlannerTask | Record<string, unknown>): DailyPl
     rescheduledBy: String(r.rescheduledBy ?? '').trim(),
     rescheduledByName: String(r.rescheduledByName ?? '').trim(),
     rescheduledAt: r.rescheduledAt ? String(r.rescheduledAt) : null,
+    leaveAutoRescheduleLeaveRequestId: r.leaveAutoRescheduleLeaveRequestId
+      ? String(r.leaveAutoRescheduleLeaveRequestId).trim()
+      : null,
+    leaveHalfDaySelectionAckLeaveRequestId: r.leaveHalfDaySelectionAckLeaveRequestId
+      ? String(r.leaveHalfDaySelectionAckLeaveRequestId).trim()
+      : null,
     terminatedBy: String(r.terminatedBy ?? '').trim(),
     terminatedByName: String(r.terminatedByName ?? '').trim(),
     terminatedAt: r.terminatedAt ? String(r.terminatedAt) : null,
@@ -570,6 +576,8 @@ export async function updateDailyPlannerTask(
     projectName?: string;
     projectTaskId?: string;
     needsDocument?: boolean;
+    /** When set, backend syncs description + hoursRequired from the steps. */
+    procedureSteps?: DailyPlannerProcedureStep[];
   },
 ): Promise<DailyPlannerTask> {
   const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}`, {
@@ -579,6 +587,87 @@ export async function updateDailyPlannerTask(
   })) as { data?: { task?: DailyPlannerTask } };
   if (!res?.data?.task) throw new Error('Update failed');
   return normalizeTask(res.data.task);
+}
+
+/** Employee soft-delete of an owned planned task (blocked after reporting). */
+export async function deleteDailyPlannerTask(taskId: string): Promise<{ success: boolean }> {
+  const res = (await apiFetch(`/api/daily-planner/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+  })) as { data?: { success?: boolean }; success?: boolean };
+  if (res?.data?.success === false || res?.success === false) {
+    throw new Error('Delete failed');
+  }
+  return { success: true };
+}
+
+/**
+ * Reschedule a planned task to another date (reuses not-completed next_date).
+ * Does not apply Mark Completed evening-window asserts — visibility is gated separately.
+ */
+export async function rescheduleDailyPlannerTaskToDate(
+  taskId: string,
+  newDate: string,
+  reason = 'Rescheduled by employee',
+): Promise<DailyPlannerNotCompletedResult> {
+  const res = (await apiFetch(
+    `/api/daily-planner/tasks/${encodeURIComponent(taskId)}/not-completed`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: String(reason || '').trim() || 'Rescheduled by employee',
+        action: 'next_date',
+        newDate: String(newDate || '').trim().slice(0, 10),
+      }),
+    },
+  )) as {
+    data?: { task?: DailyPlannerTask; rescheduledTask?: DailyPlannerTask };
+  };
+  if (!res?.data?.task) throw new Error('Reschedule failed');
+  return {
+    task: normalizeTask(res.data.task),
+    rescheduledTask: res.data.rescheduledTask
+      ? normalizeTask(res.data.rescheduledTask)
+      : undefined,
+  };
+}
+
+/** Employee half-day leave: keep/reschedule selected planned tasks. */
+export async function applyHalfDayLeaveTaskSelection(body: {
+  leaveRequestId: string;
+  rescheduleTaskIds: string[];
+  targetDate?: string;
+}): Promise<{
+  leaveRequestId: string;
+  leaveDate: string;
+  targetDate: string | null;
+  moved: Array<{ original: DailyPlannerTask; rescheduled: DailyPlannerTask }>;
+  kept: DailyPlannerTask[];
+}> {
+  const res = (await apiFetch('/api/daily-planner/leave/half-day-task-selection', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })) as {
+    data?: {
+      leaveRequestId?: string;
+      leaveDate?: string;
+      targetDate?: string | null;
+      moved?: Array<{ original?: DailyPlannerTask; rescheduled?: DailyPlannerTask }>;
+      kept?: DailyPlannerTask[];
+    };
+  };
+  if (!res?.data?.leaveRequestId) throw new Error('Half-day leave selection failed');
+  return {
+    leaveRequestId: String(res.data.leaveRequestId),
+    leaveDate: String(res.data.leaveDate || ''),
+    targetDate: res.data.targetDate ? String(res.data.targetDate) : null,
+    moved: (res.data.moved || []).map((row) => ({
+      original: normalizeTask(row.original as DailyPlannerTask),
+      rescheduled: normalizeTask(row.rescheduled as DailyPlannerTask),
+    })),
+    kept: (res.data.kept || []).map((t) => normalizeTask(t)),
+  };
 }
 
 export interface DailyPlannerNotCompletedPayload {

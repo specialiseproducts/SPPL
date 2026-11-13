@@ -14,14 +14,18 @@ import {
   usePlanningConfigQuery,
 } from '../../hooks/dailyPlanner/useDailyPlannerQueries';
 import DailyPlannerLeaveChip from './DailyPlannerLeaveChip';
-import { groupLeaveRequestsByDate } from '../../utils/payrollLeaveDates';
+import { groupLeaveRequestsByDate, isApprovedLeaveStatus } from '../../utils/payrollLeaveDates';
 import type { PayrollLeaveRequest } from '../../types/payroll';
 import {
   FULL_DAY_LEAVE_NO_PLANNING_MESSAGE,
   classifyApprovedLeaveForDate,
+  isHalfDayLeaveType,
   partitionLeavesForPlannerCell,
 } from '../../utils/dailyPlannerLeaveRules';
-import { createDailyPlannerTasks } from '../../hooks/dailyPlanner/dailyPlannerApi';
+import {
+  createDailyPlannerTasks,
+  updateDailyPlannerTask,
+} from '../../hooks/dailyPlanner/dailyPlannerApi';
 import {
   markRevisionParentHandledInCache,
   removePlannerTasksFromCache,
@@ -33,6 +37,7 @@ import DailyPlannerCreateTaskModal from './DailyPlannerCreateTaskModal';
 import DailyPlannerDayTasksModal from './DailyPlannerDayTasksModal';
 import DailyPlannerPlanSummaryDialog from './DailyPlannerPlanSummaryDialog';
 import DailyPlannerTaskChip from './DailyPlannerTaskChip';
+import HalfDayLeaveTaskSelectionDialog from './HalfDayLeaveTaskSelectionDialog';
 import CalendarHolidayDayHeader from '../calendar/CalendarHolidayDayHeader';
 import PlanningPerformanceDashboard from './PlanningPerformanceDashboard';
 import {
@@ -228,11 +233,15 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
   const { year, month } = view;
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set());
   const [createDate, setCreateDate] = useState<string | null>(null);
+  const [editingTask, setEditingTask] = useState<DailyPlannerTask | null>(null);
   const [createBlockedReason, setCreateBlockedReason] = useState<string | null>(null);
   const [reviseTaskId, setReviseTaskId] = useState<string | null>(null);
   const [isExtraTaskMode, setIsExtraTaskMode] = useState(false);
   const [dayDate, setDayDate] = useState<string | null>(null);
   const [finalPlanOpen, setFinalPlanOpen] = useState(false);
+  const [halfDaySelectionDismissed, setHalfDaySelectionDismissed] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const monthQuery = useDailyPlannerMonthQuery(year, month);
   const myEmployeeCode = String(user?.employeeCode || user?.id || '').trim();
@@ -249,6 +258,43 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
     () => groupLeaveRequestsByDate(leaveQuery.data ?? [], { approvedOnly: true }),
     [leaveQuery.data],
   );
+
+  /** First approved half-day leave in view that still needs keep/reschedule selection. */
+  const pendingHalfDaySelection = useMemo(() => {
+    const leaves = (leaveQuery.data ?? []).filter(
+      (row) => isApprovedLeaveStatus(row.status) && isHalfDayLeaveType(row.leaveType),
+    );
+    for (const leave of leaves) {
+      const leaveId = String(leave.leaveRequestId || '').trim();
+      if (!leaveId || halfDaySelectionDismissed.has(leaveId)) continue;
+      const leaveDate = String(leave.startDate || '').trim().slice(0, 10);
+      if (!leaveDate) continue;
+      const openTasks = tasks.filter((t) => {
+        if (String(t.date || '').trim().slice(0, 10) !== leaveDate) return false;
+        const status = String(t.status || '').trim();
+        if (
+          status === 'Rescheduled' ||
+          status === 'Terminated' ||
+          status === 'Verified Complete' ||
+          status === 'Completed' ||
+          status === 'Closed'
+        ) {
+          return false;
+        }
+        if (String(t.source || '').trim() === 'EXTRA') return false;
+        if (String(t.leaveHalfDaySelectionAckLeaveRequestId || '').trim() === leaveId) {
+          return false;
+        }
+        if (String(t.leaveAutoRescheduleLeaveRequestId || '').trim() === leaveId) {
+          return false;
+        }
+        return true;
+      });
+      if (openTasks.length === 0) continue;
+      return { leave, tasks: openTasks, leaveDate };
+    }
+    return null;
+  }, [leaveQuery.data, tasks, halfDaySelectionDismissed]);
   const grid = useMemo(
     () => buildDailyMonthGrid(year, month, tasks, employeeLocation),
     [year, month, tasks, employeeLocation],
@@ -385,8 +431,16 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
 
     setReviseTaskId(revisesTaskId || null);
     setIsExtraTaskMode(false);
+    setEditingTask(null);
     setCreateBlockedReason(null);
     setCreateDate(iso);
+  };
+  const openEditTask = (task: DailyPlannerTask) => {
+    setReviseTaskId(null);
+    setIsExtraTaskMode(false);
+    setCreateBlockedReason(null);
+    setEditingTask(task);
+    setCreateDate(String(task.date || '').trim().slice(0, 10));
   };
   const openExtraTask = (iso: string) => {
     const config = planningConfigQuery.data;
@@ -409,6 +463,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
     }
     setReviseTaskId(null);
     setIsExtraTaskMode(true);
+    setEditingTask(null);
     setCreateBlockedReason(null);
     setCreateDate(iso);
   };
@@ -455,6 +510,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
     }
     setReviseTaskId(null);
     setIsExtraTaskMode(false);
+    setEditingTask(null);
     setCreateBlockedReason(null);
     setCreateDate(planDate);
   };
@@ -637,7 +693,8 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
           regularCreationBlockedMessage={createBlockedReason}
           elevated={false}
           isExtraTask={isExtraTaskMode}
-          skipPlanningWindowAssert={isExtraTaskMode}
+          editingTask={editingTask}
+          skipPlanningWindowAssert={isExtraTaskMode || Boolean(editingTask)}
           enhancedEligible={Boolean(planningConfigQuery.data?.enhancedEligible)}
           existingTasksForDate={
             createDate
@@ -654,6 +711,15 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
             setCreateBlockedReason(null);
             setReviseTaskId(null);
             setIsExtraTaskMode(false);
+            setEditingTask(null);
+          }}
+          onUpdate={async (taskId, patch) => {
+            const updated = await updateDailyPlannerTask(taskId, patch);
+            toast.success('Task updated');
+            setEditingTask(null);
+            setCreateBlockedReason(null);
+            refresh({ upsert: [updated] });
+            return updated;
           }}
           onSave={async (drafts) => {
             const withExtra = isExtraTaskMode
@@ -684,6 +750,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
             const parentId = reviseTaskId;
             setReviseTaskId(null);
             setIsExtraTaskMode(false);
+            setEditingTask(null);
             setCreateBlockedReason(null);
             refresh({
               upsert: created,
@@ -709,6 +776,7 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
             if (!dayDate) return;
             openExtraTask(dayDate);
           }}
+          onEditTask={openEditTask}
           onViewFinalPlan={dayPlanFinalized ? () => setFinalPlanOpen(true) : undefined}
         />
 
@@ -729,6 +797,24 @@ export default function MyDailyPlannerTab({ moduleRole: _moduleRole }: { moduleR
             if (dayDate && getDailyPlannerDateMode(dayDate) === 'future') {
               setDayDate(null);
             }
+          }}
+        />
+
+        <HalfDayLeaveTaskSelectionDialog
+          open={Boolean(pendingHalfDaySelection)}
+          leaveRequest={pendingHalfDaySelection?.leave ?? null}
+          tasks={pendingHalfDaySelection?.tasks ?? []}
+          onClose={() => {
+            const id = String(pendingHalfDaySelection?.leave.leaveRequestId || '').trim();
+            if (!id) return;
+            setHalfDaySelectionDismissed((prev) => new Set(prev).add(id));
+          }}
+          onApplied={({ moved, kept }) => {
+            const id = String(pendingHalfDaySelection?.leave.leaveRequestId || '').trim();
+            if (id) {
+              setHalfDaySelectionDismissed((prev) => new Set(prev).add(id));
+            }
+            refresh({ upsert: [...moved, ...kept] });
           }}
         />
       </div>

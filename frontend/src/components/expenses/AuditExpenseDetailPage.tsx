@@ -437,7 +437,32 @@ export default function AuditExpenseDetailPage({ expenseId }: AuditExpenseDetail
           <ReadField label="Employee Name" value={detailExpense?.employeeName} />
           <ReadField label="Date" value={detailExpense?.date} />
           <ReadField label="Bill Number" value={detailExpense?.billNumber} />
-          <ReadField label="Amount" value={detailExpense?.amount} />
+          {detailExpense?.companyGstIn === 'Yes' || detailExpense?.companyGstIn === 'No' ? (
+            <ReadField
+              label="Did you give Company GSTIN?"
+              value={detailExpense.companyGstIn}
+            />
+          ) : null}
+          <ReadField
+            label={
+              detailExpense?.currency === 'USD'
+                ? 'Amount (USD $)'
+                : detailExpense?.currency === 'GBP'
+                  ? 'Amount (GBP £)'
+                  : detailExpense?.currency === 'EUR'
+                    ? 'Amount (EUR €)'
+                    : 'Amount'
+            }
+            value={
+              detailExpense?.amount != null && Number.isFinite(Number(detailExpense.amount))
+                ? Number(detailExpense.amount).toLocaleString('en-IN', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })
+                : detailExpense?.amount
+            }
+          />
+          <ReadField label="City" value={detailExpense?.location} />
           <ReadField label="Purpose" value={detailExpense?.purpose} />
           <ReadField label="Supporting Document" value={detailExpense?.supportingDocument} />
           <ReadField label="Month-Year" value={detailExpense?.monthYear} />

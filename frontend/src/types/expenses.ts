@@ -18,8 +18,12 @@ export interface ExpenseRecord {
   purpose: string;
   serviceProvider: string;
   billNumber: string;
+  /** Yes/No when Transport + Flight / Train Ticket; omitted on older rows */
+  companyGstIn?: 'Yes' | 'No';
   date: string;
   amount: number;
+  /** INR omitted/legacy; USD / GBP / EUR for International Expense creates */
+  currency?: 'INR' | 'USD' | 'GBP' | 'EUR';
   employeeName: string;
   employeeId?: string;
   employeeEmail?: string;
@@ -66,6 +70,7 @@ export type ExpenseEditRequestType =
   | 'Amount'
   | 'Date'
   | 'Location'
+  | 'City'
   | 'Purpose'
   | 'Service Provider'
   | 'Bill Number';

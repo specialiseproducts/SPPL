@@ -33,10 +33,11 @@ import type {
   PayrollLeaveType,
 } from '../../types/payroll';
 import {
-  inclusiveCalendarDays,
+  countWorkingDaysInRange,
   requiresAdvanceNoticeWarning,
   todayIstDateKey,
 } from '../../utils/payrollLeaveDates';
+import { useAuth } from '../../context/AuthContext';
 
 type LeaveRequestDialogProps = {
   open: boolean;
@@ -65,6 +66,8 @@ export default function LeaveRequestDialog({
   onClose,
   onSaved,
 }: LeaveRequestDialogProps) {
+  const { user } = useAuth();
+  const employeeLocation = user?.location || 'Office';
   const today = todayIstDateKey();
   const isEdit = Boolean(editingRequest?.leaveRequestId);
   const [leaveType, setLeaveType] = useState<PayrollLeaveType | ''>('');
@@ -107,8 +110,8 @@ export default function LeaveRequestDialog({
   const durationDays = useMemo(() => {
     if (leaveType !== 'multiple_day') return null;
     if (!startDate || !endDate) return null;
-    return inclusiveCalendarDays(startDate, endDate);
-  }, [leaveType, startDate, endDate]);
+    return countWorkingDaysInRange(startDate, endDate, employeeLocation);
+  }, [leaveType, startDate, endDate, employeeLocation]);
 
   const needsAdvanceWarning = useMemo(() => {
     if (leaveType !== 'multiple_day' || durationDays == null) return false;
@@ -177,6 +180,10 @@ export default function LeaveRequestDialog({
     }
     if (durationDays == null) {
       toast.error('Invalid date range');
+      return null;
+    }
+    if (durationDays < 1) {
+      toast.error('Selected dates do not include any working days. Adjust the leave date range.');
       return null;
     }
 
@@ -295,8 +302,11 @@ export default function LeaveRequestDialog({
                   <Label>Calculated Leave Duration</Label>
                   <p className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-[#212529]">
                     {durationDays != null
-                      ? `${durationDays} day${durationDays === 1 ? '' : 's'}`
+                      ? `${durationDays} working day${durationDays === 1 ? '' : 's'}`
                       : '—'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Sundays and applicable holidays for your location are excluded.
                   </p>
                 </div>
               </div>

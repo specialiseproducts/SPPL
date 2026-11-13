@@ -524,6 +524,18 @@ export default function TodayTaskReviewWizard({
     return '—';
   }, [procedureActualMinutes, task?.completionDurationHours]);
 
+  /** Original planned duration for this task (hoursRequired), not actual/reported time. */
+  const summaryPlannedTimeLabel = useMemo(() => {
+    const planned = Number(task?.hoursRequired);
+    if (Number.isFinite(planned) && planned > 0) return formatDurationLabel(planned);
+    const stepPlanned = procedureSteps.reduce(
+      (sum, s) => sum + (Number(s.plannedMinutes) > 0 ? Number(s.plannedMinutes) : 0),
+      0,
+    );
+    if (stepPlanned > 0) return formatMinutesLabel(stepPlanned);
+    return '—';
+  }, [task?.hoursRequired, procedureSteps]);
+
   const advanceAfterSave = useCallback(() => {
     if (currentIndex < total - 1) {
       setCurrentIndex((i) => i + 1);
@@ -1216,7 +1228,7 @@ export default function TodayTaskReviewWizard({
                     </Button>
                   }
                 >
-                  <div className="grid grid-cols-1 items-start gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid grid-cols-1 items-start gap-1.5 sm:grid-cols-2 lg:grid-cols-5">
                     <ViewField
                       compact
                       label="Project Name"
@@ -1275,6 +1287,11 @@ export default function TodayTaskReviewWizard({
                     </div>
                     <ViewField
                       compact
+                      label="Planned Time"
+                      value={summaryPlannedTimeLabel}
+                    />
+                    <ViewField
+                      compact
                       label="Actual Time"
                       value={summaryActualTimeLabel}
                     />
@@ -1305,16 +1322,17 @@ export default function TodayTaskReviewWizard({
                     <Table className="table-fixed w-full min-w-[640px]">
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="w-[28%]">Steps</TableHead>
-                          <TableHead className="w-[32%]">Work Done</TableHead>
-                          <TableHead className="w-[18%]">Action</TableHead>
-                          <TableHead className="w-[22%]">Comment</TableHead>
+                          <TableHead className="w-[24%]">Steps</TableHead>
+                          <TableHead className="w-[26%]">Work Done</TableHead>
+                          <TableHead className="w-[16%]">Action</TableHead>
+                          <TableHead className="w-[14%]">Documents</TableHead>
+                          <TableHead className="w-[20%]">Comment</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {procedureSteps.length === 0 ? (
                           <TableRow>
-                            <TableCell colSpan={4} className="text-sm text-gray-600">
+                            <TableCell colSpan={5} className="text-sm text-gray-600">
                               No steps recorded for this task.
                             </TableCell>
                           </TableRow>
@@ -1688,6 +1706,18 @@ export default function TodayTaskReviewWizard({
                                         )}
                                       </div>
                                     )}
+                                  </TableCell>
+                                ) : null}
+                                {isFirst ? (
+                                  <TableCell
+                                    rowSpan={rowSpan}
+                                    className="align-top whitespace-normal border-l border-gray-100 bg-white"
+                                  >
+                                    <DailyPlannerTaskDocumentsList
+                                      task={task}
+                                      className="space-y-1.5"
+                                      compact
+                                    />
                                   </TableCell>
                                 ) : null}
                                 {isFirst ? (

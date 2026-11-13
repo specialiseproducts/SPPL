@@ -175,6 +175,16 @@ export const updateTask = async (req, res, next) => {
   }
 };
 
+export const applyHalfDayLeaveTaskSelection = async (req, res, next) => {
+  try {
+    const data = await DailyPlannerService.applyHalfDayLeaveTaskSelection(req.body || {}, req.user);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    log.error('Daily planner applyHalfDayLeaveTaskSelection error:', error);
+    next(error);
+  }
+};
+
 export const updateTaskForEmployee = async (req, res, next) => {
   try {
     const data = await DailyPlannerService.updateTaskForEmployee(

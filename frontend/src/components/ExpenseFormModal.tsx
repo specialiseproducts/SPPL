@@ -18,6 +18,7 @@ import {
   EXPENSE_HEADS,
   getSubcategoriesForHead,
   isCanonicalExpenseHead,
+  showCompanyGstInField,
 } from '../constants/expenseSubCategories';
 import {
   isTravelCarOrBike,
@@ -40,6 +41,7 @@ import {
   useExpenseServiceProviderMastersQuery,
 } from '../hooks/expenses/useExpensesQueries';
 import { resolveMasterDisplayValue } from '../utils/expenseMasterNormalize';
+import { cn } from './ui/utils';
 
 interface ExpenseFormModalProps {
   isOpen: boolean;
@@ -50,17 +52,60 @@ interface ExpenseFormModalProps {
   currentUserName: string;
 }
 
+type CreateStep = 'select' | 'currency' | 'form';
+type ExpenseCreateKind = 'traveling' | 'domestic' | 'international';
+type InternationalCurrency = 'USD' | 'GBP' | 'EUR';
+
+const CREATE_KIND_OPTIONS: { value: ExpenseCreateKind; label: string }[] = [
+  { value: 'traveling', label: 'Traveling Allowances' },
+  { value: 'domestic', label: 'Domestic Expense' },
+  { value: 'international', label: 'International Expense' },
+];
+
+const CURRENCY_OPTIONS: { value: InternationalCurrency; label: string }[] = [
+  { value: 'USD', label: 'USD ($)' },
+  { value: 'GBP', label: 'Pound Sterling (£)' },
+  { value: 'EUR', label: 'Euro (€)' },
+];
+
 const SUB_CATEGORY_UNSET = '__unset__';
 const FUEL_TYPE_UNSET = '__fuel_unset__';
 const SUPPORTING_FILE_EXT = /\.(doc|docx|pdf|jpg|jpeg|png|xls|xlsx)$/i;
+const AMOUNT_INPUT_PATTERN = /^\d*(\.\d{0,2})?$/;
 
-const emptyForm = {
-  expenseHead: 'Travel',
+const emptyForm: {
+  expenseHead: string;
+  subCategory: string;
+  location: string;
+  purpose: string;
+  serviceProvider: string;
+  billNumber: string;
+  companyGstIn: '' | 'Yes' | 'No';
+  date: string;
+  amount: string;
+  monthYear: string;
+  pnrNo: string;
+  fromLocation: string;
+  toLocation: string;
+  returnType: string;
+  kilometers: string;
+  stayDateFrom: string;
+  stayDateTo: string;
+  supportingDocument: 'Yes' | 'No';
+  fuelType: string;
+  outStation: 'Yes' | 'No';
+  arrivalDate: string;
+  arrivalTime: string;
+  departureDate: string;
+  departureTime: string;
+} = {
+  expenseHead: 'Transport',
   subCategory: SUB_CATEGORY_UNSET,
   location: '',
   purpose: '',
   serviceProvider: '',
   billNumber: '',
+  companyGstIn: '' as '' | 'Yes' | 'No',
   date: '',
   amount: '',
   monthYear: '',
@@ -80,6 +125,27 @@ const emptyForm = {
   departureTime: '',
 };
 
+function amountFieldLabel(currency: InternationalCurrency | 'INR' | null): string {
+  if (currency === 'USD') return 'Amount (USD $) *';
+  if (currency === 'GBP') return 'Amount (GBP £) *';
+  if (currency === 'EUR') return 'Amount (EUR €) *';
+  return 'Amount (Rs) *';
+}
+
+function internationalCurrencyDescription(currency: InternationalCurrency): string {
+  if (currency === 'USD') return 'USD ($)';
+  if (currency === 'GBP') return 'Pound Sterling (£)';
+  return 'Euro (€)';
+}
+
+function isValidAmountText(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return false;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n > 0;
+}
+
 export default function ExpenseFormModal({
   isOpen,
   onClose,
@@ -93,7 +159,44 @@ export default function ExpenseFormModal({
   const [departureScreenshot, setDepartureScreenshot] = useState<File | null>(null);
   const [travelRates, setTravelRates] = useState<ExpenseTravelRates | null>(null);
   const [formData, setFormData] = useState({ ...emptyForm });
+  const [createStep, setCreateStep] = useState<CreateStep>('select');
+  const [createKind, setCreateKind] = useState<ExpenseCreateKind | ''>('');
+  const [internationalCurrency, setInternationalCurrency] = useState<InternationalCurrency | ''>(
+    '',
+  );
   const prevShowTravelRef = useRef<boolean | null>(null);
+
+  const activeCurrency: InternationalCurrency | 'INR' | null =
+    createKind === 'international' && internationalCurrency
+      ? internationalCurrency
+      : createKind === 'domestic' || createKind === 'traveling'
+        ? 'INR'
+        : null;
+
+  const beginFormForKind = (kind: ExpenseCreateKind, currency?: InternationalCurrency) => {
+    if (kind === 'traveling') {
+      setFormData({
+        ...emptyForm,
+        expenseHead: 'Travel',
+        outStation: 'Yes',
+        supportingDocument: 'Yes',
+        amount: '0',
+      });
+    } else {
+      setFormData({
+        ...emptyForm,
+        expenseHead: 'Transport',
+        outStation: 'No',
+      });
+    }
+    setCreateKind(kind);
+    setInternationalCurrency(currency ?? '');
+    setSelectedFile(null);
+    setArrivalScreenshot(null);
+    setDepartureScreenshot(null);
+    prevShowTravelRef.current = null;
+    setCreateStep('form');
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -101,6 +204,9 @@ export default function ExpenseFormModal({
     setSelectedFile(null);
     setArrivalScreenshot(null);
     setDepartureScreenshot(null);
+    setCreateStep('select');
+    setCreateKind('');
+    setInternationalCurrency('');
     prevShowTravelRef.current = null;
   }, [isOpen]);
 
@@ -289,8 +395,8 @@ export default function ExpenseFormModal({
       }
     }
 
-    if (!isOutstationTravel && !showTicketTransport && !formData.location.trim()) {
-      toast.error('Please enter location');
+    if (!isOutstationTravel && !formData.location.trim()) {
+      toast.error('Please enter city');
       return;
     }
     if (!isOutstationTravel && !formData.purpose.trim()) {
@@ -303,6 +409,14 @@ export default function ExpenseFormModal({
     }
     if (!isOutstationTravel && !showTravelDetail && !formData.billNumber.trim()) {
       toast.error('Please enter bill number or "NA"');
+      return;
+    }
+    if (
+      showCompanyGstInField(formData.expenseHead, effectiveSubCategory) &&
+      formData.companyGstIn !== 'Yes' &&
+      formData.companyGstIn !== 'No'
+    ) {
+      toast.error('Please select whether you gave Company GSTIN');
       return;
     }
     if (!isOutstationTravel && !showHotelStay && !formData.date) {
@@ -432,7 +546,7 @@ export default function ExpenseFormModal({
         return;
       }
     } else {
-      if (!formData.amount || parseFloat(formData.amount) <= 0) {
+      if (!isValidAmountText(formData.amount)) {
         toast.error('Please enter a valid amount');
         return;
       }
@@ -478,18 +592,26 @@ export default function ExpenseFormModal({
       expenseId: '',
       expenseHead: formData.expenseHead,
       subCategory: subCategoryResolved || undefined,
-      location:
-        isOutstationTravel || showTicketTransport
-          ? ''
-          : resolveMasterDisplayValue(formData.location, locationOptions),
+      location: isOutstationTravel
+        ? ''
+        : resolveMasterDisplayValue(formData.location, locationOptions),
       purpose: isOutstationTravel ? '' : formData.purpose.trim(),
       serviceProvider:
         showTravelDetail || isOutstationTravel
           ? ''
           : resolveMasterDisplayValue(formData.serviceProvider, serviceProviderOptions),
       billNumber: showTravelDetail || isOutstationTravel ? '' : formData.billNumber.trim(),
+      ...(showCompanyGstInField(formData.expenseHead, effectiveSubCategory) &&
+      (formData.companyGstIn === 'Yes' || formData.companyGstIn === 'No')
+        ? { companyGstIn: formData.companyGstIn }
+        : {}),
       date: submissionDate,
       amount: amountNum,
+      ...(createKind === 'international' && internationalCurrency
+        ? { currency: internationalCurrency }
+        : createKind === 'domestic'
+          ? { currency: 'INR' as const }
+          : {}),
       employeeName: currentUserName,
       monthYear: formData.monthYear,
       createdAt: new Date().toISOString(),
@@ -507,14 +629,14 @@ export default function ExpenseFormModal({
       ...(showTicketTransport && !isOutstationTravel
         ? {
             pnrNo: formData.pnrNo.trim(),
-            fromLocation: resolveMasterDisplayValue(formData.fromLocation, locationOptions),
-            toLocation: resolveMasterDisplayValue(formData.toLocation, locationOptions),
+            fromLocation: formData.fromLocation.trim(),
+            toLocation: formData.toLocation.trim(),
           }
         : {}),
       ...(showTravelDetail && !isOutstationTravel
         ? {
-            fromLocation: resolveMasterDisplayValue(formData.fromLocation, locationOptions),
-            toLocation: resolveMasterDisplayValue(formData.toLocation, locationOptions),
+            fromLocation: formData.fromLocation.trim(),
+            toLocation: formData.toLocation.trim(),
             returnType: formData.returnType.trim(),
             kilometers: parseFloat(formData.kilometers) || 0,
             fuelType: formData.fuelType !== FUEL_TYPE_UNSET ? formData.fuelType : undefined,
@@ -550,83 +672,177 @@ export default function ExpenseFormModal({
   const subCategoryDisabled =
     !formData.expenseHead || !isCanonicalExpenseHead(formData.expenseHead);
 
+  if (createStep === 'select') {
+    return (
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create New Record</DialogTitle>
+            <DialogDescription>Select the type of expense to create</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2" role="radiogroup" aria-label="Expense type">
+            {CREATE_KIND_OPTIONS.map((option) => (
+              <label
+                key={option.value}
+                className={cn(
+                  'flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50',
+                  createKind === option.value && 'border-blue-300 bg-blue-50',
+                )}
+              >
+                <input
+                  type="radio"
+                  name="expense-create-kind"
+                  className="h-4 w-4 accent-[#007BFF]"
+                  checked={createKind === option.value}
+                  onChange={() => setCreateKind(option.value)}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#007BFF] hover:bg-[#0056b3]"
+              disabled={!createKind}
+              onClick={() => {
+                if (createKind === 'international') {
+                  setInternationalCurrency('');
+                  setCreateStep('currency');
+                  return;
+                }
+                if (createKind === 'traveling' || createKind === 'domestic') {
+                  beginFormForKind(createKind);
+                }
+              }}
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  if (createStep === 'currency') {
+    return (
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Select Currency</DialogTitle>
+            <DialogDescription>Choose the currency for this international expense</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2" role="radiogroup" aria-label="Currency">
+            {CURRENCY_OPTIONS.map((option) => (
+              <label
+                key={option.value}
+                className={cn(
+                  'flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50',
+                  internationalCurrency === option.value && 'border-blue-300 bg-blue-50',
+                )}
+              >
+                <input
+                  type="radio"
+                  name="expense-currency"
+                  className="h-4 w-4 accent-[#007BFF]"
+                  checked={internationalCurrency === option.value}
+                  onChange={() => setInternationalCurrency(option.value)}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCreateStep('select')}>
+              Back
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#007BFF] hover:bg-[#0056b3]"
+              disabled={!internationalCurrency}
+              onClick={() => {
+                if (!internationalCurrency) return;
+                beginFormForKind('international', internationalCurrency);
+              }}
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  const travelingLocked = createKind === 'traveling';
+  const showGstField = showCompanyGstInField(formData.expenseHead, effectiveSubCategory);
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create New Expense Record</DialogTitle>
-          <DialogDescription>Fill in the expense details below</DialogDescription>
+          <DialogDescription>
+            {createKind === 'traveling'
+              ? 'Traveling Allowances — OutStation travel form'
+              : createKind === 'international' && internationalCurrency
+                ? `International Expense — ${internationalCurrencyDescription(internationalCurrency)}`
+                : 'Fill in the expense details below'}
+          </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="expense_head">Expense Head *</Label>
-              <Select
-                value={formData.expenseHead}
-                onValueChange={(value) =>
-                  setFormData({
-                    ...formData,
-                    expenseHead: value,
-                    subCategory: SUB_CATEGORY_UNSET,
-                    fromLocation: '',
-                    toLocation: '',
-                    returnType: '',
-                    kilometers: '',
-                    stayDateFrom: '',
-                    stayDateTo: '',
-                    fuelType: FUEL_TYPE_UNSET,
-                    pnrNo: '',
-                    outStation: value === 'Travel' ? formData.outStation : ('No' as const),
-                    arrivalDate: '',
-                    arrivalTime: '',
-                    departureDate: '',
-                    departureTime: '',
-                    amount: isTravelCarOrBike(value, '') ? '0' : formData.amount,
-                  })
-                }
-              >
-                <SelectTrigger id="expense_head">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {EXPENSE_HEADS.map((head) => (
-                    <SelectItem key={head} value={head}>
-                      {head}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {formData.expenseHead === 'Travel' ? (
-              <div className="space-y-2">
-                <Label htmlFor="out_station">OutStation (more than 100km) *</Label>
+              {travelingLocked ? (
+                <Input id="expense_head" value="Traveling Allowances" disabled className="bg-gray-50" />
+              ) : (
                 <Select
-                  value={formData.outStation}
-                  onValueChange={(value: 'Yes' | 'No') => {
+                  value={formData.expenseHead}
+                  onValueChange={(value) =>
                     setFormData({
                       ...formData,
-                      outStation: value,
-                      amount: value === 'Yes' ? '0' : formData.amount,
-                      supportingDocument: value === 'Yes' ? ('Yes' as const) : formData.supportingDocument,
-                    });
-                    if (value === 'Yes') {
-                      setSelectedFile(null);
-                    } else {
-                      setArrivalScreenshot(null);
-                      setDepartureScreenshot(null);
-                    }
-                  }}
+                      expenseHead: value,
+                      subCategory: SUB_CATEGORY_UNSET,
+                      companyGstIn: '',
+                      fromLocation: '',
+                      toLocation: '',
+                      returnType: '',
+                      kilometers: '',
+                      stayDateFrom: '',
+                      stayDateTo: '',
+                      fuelType: FUEL_TYPE_UNSET,
+                      pnrNo: '',
+                      outStation: 'No',
+                      arrivalDate: '',
+                      arrivalTime: '',
+                      departureDate: '',
+                      departureTime: '',
+                      amount: isTravelCarOrBike(value, '') ? '0' : formData.amount,
+                    })
+                  }
                 >
-                  <SelectTrigger id="out_station">
+                  <SelectTrigger id="expense_head">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="Yes">Yes</SelectItem>
-                    <SelectItem value="No">No</SelectItem>
+                    {EXPENSE_HEADS.map((head) => (
+                      <SelectItem key={head} value={head}>
+                        {head}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+              )}
+            </div>
+
+            {travelingLocked ? (
+              <div className="space-y-2">
+                <Label htmlFor="out_station">OutStation (more than 100km) *</Label>
+                <Input id="out_station" value="Yes" disabled className="bg-gray-50" />
               </div>
             ) : null}
 
@@ -656,6 +872,9 @@ export default function ExpenseFormModal({
                   setFormData({
                     ...formData,
                     subCategory: value,
+                    companyGstIn: showCompanyGstInField(formData.expenseHead, value)
+                      ? formData.companyGstIn
+                      : '',
                     ...(wasTravelDetail && !willTravelDetail
                       ? {
                           fromLocation: '',
@@ -810,11 +1029,11 @@ export default function ExpenseFormModal({
                   ) : null}
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="outstation_amount">Amount (Rs) *</Label>
+                  <Label htmlFor="outstation_amount">{amountFieldLabel('INR')}</Label>
                   <Input
                     id="outstation_amount"
-                    type="number"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     placeholder="Auto calculated"
                     value={formData.amount}
                     disabled
@@ -847,34 +1066,47 @@ export default function ExpenseFormModal({
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="amount">Amount (Rs) *</Label>
+                  <Label htmlFor="amount">{amountFieldLabel(activeCurrency)}</Label>
                   <Input
                     id="amount"
-                    type="number"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     placeholder="0.00"
                     value={formData.amount}
-                    onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (next === '' || AMOUNT_INPUT_PATTERN.test(next)) {
+                        setFormData({ ...formData, amount: next });
+                      }
+                    }}
                   />
                 </div>
                 <div className="space-y-2">
-                  <ExpenseSearchableCombobox
+                  <Label htmlFor="from_location_ticket">From *</Label>
+                  <Input
                     id="from_location_ticket"
-                    label="From *"
                     placeholder="From"
                     value={formData.fromLocation}
-                    options={locationOptions}
-                    onChange={(value) => setFormData({ ...formData, fromLocation: value })}
+                    onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="to_location_ticket">To *</Label>
+                  <Input
+                    id="to_location_ticket"
+                    placeholder="To"
+                    value={formData.toLocation}
+                    onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
                   <ExpenseSearchableCombobox
-                    id="to_location_ticket"
-                    label="To *"
-                    placeholder="To"
-                    value={formData.toLocation}
+                    id="location_ticket"
+                    label="City *"
+                    placeholder="Enter city"
+                    value={formData.location}
                     options={locationOptions}
-                    onChange={(value) => setFormData({ ...formData, toLocation: value })}
+                    onChange={(value) => setFormData({ ...formData, location: value })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -905,6 +1137,25 @@ export default function ExpenseFormModal({
                     onChange={(e) => setFormData({ ...formData, billNumber: e.target.value })}
                   />
                 </div>
+                {showGstField ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="company_gst_in_ticket">Did you give Company GSTIN? *</Label>
+                    <Select
+                      value={formData.companyGstIn || undefined}
+                      onValueChange={(value: 'Yes' | 'No') =>
+                        setFormData({ ...formData, companyGstIn: value })
+                      }
+                    >
+                      <SelectTrigger id="company_gst_in_ticket">
+                        <SelectValue placeholder="Select" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Yes">Yes</SelectItem>
+                        <SelectItem value="No">No</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
                 <div className="space-y-2">
                   <Label htmlFor="monthYear_ticket">Month-Year (Auto-detected)</Label>
                   <Input id="monthYear_ticket" value={formData.monthYear} disabled className="bg-gray-50" />
@@ -969,14 +1220,19 @@ export default function ExpenseFormModal({
 
             {!isOutstationTravel && !showTicketTransport ? (
             <div className="space-y-2">
-              <Label htmlFor="amount">Amount (Rs) *</Label>
+              <Label htmlFor="amount">{amountFieldLabel(activeCurrency)}</Label>
               <Input
                 id="amount"
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 placeholder={isAutoAmount ? 'Auto calculated' : '0.00'}
                 value={formData.amount}
-                onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  if (next === '' || AMOUNT_INPUT_PATTERN.test(next)) {
+                    setFormData({ ...formData, amount: next });
+                  }
+                }}
                 disabled={isAutoAmount}
                 readOnly={isAutoAmount}
                 className={isAutoAmount ? 'bg-gray-50' : ''}
@@ -1011,23 +1267,21 @@ export default function ExpenseFormModal({
                 </Select>
               </div>
               <div className="space-y-2">
-                <ExpenseSearchableCombobox
+                <Label htmlFor="from_location">From *</Label>
+                <Input
                   id="from_location"
-                  label="From *"
                   placeholder="Start location"
                   value={formData.fromLocation}
-                  options={locationOptions}
-                  onChange={(value) => setFormData({ ...formData, fromLocation: value })}
+                  onChange={(e) => setFormData({ ...formData, fromLocation: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
-                <ExpenseSearchableCombobox
+                <Label htmlFor="to_location">To *</Label>
+                <Input
                   id="to_location"
-                  label="To *"
                   placeholder="Destination"
                   value={formData.toLocation}
-                  options={locationOptions}
-                  onChange={(value) => setFormData({ ...formData, toLocation: value })}
+                  onChange={(e) => setFormData({ ...formData, toLocation: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
@@ -1036,7 +1290,7 @@ export default function ExpenseFormModal({
                   id="return_type"
                   value={formData.returnType}
                   onChange={(e) => setFormData({ ...formData, returnType: e.target.value })}
-                  placeholder="e.g. Same day / Next day"
+                  placeholder="e.g. Mumbai"
                 />
               </div>
               <div className="space-y-2">
@@ -1082,8 +1336,8 @@ export default function ExpenseFormModal({
             <div className="space-y-2">
               <ExpenseSearchableCombobox
                 id="location"
-                label="Location *"
-                placeholder="Enter location"
+                label="City *"
+                placeholder="Enter city"
                 value={formData.location}
                 options={locationOptions}
                 onChange={(value) => setFormData({ ...formData, location: value })}
@@ -1122,6 +1376,25 @@ export default function ExpenseFormModal({
                   onChange={(e) => setFormData({ ...formData, billNumber: e.target.value })}
                 />
               </div>
+              {showGstField ? (
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="company_gst_in">Did you give Company GSTIN? *</Label>
+                  <Select
+                    value={formData.companyGstIn || undefined}
+                    onValueChange={(value: 'Yes' | 'No') =>
+                      setFormData({ ...formData, companyGstIn: value })
+                    }
+                  >
+                    <SelectTrigger id="company_gst_in">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Yes">Yes</SelectItem>
+                      <SelectItem value="No">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

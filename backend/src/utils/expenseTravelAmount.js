@@ -29,7 +29,8 @@ export function computeTravelCarBikeRupeeAmount({
 }) {
   const head = String(expenseHead || '').trim();
   const sub = String(subCategory || '').trim();
-  if (head !== 'Travel' || (sub !== 'Car' && sub !== 'Bike')) {
+  const transportLike = head === 'Travel' || head === 'Transport';
+  if (!transportLike || (sub !== 'Car' && sub !== 'Bike')) {
     return 0;
   }
 

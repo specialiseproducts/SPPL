@@ -48,8 +48,19 @@ export function normalizeExpenseRow(raw: Record<string, unknown>): ExpenseRecord
     purpose,
     serviceProvider: String(raw.serviceProvider ?? ''),
     billNumber: String(raw.billNumber ?? ''),
+    companyGstIn:
+      raw.companyGstIn === 'Yes' || raw.companyGstIn === 'No'
+        ? raw.companyGstIn
+        : undefined,
     date: String(raw.date ?? ''),
     amount: Number(raw.amount ?? 0),
+    currency:
+      raw.currency === 'USD' ||
+      raw.currency === 'GBP' ||
+      raw.currency === 'EUR' ||
+      raw.currency === 'INR'
+        ? raw.currency
+        : undefined,
     employeeName: String(raw.employeeName ?? ''),
     employeeId:
       raw.employeeId != null

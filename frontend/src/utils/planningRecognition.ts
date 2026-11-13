@@ -135,7 +135,7 @@ function getIstMinutesFromServerTime(serverTimeIso: string): number {
  * Location / config-based daily minimum planned hours (Office 7.5, Factory 7).
  * When an explicit `location` is provided (e.g. task owner's location in Task Review),
  * that location wins over the logged-in user's planning-config minimum.
- * Optional `leaveKind`: full → 0; half → Office 3.75 / Factory 3.5.
+ * Optional `leaveKind`: full → 0; half → 4 hours (Office and Factory).
  */
 export function getMinPlannedHours(
   config?: PlanningConfig | null,
@@ -144,10 +144,7 @@ export function getMinPlannedHours(
 ): number {
   if (leaveKind === 'full') return 0;
   if (leaveKind === 'half') {
-    const loc =
-      String(location || '').trim() ||
-      String(config?.employeeLocation || '').trim();
-    return loc === 'Factory' ? 3.5 : 3.75;
+    return 4;
   }
   const explicitLoc = String(location || '').trim();
   if (explicitLoc) {
