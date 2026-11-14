@@ -26,6 +26,10 @@ import {
   toEpochSeconds,
   isPendingOtpStillValid,
 } from '../utils/passwordReset.js';
+import {
+  EMPLOYEE_EXITED_AUTH_MESSAGE,
+  isEmployeeEligibleForAuth,
+} from './employeeOffboarding.service.js';
 
 function httpError(message, statusCode = 400, code) {
   const err = new Error(message);
@@ -82,6 +86,11 @@ export async function requestPasswordResetOtp(payload) {
   const employee = await EmployeeModel.getEmployeeByCode(employeeCode);
   if (!employee) {
     throw httpError('Employee ID not found', 404, 'EMPLOYEE_NOT_FOUND');
+  }
+
+  // Exited employees cannot reset credentials to regain portal access.
+  if (!isEmployeeEligibleForAuth(employee)) {
+    throw httpError(EMPLOYEE_EXITED_AUTH_MESSAGE, 401, 'EMPLOYEE_EXITED');
   }
 
   const officialEmail = String(employee.officialEmail || '').trim();
@@ -300,6 +309,10 @@ export async function resetPasswordWithVerifiedToken(payload) {
   const employee = await EmployeeModel.getEmployeeByCode(employeeCode);
   if (!employee?.employeeId) {
     throw httpError('Employee ID not found', 404, 'EMPLOYEE_NOT_FOUND');
+  }
+
+  if (!isEmployeeEligibleForAuth(employee)) {
+    throw httpError(EMPLOYEE_EXITED_AUTH_MESSAGE, 401, 'EMPLOYEE_EXITED');
   }
 
   // Use the same password persistence strategy as the current login system.

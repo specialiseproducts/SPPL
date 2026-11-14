@@ -15,7 +15,8 @@ const TABLE_NAME = TABLES.SALES_PLANNER_EVENTS;
  * keep ONE shared full-table snapshot and filter by owner in memory. Concurrent callers
  * share a single in-flight scan to avoid N× full-table stampede on Team Daily Planner.
  */
-const SALES_EVENTS_CACHE_TTL_MS = 30_000;
+/** Shared full-table snapshot TTL — longer TTL cuts repeated cold scans on calendar/team loads. */
+const SALES_EVENTS_CACHE_TTL_MS = 120_000;
 let allSalesEventsCache = { at: 0, items: null };
 let allSalesEventsInflight = null;
 
@@ -58,6 +59,36 @@ async function loadAllSalesEventRows() {
 /** Warm the shared scan cache before fan-out listTeamTasks syncs. */
 export async function warmSalesEventsCache() {
   await loadAllSalesEventRows();
+}
+
+/** True when the shared cache is populated and still within TTL (no DynamoDB call). */
+export function isSalesEventsCacheWarm() {
+  return (
+    Boolean(allSalesEventsCache.items) &&
+    Date.now() - allSalesEventsCache.at <= SALES_EVENTS_CACHE_TTL_MS
+  );
+}
+
+/**
+ * Owner codes that have at least one non-deleted sales event in [startDate, endDate].
+ * Uses the shared scan cache (warms it if cold).
+ */
+export async function listOwnerCodesWithEventsInRange(startDate, endDate) {
+  const start = String(startDate || '').trim().slice(0, 10);
+  const end = String(endDate || '').trim().slice(0, 10);
+  const allItems = await loadAllSalesEventRows();
+  const owners = new Set();
+  for (const row of allItems || []) {
+    if (row?.is_deleted) continue;
+    const owner = String(row?.ownerEmployeeCode || '').trim();
+    if (!owner) continue;
+    const visitDate = toDateOnly(row.visitDate);
+    if (!visitDate) continue;
+    if (start && visitDate < start) continue;
+    if (end && visitDate > end) continue;
+    owners.add(owner);
+  }
+  return owners;
 }
 
 function logPlannerDynamo(operation, params) {

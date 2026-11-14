@@ -12,6 +12,7 @@
     "dynamodb:ensure-password-reset-otp-table": "node scripts/ensure-password-reset-otp-table.js",
     "test:password-reset-phase1": "node scripts/test-password-reset-phase1.js",
     "test:password-reset-phase4": "node scripts/test-password-reset-phase4-security.js",
+    "test:employee-offboarding": "node scripts/test-employee-offboarding.js",
     "dynamodb:backfill-sales-gsi": "node scripts/backfill-sales-entity-type.js",
     "dynamodb:seed-expense-locations": "node scripts/seed-expense-location-masters.js",
     "dynamodb:repair-planner-next-visit-status": "node scripts/repair-planner-next-visit-status.js"

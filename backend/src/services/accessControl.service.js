@@ -1,7 +1,12 @@
 import * as AccessModel from '../models/UserAccessControl.js';
+import * as EmployeeModel from '../models/EmployeeMaster.js';
 import { logActivity } from '../utils/activityLogger.js';
 import * as UserNotificationEmitters from './notificationEmitters.js';
 import { diffChangedFields } from '../utils/auditTrailDiff.js';
+import {
+  isEmployeeEligibleForAuth,
+  revokeAccessControlForEmployee,
+} from './employeeOffboarding.service.js';
 
 const GLOBAL_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User']);
 const OVERRIDE_ROLES = new Set(['Developer', 'Admin', 'Super Admin', 'User', 'None']);
@@ -28,11 +33,55 @@ function validatePayload(payload = {}) {
   }
 }
 
-export const getAllAccessControl = async () => AccessModel.getAll();
+/** Block Access Management assignment for employees whose Date of Exit is effective. */
+async function assertEmployeeEligibleForAccessAssignment(employeeCode) {
+  const code = String(employeeCode || '').trim();
+  if (!code) {
+    const err = new Error('employeeCode is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const employee = await EmployeeModel.getEmployeeByCode(code);
+  if (!employee) {
+    const err = new Error('Employee not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isEmployeeEligibleForAuth(employee)) {
+    const err = new Error(
+      'Cannot assign Access Management roles to an employee whose Date of Exit is effective.',
+    );
+    err.statusCode = 400;
+    err.code = 'EMPLOYEE_EXITED';
+    throw err;
+  }
+}
+
+export const getAllAccessControl = async () => {
+  const all = await AccessModel.getAll();
+  const kept = [];
+  // Reconcile: drop + revoke rows for employees whose exit is already effective.
+  await Promise.all(
+    (all || []).map(async (row) => {
+      const code = String(row?.employeeCode || '').trim();
+      if (!code) return;
+      const employee = await EmployeeModel.getEmployeeByCode(code);
+      if (!employee || !isEmployeeEligibleForAuth(employee)) {
+        await revokeAccessControlForEmployee(code, null, {
+          reason: 'access_list_reconcile_exit',
+        });
+        return;
+      }
+      kept.push(row);
+    }),
+  );
+  return kept;
+};
 export const getAccessControlByCode = async (employeeCode) => AccessModel.getByEmployeeCode(employeeCode);
 
 export const createAccessControl = async (payload, actor) => {
   validatePayload(payload);
+  await assertEmployeeEligibleForAccessAssignment(payload?.employeeCode);
   const item = await AccessModel.createOrUpdateAccessControl({
     ...payload,
     updatedBy: actor?.employeeCode || 'system',
@@ -54,6 +103,7 @@ export const createAccessControl = async (payload, actor) => {
 
 export const updateAccessControl = async (employeeCode, payload, actor) => {
   validatePayload(payload);
+  await assertEmployeeEligibleForAccessAssignment(employeeCode);
   const prev = await AccessModel.getByEmployeeCode(employeeCode);
   const item = await AccessModel.createOrUpdateAccessControl({
     ...payload,

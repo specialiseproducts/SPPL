@@ -122,11 +122,11 @@ export function validateSubCategoryForHead(expenseHead, subCategory) {
   }
   const value = (subCategory ?? '').trim();
   if (!value) {
-    throw new Error('subCategory is required');
+    throw new Error('Sub Category is required');
   }
   const allowed = EXPENSE_SUBCATEGORY_MAP[expenseHead];
   if (!allowed.includes(value)) {
-    throw new Error('subCategory does not match expense head');
+    throw new Error('Sub Category does not match Expense Head');
   }
 }
 

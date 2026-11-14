@@ -127,7 +127,7 @@ export async function scanExpensesForCompanyOverview() {
   const params = {
     TableName: TABLE_NAME,
     ProjectionExpression:
-      'expenseId, amount, expenseHead, subCategory, serviceProvider, monthYear, #expenseDate, approval_status, auditStatus, is_deleted, employeeName, employeeId, created_by_employee_code, created_by_name, #expenseLocation, purpose, billNumber, supportingDocument, documents, outStation, pnrNo, fromLocation, toLocation, returnType, kilometers, stayDateFrom, stayDateTo, fuelType, arrivalDate, arrivalTime, departureDate, departureTime, durationHours, durationDays, travelAllowanceAmount',
+      'expenseId, amount, expenseHead, subCategory, serviceProvider, monthYear, #expenseDate, approval_status, auditStatus, is_deleted, employeeName, employeeId, created_by_employee_code, created_by_name, #expenseLocation, purpose, locationPurpose, billNumber, supportingDocument, documents, outStation, pnrNo, fromLocation, toLocation, returnType, kilometers, stayDateFrom, stayDateTo, fuelType, arrivalDate, arrivalTime, departureDate, departureTime, durationHours, durationDays, travelAllowanceAmount',
     ExpressionAttributeNames: {
       '#expenseDate': 'date',
       '#expenseLocation': 'location',

@@ -861,18 +861,51 @@ function importedTaskNeedsUpdate(existing, next) {
 }
 
 /**
- * Read-only Sales Planner sync for one employee + date range.
- * Loads tasks and sales events once each (no per-event table scans).
+ * Sales Planner sync for one employee + date range.
+ * Loads tasks and sales events once each (shared events scan/cache — no per-event scans).
+ * Skips event fetch when caller already knows the owner has no events and no imported tasks.
  * Returns the post-sync task list for that range.
  */
-async function syncSalesPlannerImports(employeeCode, employeeName, startDate, endDate, year, month) {
+async function syncSalesPlannerImports(
+  employeeCode,
+  employeeName,
+  startDate,
+  endDate,
+  year,
+  month,
+  options = {},
+) {
   const code = String(employeeCode || '').trim();
   if (!code) return [];
 
-  const [events, existingTasks] = await Promise.all([
-    SalesPlannerEventsModel.listPlannerEventsForMonth(code, year, month, startDate, endDate),
-    DailyPlannerTasksModel.listTasksForEmployeeMonth(code, startDate, endDate),
-  ]);
+  const existingTasks =
+    Array.isArray(options.existingTasks)
+      ? options.existingTasks
+      : await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, startDate, endDate);
+
+  const hasImportedSales = (existingTasks || []).some(
+    (task) =>
+      String(task.source || '').trim() === 'SALES_FORECASTING' &&
+      String(task.salesPlannerId || '').trim(),
+  );
+
+  // Fast path: no imported sales tasks and caller confirmed no events for this owner.
+  if (!hasImportedSales && options.knownNoSalesEvents === true) {
+    return existingTasks;
+  }
+
+  const events = await SalesPlannerEventsModel.listPlannerEventsForMonth(
+    code,
+    year,
+    month,
+    startDate,
+    endDate,
+  );
+
+  // Fast path: nothing to create/update/delete.
+  if (!hasImportedSales && (!events || events.length === 0)) {
+    return existingTasks;
+  }
 
   const bySalesId = new Map();
   for (const task of existingTasks) {
@@ -958,6 +991,17 @@ export const listMyMonth = async (authUser, year, month) => {
   const parsed = parseMonthQuery(year, month);
   const name = employeeNameOf(authUser);
 
+  const [existingTasks, ownersWithEvents] = await Promise.all([
+    DailyPlannerTasksModel.listTasksForEmployeeMonth(
+      code,
+      parsed.startDate,
+      parsed.endDate,
+    ),
+    SalesPlannerEventsModel.listOwnerCodesWithEventsInRange(
+      parsed.startDate,
+      parsed.endDate,
+    ),
+  ]);
   const tasks = await syncSalesPlannerImports(
     code,
     name,
@@ -965,6 +1009,10 @@ export const listMyMonth = async (authUser, year, month) => {
     parsed.endDate,
     parsed.year,
     parsed.month,
+    {
+      existingTasks,
+      knownNoSalesEvents: !ownersWithEvents.has(code),
+    },
   );
   const sorted = sortDailyPlannerTasks(tasks);
   return {
@@ -983,7 +1031,22 @@ export const listDayTasks = async (authUser, dateParam) => {
     throw err;
   }
   const [y, m] = date.split('-').map(Number);
-  const tasks = await syncSalesPlannerImports(code, employeeNameOf(authUser), date, date, y, m);
+  const [existingTasks, ownersWithEvents] = await Promise.all([
+    DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date),
+    SalesPlannerEventsModel.listOwnerCodesWithEventsInRange(date, date),
+  ]);
+  const tasks = await syncSalesPlannerImports(
+    code,
+    employeeNameOf(authUser),
+    date,
+    date,
+    y,
+    m,
+    {
+      existingTasks,
+      knownNoSalesEvents: !ownersWithEvents.has(code),
+    },
+  );
   const sorted = sortDailyPlannerTasks(tasks);
   return { tasks: await annotateReportingPersonCreatedTasks(sorted, code), date };
 };
@@ -1182,12 +1245,18 @@ export const createManualTask = async (rawBody, authUser, effectiveRole, options
     throw err;
   }
 
-  await assertEmployeeCodeActiveOnDate(code, date);
-  await assertDateAllowsPlannerTaskCreate(code, date);
+  // Batch create reuses leave/location/existing-task context to avoid N× DynamoDB lookups.
+  if (!options.skipActiveAssert) {
+    await assertEmployeeCodeActiveOnDate(code, date);
+  }
+  const leaveKindForDate =
+    options.leaveKind !== undefined && options.leaveKind !== null
+      ? options.leaveKind
+      : await assertDateAllowsPlannerTaskCreate(code, date);
 
   const elevated = canAccessAllRecords(effectiveRole);
   const now = new Date();
-  const location = await getEmployeeLocation(code);
+  const location = options.location || (await getEmployeeLocation(code));
 
   const priority = normalizePriorityValue(body.priority, 'Medium');
   // Priority Urgent maps to Urgent planning category for scoring; else Regular.
@@ -1211,7 +1280,9 @@ export const createManualTask = async (rawBody, authUser, effectiveRole, options
   // Applies to all roles on My Daily Planner; Team for-employee uses createTaskForEmployee.
   // Dates after tomorrow (advance planning) allow partial hours — no daily minimum.
   const revisesTaskIdEarly = String(body.revisesTaskId || '').trim();
-  const existingForDate = await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date);
+  const existingForDate = Array.isArray(options.existingForDate)
+    ? options.existingForDate
+    : await DailyPlannerTasksModel.listTasksForEmployeeMonth(code, date, date);
   if (
     !revisesTaskIdEarly &&
     (existingForDate || []).some(
@@ -1267,7 +1338,10 @@ export const createManualTask = async (rawBody, authUser, effectiveRole, options
     ? String(body.managerInstructions || body.instructions || '').trim()
     : '';
 
-  const enhancedEligible = await resolveEnhancedEligibilityForAuthUser(authUser, effectiveRole);
+  const enhancedEligible =
+    options.enhancedEligible !== undefined
+      ? options.enhancedEligible
+      : await resolveEnhancedEligibilityForAuthUser(authUser, effectiveRole);
   const enhancedFields = DailyPlannerEnhancedService.parseOptionalEnhancedFields(
     body,
     enhancedEligible,
@@ -1327,6 +1401,11 @@ export const createManualTask = async (rawBody, authUser, effectiveRole, options
 
   if (revisionParent) {
     await markRevisionHandled(revisesTaskId, 'custom_revision', task.plannerTaskId);
+  }
+
+  // Keep batch in-memory day list current so the next draft sees this create.
+  if (Array.isArray(options.existingForDate)) {
+    options.existingForDate.push(task);
   }
 
   let planningAward = null;
@@ -1429,12 +1508,22 @@ export const createManualTaskBatch = async (body, authUser, effectiveRole) => {
     );
   }
 
+  await assertEmployeeCodeActiveOnDate(code, sharedDate);
+  const enhancedEligible = await resolveEnhancedEligibilityForAuthUser(authUser, effectiveRole);
+  // Mutated after each create so subsequent drafts see in-batch siblings (finalize / hours).
+  const existingForDate = [...(existing || [])];
+
   const created = [];
   for (const draft of drafts) {
     const result = await createManualTask(draft, authUser, effectiveRole, {
       skipExactSevenCheck: true,
       skipPlanningAward: true,
       skipHoursNotify: true,
+      skipActiveAssert: true,
+      leaveKind,
+      location,
+      existingForDate,
+      enhancedEligible,
     });
     created.push(result.task);
   }
@@ -2860,7 +2949,7 @@ function parseYesNoFlag(value) {
   return null;
 }
 
-export const markTaskCompleted = async (taskId, body, authUser, effectiveRole) => {
+export const markTaskCompleted = async (taskId, body, authUser, effectiveRole, options = {}) => {
   let workDone = String(body?.workDone || body?.reason || '').trim();
   const stepFlow = Array.isArray(body?.procedureSteps) && body.procedureSteps.length > 0;
   // Step-based completion can derive Work Done from the completed step descriptions.
@@ -3077,7 +3166,11 @@ export const markTaskCompleted = async (taskId, body, authUser, effectiveRole) =
     ? []
     : await cancelLinkedRescheduledChildren(existing);
 
-  if (existing.planningCategory === PLANNING_CATEGORY_REGULAR && existing.source === 'MANUAL') {
+  if (
+    !options.skipPlanningRecompute &&
+    existing.planningCategory === PLANNING_CATEGORY_REGULAR &&
+    existing.source === 'MANUAL'
+  ) {
     await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
       employeeCode: existing.employeeCode,
       workingDayDateKey: existing.date,
@@ -3100,16 +3193,19 @@ export const markTaskCompleted = async (taskId, body, authUser, effectiveRole) =
     });
   }
 
-  const dayTasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
-    existing.employeeCode,
-    existing.date,
-    existing.date,
-  );
-  const dayCompletedHours = sumDayCompletedHours(
-    (dayTasks || []).map((t) =>
-      t.plannerTaskId === task.plannerTaskId ? { ...t, ...task } : t,
-    ),
-  );
+  let dayCompletedHours = null;
+  if (!options.skipDayCompletedHours) {
+    const dayTasks = await DailyPlannerTasksModel.listTasksForEmployeeMonth(
+      existing.employeeCode,
+      existing.date,
+      existing.date,
+    );
+    dayCompletedHours = sumDayCompletedHours(
+      (dayTasks || []).map((t) =>
+        t.plannerTaskId === task.plannerTaskId ? { ...t, ...task } : t,
+      ),
+    );
+  }
 
   return {
     task,
@@ -3437,15 +3533,17 @@ export const batchCompleteTasks = async (body, authUser, effectiveRole) => {
 
   const succeeded = [];
   const failed = [];
+  const needsPlanningRecompute = new Set();
 
   const assertTaskOnDate = async (taskId) => {
-    if (!date) return;
+    if (!date) return null;
     const task = await DailyPlannerTasksModel.getTaskById(taskId);
     if (task && task.date !== date) {
       const err = new Error(`Task is not scheduled for ${date}`);
       err.statusCode = 400;
       throw err;
     }
+    return task;
   };
 
   for (const entry of completions) {
@@ -3456,9 +3554,22 @@ export const batchCompleteTasks = async (body, authUser, effectiveRole) => {
         err.statusCode = 400;
         throw err;
       }
-      await assertTaskOnDate(taskId);
+      const preloaded = await assertTaskOnDate(taskId);
+      if (
+        preloaded &&
+        String(preloaded.planningCategory || '').trim() === PLANNING_CATEGORY_REGULAR &&
+        String(preloaded.source || '').trim() === 'MANUAL'
+      ) {
+        needsPlanningRecompute.add(
+          `${String(preloaded.employeeCode || '').trim()}|${String(preloaded.date || '').trim()}`,
+        );
+      }
       const { taskId: _omit, ...payload } = entry;
-      const result = await markTaskCompleted(taskId, payload, authUser, effectiveRole);
+      // Defer score recompute + day-hours to once per batch (not per task).
+      const result = await markTaskCompleted(taskId, payload, authUser, effectiveRole, {
+        skipPlanningRecompute: true,
+        skipDayCompletedHours: true,
+      });
       succeeded.push({
         taskId,
         type: 'completed',
@@ -3506,6 +3617,23 @@ export const batchCompleteTasks = async (body, authUser, effectiveRole) => {
         message: String(error?.message || 'Failed to update task'),
         statusCode: error?.statusCode || 500,
       });
+    }
+  }
+
+  for (const key of needsPlanningRecompute) {
+    const [employeeCode, workingDayDateKey] = key.split('|');
+    if (!employeeCode || !workingDayDateKey) continue;
+    try {
+      await PlanningRecognitionService.recomputePlanningScoreForWorkingDay({
+        employeeCode,
+        workingDayDateKey,
+      });
+    } catch (error) {
+      console.error(
+        'Daily planner batchComplete planning recompute error:',
+        key,
+        error?.message || error,
+      );
     }
   }
 
@@ -3592,13 +3720,37 @@ export const listTeamTasks = async (authUser, effectiveRole, filters = {}) => {
     endDate = parsed.endDate;
   }
 
-  // Warm shared SalesPlannerEvents scan once before parallel per-employee syncs.
+  // One shared Sales events scan (cached), then sync only employees who need it.
   await SalesPlannerEventsModel.warmSalesEventsCache();
+  const [ownersWithEvents, existingTasks] = await Promise.all([
+    SalesPlannerEventsModel.listOwnerCodesWithEventsInRange(startDate, endDate),
+    DailyPlannerTasksModel.listTasksForEmployees(employeeCodes, startDate, endDate),
+  ]);
+  const tasksByEmployee = new Map();
+  for (const task of existingTasks || []) {
+    const code = String(task.employeeCode || '').trim();
+    if (!code) continue;
+    if (!tasksByEmployee.has(code)) tasksByEmployee.set(code, []);
+    tasksByEmployee.get(code).push(task);
+  }
 
   const syncedBatches = await Promise.all(
-    employeeCodes.map((code) =>
-      syncSalesPlannerImports(code, '', startDate, endDate, year, month),
-    ),
+    employeeCodes.map((code) => {
+      const mine = tasksByEmployee.get(code) || [];
+      const hasImportedSales = mine.some(
+        (t) =>
+          String(t.source || '').trim() === 'SALES_FORECASTING' &&
+          String(t.salesPlannerId || '').trim(),
+      );
+      const knownNoSalesEvents = !ownersWithEvents.has(code);
+      if (!hasImportedSales && knownNoSalesEvents) {
+        return Promise.resolve(mine);
+      }
+      return syncSalesPlannerImports(code, '', startDate, endDate, year, month, {
+        existingTasks: mine,
+        knownNoSalesEvents,
+      });
+    }),
   );
   let tasks = syncedBatches.flat();
 

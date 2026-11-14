@@ -38,6 +38,11 @@ import { isQueryColdLoading } from '../utils/queryLoading';
 import { useEmployeesListQuery } from '../hooks/employees/useEmployeesQuery';
 import { sanitizeSelectOptionsUnique } from '../utils/sanitizeSelectOptions';
 import {
+  getEmployeeExitDate,
+  isEmployeeActiveOnDate,
+  todayLocalDateKey,
+} from '../utils/employeeActiveStatus';
+import {
   canCreate,
   canDelete,
   canEdit,
@@ -211,7 +216,10 @@ export default function ExpensesTab({
   const canExportRecords = canExport(userRole);
 
   const employeeFilterOptions = useMemo(() => {
-    const names = (employeesQuery.data ?? []).map((user) => user.name);
+    const today = todayLocalDateKey();
+    const names = (employeesQuery.data ?? [])
+      .filter((user) => isEmployeeActiveOnDate(getEmployeeExitDate(user), today))
+      .map((user) => user.name);
     return sanitizeSelectOptionsUnique(names);
   }, [employeesQuery.data]);
 

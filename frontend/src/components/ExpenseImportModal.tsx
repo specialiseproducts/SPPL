@@ -156,7 +156,7 @@ export default function ExpenseImportModal({
           month: 'April',
           year: '2024',
           status: 'error',
-          errors: ['Missing location', 'Missing purpose', 'Missing amount'],
+          errors: ['Missing city', 'Missing purpose', 'Missing amount'],
         },
       ];
 
@@ -266,7 +266,7 @@ export default function ExpenseImportModal({
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
-                <strong>Expected columns:</strong> Expense Head, Sub Category, Location, Purpose, Service Provider, 
+                <strong>Expected columns:</strong> Expense Head, Sub Category, City, Purpose, Service Provider, 
                 Bill Number, Date, Amount{isAdmin ? ', Employee Name' : ''}
               </AlertDescription>
             </Alert>
@@ -303,7 +303,7 @@ export default function ExpenseImportModal({
                     <TableHead>Status</TableHead>
                     <TableHead>Expense Head</TableHead>
                     <TableHead>Sub Category</TableHead>
-                    <TableHead>Location</TableHead>
+                    <TableHead>City</TableHead>
                     <TableHead>Purpose</TableHead>
                     <TableHead>Provider</TableHead>
                     <TableHead>Bill No</TableHead>

@@ -49,9 +49,9 @@ export function assertTravelTicketTransportFields(data) {
   const pnr = String(data.pnrNo ?? '').trim();
   const from = String(data.fromLocation ?? '').trim();
   const to = String(data.toLocation ?? '').trim();
-  if (!pnr) throw new Error('pnrNo is required for ticket transport expenses');
-  if (!from) throw new Error('fromLocation is required for ticket transport expenses');
-  if (!to) throw new Error('toLocation is required for ticket transport expenses');
+  if (!pnr) throw new Error('PNR No. is required for ticket transport expenses');
+  if (!from) throw new Error('From is required for ticket transport expenses');
+  if (!to) throw new Error('To is required for ticket transport expenses');
 }
 
 export function isTravelOutstationAllowance(data) {
@@ -94,15 +94,15 @@ export function assertTravelCarBikeFields(data) {
   const to = String(data.toLocation ?? '').trim();
   const ret = String(data.returnType ?? '').trim();
   const kmRaw = data.kilometers;
-  if (!from) throw new Error('fromLocation is required for Travel Car/Bike');
-  if (!to) throw new Error('toLocation is required for Travel Car/Bike');
-  if (!ret) throw new Error('returnType is required for Travel Car/Bike');
+  if (!from) throw new Error('From is required for Travel Car/Bike');
+  if (!to) throw new Error('To is required for Travel Car/Bike');
+  if (!ret) throw new Error('Return is required for Travel Car/Bike');
   if (kmRaw === undefined || kmRaw === null || String(kmRaw).trim() === '') {
-    throw new Error('kilometers is required for Travel Car/Bike');
+    throw new Error('Kilometers is required for Travel Car/Bike');
   }
   const km = Number(kmRaw);
   if (Number.isNaN(km) || km < 0) {
-    throw new Error('kilometers must be a non-negative number');
+    throw new Error('Kilometers must be a non-negative number');
   }
 }
 
@@ -111,20 +111,20 @@ const FUEL_TYPES = new Set(['Petrol/Diesel', 'Electric']);
 export function assertFuelTypeForTravelCarBike(data) {
   const ft = String(data.fuelType ?? '').trim();
   if (!ft) {
-    throw new Error('fuelType is required for Travel Car/Bike');
+    throw new Error('Fuel Type is required for Travel Car/Bike');
   }
   if (!FUEL_TYPES.has(ft)) {
-    throw new Error('fuelType must be Petrol/Diesel or Electric');
+    throw new Error('Fuel Type must be Petrol/Diesel or Electric');
   }
 }
 
 export function assertHotelSelfStayDates(data) {
   const from = String(data.stayDateFrom ?? '').trim();
   const to = String(data.stayDateTo ?? '').trim();
-  if (!from) throw new Error('stayDateFrom is required for Hotel Booking Self');
-  if (!to) throw new Error('stayDateTo is required for Hotel Booking Self');
+  if (!from) throw new Error('Stay Date (From) is required for Hotel Booking Self');
+  if (!to) throw new Error('Stay Date (To) is required for Hotel Booking Self');
   if (new Date(to) < new Date(from)) {
-    throw new Error('stayDateTo cannot be earlier than stayDateFrom');
+    throw new Error('Stay Date (To) cannot be earlier than Stay Date (From)');
   }
 }
 

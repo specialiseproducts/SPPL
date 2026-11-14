@@ -11,6 +11,9 @@ import { canAccessAllRecords, isOwnedByUser } from '../utils/accessControl.js';
 import { logActivity } from '../utils/activityLogger.js';
 import { buildSoftDeleteFields } from '../utils/softDelete.js';
 import { withApprovalDefaults } from '../utils/approval.js';
+import { isEmployeeActiveOnDate } from '../utils/employeeActiveStatus.js';
+import { todayIstDateKey } from '../utils/salesQuotationDates.js';
+import { revokeAccessControlForEmployee, revokeAccessIfExitEffective } from './employeeOffboarding.service.js';
 import log from '../utils/logger.js';
 
 export const CORPORATE_ID = 'SpecialisePdt';
@@ -198,6 +201,16 @@ export const getAllEmployees = async (filters = {}, options = {}, authUser = nul
     if (authUser && !canAccessAllRecords(effectiveRole)) {
       items = items.filter((item) => isOwnedByUser(item, authUser));
     }
+    // Optional active-only filter for assignment dropdowns (User Management still gets full list).
+    const activeOnlyRaw = String(filters?.activeOnly ?? filters?.active_only ?? '')
+      .trim()
+      .toLowerCase();
+    if (activeOnlyRaw === 'true' || activeOnlyRaw === '1' || activeOnlyRaw === 'yes') {
+      const today = todayIstDateKey();
+      items = items.filter((item) =>
+        isEmployeeActiveOnDate(item?.dateOfExit || item?.date_of_exit, today),
+      );
+    }
     return { data: items, nextCursor: result.nextCursor ?? null };
   } catch (error) {
     log.error('Error getting employees:', error);
@@ -255,6 +268,8 @@ export const createEmployee = async (employeeData, authUser) => {
 
     log.info('Creating employee:', normalized.employeeCode);
     const created = await EmployeeModel.createEmployee(payload);
+    // If created already with an effective Date of Exit, ensure no Access Management row remains.
+    await revokeAccessIfExitEffective(created, authUser);
     await logActivity({
       actorEmployeeCode: authUser?.employeeCode || '',
       actorName: authUser?.fullName || '',
@@ -313,6 +328,9 @@ export const updateEmployee = async (employeeId, updateData, userId, authUser = 
       corporateId: CORPORATE_ID,
       ...(normalized.profilePhotoUrl !== undefined ? { profilePhoto: normalized.profilePhotoUrl } : {}),
     });
+    // When Date of Exit is effective (today or past), revoke Access Management automatically.
+    // Clearing exit / moving it to the future does NOT re-create access (admin must re-assign).
+    await revokeAccessIfExitEffective(updated || { ...existing, ...normalized }, authUser);
     await logActivity({
       actorEmployeeCode: authUser?.employeeCode || '',
       actorName: authUser?.fullName || '',
@@ -346,6 +364,11 @@ export const deleteEmployee = async (employeeId, userId, authUser = null, effect
     }
     log.info('Deleting employee:', decoded);
     const deleted = await EmployeeModel.updateEmployee(decoded, buildSoftDeleteFields(authUser));
+    // Soft-delete also clears Access Management so permissions cannot linger.
+    const code = String(existing.employeeCode || existing.employeeId || decoded || '').trim();
+    if (code) {
+      await revokeAccessControlForEmployee(code, authUser, { reason: 'employee_soft_delete' });
+    }
     await logActivity({
       actorEmployeeCode: authUser?.employeeCode || '',
       actorName: authUser?.fullName || '',

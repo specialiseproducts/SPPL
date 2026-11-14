@@ -7,13 +7,16 @@ import {
   computeOutstationTravelAllowanceAmount,
   validateExpenseBusinessRules,
 } from '../utils/expenseValidation.js';
+import { resolveLocationFieldsFromRow } from '../utils/expenseLocationFields.js';
 import * as NotificationEmitters from './notificationEmitters.js';
 import { logActivity } from '../utils/activityLogger.js';
 
 const FIELD_BY_LABEL = {
   Amount: 'amount',
   Date: 'date',
+  // Current UI label is City; keep Location for historical edit requests.
   Location: 'location',
+  City: 'location',
   Purpose: 'purpose',
   'Service Provider': 'serviceProvider',
   'Service Provider Name': 'serviceProvider',
@@ -33,6 +36,8 @@ const FIELD_BY_LABEL = {
   'Departure Date (last)': 'departureDate',
   'Departure Date': 'departureDate',
   'Departure Time': 'departureTime',
+  Currency: 'currency',
+  'Did you give Company GSTIN?': 'companyGstIn',
 };
 
 const ALLOWED_FIELD_KEYS = new Set(Object.values(FIELD_BY_LABEL));
@@ -105,6 +110,10 @@ function sanitizeRequestedValues(requestType, value) {
 function buildOldValues(expense, requestType) {
   const fieldKey = resolveFieldKey(requestType);
   if (!fieldKey) return {};
+  if (fieldKey === 'location' || fieldKey === 'purpose') {
+    const resolved = resolveLocationFieldsFromRow(expense || {});
+    return { [fieldKey]: resolved[fieldKey] || null };
+  }
   return { [fieldKey]: expense?.[fieldKey] ?? null };
 }
 

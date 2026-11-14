@@ -29,8 +29,8 @@ export function useDailyPlannerMonthQuery(year: number, month: number, enabled =
     queryKey: dailyPlannerQueryKeys.month(year, month),
     queryFn: () => fetchDailyPlannerMonth(year, month),
     enabled: enabled && year > 0 && month >= 1 && month <= 12,
+    // Use shared list defaults (no refetchOnMount: 'always') — mutations upsert cache.
     ...queryDefaults.list,
-    refetchOnMount: 'always',
   });
 }
 
@@ -40,7 +40,6 @@ export function useDailyPlannerDayQuery(date: string, enabled = true) {
     queryFn: () => fetchDailyPlannerDay(date),
     enabled: enabled && !!date,
     ...queryDefaults.list,
-    refetchOnMount: 'always',
   });
 }
 
@@ -54,7 +53,6 @@ export function useTeamDailyPlannerQuery(
     queryFn: () => fetchTeamDailyPlannerTasks(filters),
     enabled,
     ...queryDefaults.list,
-    refetchOnMount: 'always',
     ...options,
   });
 }
@@ -70,7 +68,6 @@ export function useTeamDailyPlannerMonthQuery(
     queryFn: () => fetchTeamDailyPlannerMonth(year, month, employeeCode),
     enabled: enabled && year > 0 && month >= 1 && month <= 12,
     ...queryDefaults.list,
-    refetchOnMount: 'always',
   });
 }
 
@@ -89,7 +86,6 @@ export function usePendingCompletionApprovalsQuery(enabled = true) {
     queryFn: fetchPendingCompletionApprovals,
     enabled,
     ...queryDefaults.list,
-    refetchOnMount: 'always',
   });
 }
 
@@ -194,7 +190,6 @@ export function useApprovedLeaveForPlannerQuery(
     queryFn: () => fetchApprovedLeaveForPlanner({ employeeCode: code, year, month }),
     enabled: enabled && Boolean(code) && year > 0 && month >= 1 && month <= 12,
     ...queryDefaults.list,
-    refetchOnMount: 'always',
   });
 }
 

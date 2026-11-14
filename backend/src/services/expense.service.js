@@ -40,7 +40,10 @@ import {
 import { computeTravelCarBikeRupeeAmount } from '../utils/expenseTravelAmount.js';
 import * as ExpenseTravelRateSettingsService from './expenseTravelRateSettings.service.js';
 import * as ExpenseMasterValuesModel from '../models/ExpenseMasterValues.js';
-import { resolveLocationFieldsFromRow } from '../utils/expenseLocationFields.js';
+import {
+  pickLocationFromPayload,
+  resolveLocationFieldsFromRow,
+} from '../utils/expenseLocationFields.js';
 import { EXPENSE_LEGACY_COMBINED_LOCATION_ATTR } from '../constants/expenseLegacy.js';
 import {
   EXPENSE_EXPORT_STATUS,
@@ -216,7 +219,7 @@ function validateMergedSubCategoryOnUpdate(merged, updateData) {
   const sub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
   if (sub) {
     if (!EXPENSE_SUBCATEGORY_MAP[merged.expenseHead].includes(sub)) {
-      throw new Error('subCategory does not match expense head');
+      throw new Error('Sub Category does not match Expense Head');
     }
     return;
   }
@@ -224,13 +227,13 @@ function validateMergedSubCategoryOnUpdate(merged, updateData) {
     Object.prototype.hasOwnProperty.call(updateData, k)
   );
   if (headOrSubTouched) {
-    throw new Error('subCategory is required');
+    throw new Error('Sub Category is required');
   }
   const otherFormTouched = OTHER_FORM_FIELDS.some((k) =>
     Object.prototype.hasOwnProperty.call(updateData, k)
   );
   if (otherFormTouched) {
-    throw new Error('subCategory is required');
+    throw new Error('Sub Category is required');
   }
 }
 
@@ -398,14 +401,14 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     const hotelSelf = isHotelBookingSelf(expenseHead, subCategory || '');
 
     if (!expenseHead) {
-      throw new Error('expenseHead is required');
+      throw new Error('Expense Head is required');
     }
     if (!travelCarBike && !travelOutstation) {
       if (!serviceProvider) {
-        throw new Error('serviceProvider is required');
+        throw new Error('Service Provider Name is required');
       }
       if (!billNumber) {
-        throw new Error('billNumber is required');
+        throw new Error('Bill Number is required');
       }
     }
     if (!date && hotelSelf) {
@@ -418,20 +421,18 @@ export const createExpense = async (expenseData, documents = [], authUser = null
       throw new Error('date is required');
     }
 
-    let location = trimText(raw.location);
+    // Storage key remains `location`; UI label is City. Accept `city` / legacy combined.
+    let location = pickLocationFromPayload(raw);
     let purpose = trimText(raw.purpose);
     const legacyCombined = trimText(raw[EXPENSE_LEGACY_COMBINED_LOCATION_ATTR]);
-    if (!location && legacyCombined) {
-      location = legacyCombined;
-    }
     if (!purpose && legacyCombined) {
       purpose = legacyCombined;
     }
     if (!location && !travelOutstation) {
-      throw new Error('location is required');
+      throw new Error('City is required');
     }
     if (!purpose && !travelOutstation) {
-      throw new Error('purpose is required');
+      throw new Error('Purpose is required');
     }
 
     if (!travelOutstation) {
@@ -535,11 +536,11 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     } else {
       const amountRaw = raw.amount;
       if (amountRaw === undefined || amountRaw === null || trimText(amountRaw) === '') {
-        throw new Error('amount is required');
+        throw new Error('Amount is required');
       }
       amountNum = Number(amountRaw);
       if (Number.isNaN(amountNum)) {
-        throw new Error('amount must be a number');
+        throw new Error('Amount must be a number');
       }
     }
 
@@ -603,7 +604,7 @@ export const createExpense = async (expenseData, documents = [], authUser = null
     if (showCompanyGstInField(expenseHead, subCategory || '')) {
       const gst = trimText(raw.companyGstIn);
       if (gst !== 'Yes' && gst !== 'No') {
-        throw new Error('companyGstIn is required (Yes or No)');
+        throw new Error('Did you give Company GSTIN? is required (Yes or No)');
       }
       companyGstIn = gst;
     }
@@ -832,6 +833,14 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
       updatePayload.supportingDocument = 'Yes';
     }
 
+    // Normalize City alias → location before merge; never persist a separate `city` attribute.
+    if (updatePayload.city !== undefined && updatePayload.location === undefined) {
+      updatePayload.location = pickLocationFromPayload(updatePayload);
+    }
+    if (Object.prototype.hasOwnProperty.call(updatePayload, 'city')) {
+      delete updatePayload.city;
+    }
+
     const merged = {
       ...existing,
       ...updatePayload,
@@ -839,24 +848,12 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
 
     const mergedSub = merged.subCategory != null ? String(merged.subCategory).trim() : '';
     const resolvedLp = resolveLocationFieldsFromRow(merged);
-    const mergedIsTicket = isTravelTicketTransport(merged.expenseHead, mergedSub);
-    if (!travelOutstation && !mergedIsTicket) {
+    if (!travelOutstation) {
       if (!resolvedLp.location) {
-        throw new Error('location is required');
+        throw new Error('City is required');
       }
       if (!resolvedLp.purpose) {
-        throw new Error('purpose is required');
-      }
-      merged.location = resolvedLp.location;
-      merged.purpose = resolvedLp.purpose;
-      updatePayload.location = resolvedLp.location;
-      updatePayload.purpose = resolvedLp.purpose;
-    } else if (mergedIsTicket) {
-      if (!resolvedLp.location) {
-        throw new Error('location is required');
-      }
-      if (!resolvedLp.purpose) {
-        throw new Error('purpose is required');
+        throw new Error('Purpose is required');
       }
       merged.location = resolvedLp.location;
       merged.purpose = resolvedLp.purpose;
@@ -890,7 +887,7 @@ export const updateExpense = async (expenseId, updateData, authUser = null, effe
     if (showCompanyGstInField(merged.expenseHead, mergedSub)) {
       const gst = trimText(updatePayload.companyGstIn ?? merged.companyGstIn);
       if (gst !== 'Yes' && gst !== 'No') {
-        throw new Error('companyGstIn is required (Yes or No)');
+        throw new Error('Did you give Company GSTIN? is required (Yes or No)');
       }
       updatePayload.companyGstIn = gst;
     }

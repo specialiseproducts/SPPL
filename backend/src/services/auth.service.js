@@ -15,6 +15,11 @@ import { validateNewPasswordPolicy } from '../utils/passwordReset.js';
 import { isDeveloper, isAdmin } from '../utils/accessControl.js';
 import { logActivity } from '../utils/activityLogger.js';
 import { generateEmployeePassword } from '../utils/userPassword.util.js';
+import {
+  assertEmployeeEligibleForAuth,
+  EMPLOYEE_EXITED_AUTH_MESSAGE,
+  revokeAccessControlForEmployee,
+} from './employeeOffboarding.service.js';
 import log from '../utils/logger.js';
 
 const DEFAULT_ACCESS_CONTROL = {
@@ -129,6 +134,18 @@ export const login = async ({ employeeCode, password }) => {
       throw invalidCredentialsError();
     }
 
+    // Date of Exit effective → never issue a session (even with correct password).
+    try {
+      assertEmployeeEligibleForAuth(employee);
+    } catch (exitErr) {
+      log.warn('Login failed - employee exited:', code);
+      void revokeAccessControlForEmployee(code, null, { reason: 'login_exit_effective' });
+      const err = new Error(EMPLOYEE_EXITED_AUTH_MESSAGE);
+      err.statusCode = 401;
+      err.code = 'EMPLOYEE_EXITED';
+      throw err;
+    }
+
     const accessControl = await getAccessControl(code);
     const token = generateToken({
       employeeCode: code,
@@ -173,6 +190,14 @@ export const getMe = async (employeeCode) => {
       throw err;
     }
 
+    // Session restore after exit → force logout (401 clears client token).
+    try {
+      assertEmployeeEligibleForAuth(employee);
+    } catch (exitErr) {
+      void revokeAccessControlForEmployee(code, null, { reason: 'get_me_exit_effective' });
+      throw exitErr;
+    }
+
     const hydratedEmployee = await ensureReadablePasswordField(employee);
     const accessControl = await getAccessControl(code);
     return {
@@ -203,6 +228,7 @@ export const changePassword = async ({ employeeCode, newPassword, confirmPasswor
     err.statusCode = 404;
     throw err;
   }
+  assertEmployeeEligibleForAuth(employee);
 
   const policy = validateNewPasswordPolicy(newPassword, confirmPassword);
   if (!policy.ok) {
@@ -252,6 +278,15 @@ export const resetPasswordByPrivilegedUser = async ({
   if (!target) {
     const err = new Error('Target user not found');
     err.statusCode = 404;
+    throw err;
+  }
+  // Do not issue a new password for employees whose Date of Exit is effective.
+  try {
+    assertEmployeeEligibleForAuth(target);
+  } catch {
+    const err = new Error(EMPLOYEE_EXITED_AUTH_MESSAGE);
+    err.statusCode = 400;
+    err.code = 'EMPLOYEE_EXITED';
     throw err;
   }
   const targetAccess = await getAccessControl(target.employeeCode);

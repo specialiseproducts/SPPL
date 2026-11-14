@@ -13,6 +13,7 @@ import { getEmployeeLocation } from '../utils/employeeLocation.js';
 import {
   assertEmployeeActiveOnDate,
   EMPLOYEE_EXITED_OPERATION_MESSAGE,
+  isEmployeeActiveOnDate,
 } from '../utils/employeeActiveStatus.js';
 import { todayIstDateKey } from '../utils/salesQuotationDates.js';
 
@@ -35,7 +36,11 @@ function assertCanManagePayrollTeamMappings(effectiveRole) {
 export const listPayrollEmployeeDirectory = async (options = {}, effectiveRole = 'User') => {
   assertCanManagePayrollTeamMappings(effectiveRole);
   const result = await EmployeeMasterModel.getAllEmployees(options);
-  return { data: result.data || [], nextCursor: result.nextCursor ?? null };
+  const today = todayIstDateKey();
+  const data = (result.data || []).filter((employee) =>
+    isEmployeeActiveOnDate(employee?.dateOfExit || employee?.date_of_exit, today),
+  );
+  return { data, nextCursor: result.nextCursor ?? null };
 };
 
 function employeeCodeOf(authUser) {

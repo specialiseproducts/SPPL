@@ -6,6 +6,12 @@ import { verifyToken } from '../utils/jwt.js';
 import * as UserAccessControlModel from '../models/UserAccessControl.js';
 import * as EmployeeModel from '../models/EmployeeMaster.js';
 import { getEffectiveRole, hasModuleAccess } from '../utils/accessControl.js';
+import {
+  assertEmployeeEligibleForAuth,
+  EMPLOYEE_EXITED_AUTH_MESSAGE,
+  isEmployeeEligibleForAuth,
+  revokeAccessControlForEmployee,
+} from '../services/employeeOffboarding.service.js';
 import log from '../utils/logger.js';
 
 const DEFAULT_ACCESS_CONTROL = {
@@ -49,12 +55,38 @@ export const authenticateToken = async (req, res, next) => {
         ])
       : [null, null];
 
+    // Soft-deleted or missing master row → reject (do not trust JWT alone).
+    if (!employee) {
+      log.warn('Token rejected — employee not found or deleted:', employeeCode);
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized',
+      });
+    }
+
+    // Date of Exit effective → reject every protected API (even if JWT still valid).
+    try {
+      assertEmployeeEligibleForAuth(employee);
+    } catch (exitErr) {
+      // Best-effort: clear stale Access Management while rejecting the session.
+      void revokeAccessControlForEmployee(employeeCode, null, {
+        reason: 'auth_middleware_exit_effective',
+      });
+      log.warn('Token rejected — employee exited:', employeeCode);
+      return res.status(401).json({
+        success: false,
+        message: exitErr?.message || EMPLOYEE_EXITED_AUTH_MESSAGE,
+        code: 'EMPLOYEE_EXITED',
+      });
+    }
+
     req.user = {
       ...decoded,
       firstName: employee?.firstName || '',
       lastName: employee?.lastName || '',
       fullName:
         `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() || '',
+      dateOfExit: employee?.dateOfExit || employee?.date_of_exit || '',
       accessControl: accessControl || DEFAULT_ACCESS_CONTROL,
       role: accessControl?.globalRole || 'User',
     };
@@ -98,12 +130,18 @@ export const attachUserIfPresent = async (req, res, next) => {
         ])
       : [null, null];
 
+    // Do not attach exited / missing employees on optional auth.
+    if (!employee || !isEmployeeEligibleForAuth(employee)) {
+      return next();
+    }
+
     req.user = {
       ...decoded,
       firstName: employee?.firstName || '',
       lastName: employee?.lastName || '',
       fullName:
         `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim() || '',
+      dateOfExit: employee?.dateOfExit || employee?.date_of_exit || '',
       accessControl: accessControl || DEFAULT_ACCESS_CONTROL,
       role: accessControl?.globalRole || 'User',
     };

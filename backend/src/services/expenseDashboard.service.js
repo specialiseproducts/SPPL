@@ -8,6 +8,7 @@ import {
   isApprovedExpense,
   monthYearSortKey,
 } from '../constants/expenseExportStatus.js';
+import { resolveLocationFieldsFromRow } from '../utils/expenseLocationFields.js';
 import log from '../utils/logger.js';
 
 const MONTH_LABELS = [
@@ -167,11 +168,14 @@ function matchesEmployeeFilter(row, employeeCode) {
 }
 
 function resolveExpenseLocationLabel(row) {
-  return String(row?.location ?? '').trim() || 'Not Specified';
+  // Prefer stored location; fall back to legacy locationPurpose for historical rows.
+  const { location } = resolveLocationFieldsFromRow(row || {});
+  return location || 'Not Specified';
 }
 
 function resolveExpensePurposeLabel(row) {
-  return String(row?.purpose ?? '').trim() || 'Not Specified';
+  const { purpose } = resolveLocationFieldsFromRow(row || {});
+  return purpose || 'Not Specified';
 }
 
 /**
@@ -187,7 +191,7 @@ export function parseLocationParam(value) {
     return {
       ok: false,
       statusCode: 400,
-      message: 'location is too long.',
+      message: 'City filter is too long.',
     };
   }
   return { ok: true, location };
